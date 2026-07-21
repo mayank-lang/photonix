@@ -1,32 +1,13 @@
 # photonix
 
-**Differentiable, GPU-accelerated, accuracy-first design and simulation of
-photonic integrated circuits.**
+PIC based computational solver Python package compatible with MEEP (another OSS)
 
-photonix unifies the photonic design stack — cross-section mode solving,
-component modeling, circuit-level S-parameter simulation, layout/GDS, and
-inverse design — into a single library built on [JAX](https://github.com/google/jax).
-Because the entire pipeline is differentiable, a single `grad` call gives the
-sensitivity of a *system-level* figure of merit with respect to *any* physical
-parameter, from a waveguide width to a coupler gap.
+photonix tries to bring the photonic design stack into a single library built on
+[JAX](https://github.com/google/jax).
 
-> Status: **v0.1 (beta).** MIT-licensed. Built for researchers.
 
-## Why another photonics package?
+> Status: **v1.** MIT-licensed. Built for researchers.
 
-Today the photonic design flow is split across separate tools: layout in one
-package, mode solving in another, circuit simulation in a third, inverse design
-in a fourth. photonix brings them together behind one consistent, functional API
-and one differentiable numerical core:
-
-- **Differentiable everywhere** — gradients flow through component models *and*
-  the circuit solver, so adjoint/inverse design works out of the box.
-- **GPU/TPU-ready** — the JAX backend runs unchanged on accelerators; the heavy
-  loops are `jit`-compiled and vectorized over wavelength with `vmap`.
-- **Accuracy-first** — 64-bit by default; models validated against analytic
-  limits and the literature in the test suite.
-- **Composable** — components are pure functions returning scattering
-  dictionaries; circuits are built by connecting named ports.
 
 ## Install
 
@@ -53,7 +34,7 @@ conda install -c conda-forge pymeep        # or "pymeep=*=mpi_mpich_*" for the p
 Without MEEP, `import photonix` and `import photonix.em` work normally; only
 touching `photonix.em.meep` raises an `ImportError` with this install hint.
 
-## Quick start
+## Example
 
 ```python
 import photonix as px
