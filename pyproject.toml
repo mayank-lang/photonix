@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "photonix"
+version = "0.1.0"
+description = "Differentiable, GPU-accelerated, accuracy-first photonic integrated circuit design and simulation."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "photonix contributors" }]
+keywords = [
+    "photonics", "silicon photonics", "photonic integrated circuits", "PIC",
+    "s-parameters", "circuit simulation", "inverse design", "differentiable",
+    "jax", "autograd", "gpu", "mode solver", "gdsii",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# NOTE: the optional FDTD backend `photonix.em.meep` requires MIT MEEP, which is
+# conda-only and therefore NOT listed here. Install it separately on Linux/macOS
+# (or Windows WSL2) with:  conda install -c conda-forge pymeep
+jax = ["jax>=0.4.20", "jaxlib>=0.4.20"]
+layout = ["gdstk>=0.9"]
+viz = ["matplotlib>=3.7"]
+all = ["jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7", "networkx>=3.0"]
+dev = [
+    "pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.4", "mypy>=1.8",
+    "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7", "networkx>=3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/photonix/photonix"
+Documentation = "https://photonix.readthedocs.io"
+Repository = "https://github.com/photonix/photonix"
+Issues = "https://github.com/photonix/photonix/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/photonix"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E741"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false

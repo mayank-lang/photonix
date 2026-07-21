@@ -1,0 +1,14 @@
+{
+  "_comment": "Reference values for benchmark cases, matched by case key. 'literature' holds published/analytic anchors; 'external' is filled by solver adapters (Meep/Tidy3D) via benchmarks/external/*.py and is empty until those run in an environment where the solver is installed.",
+  "literature": {
+    "soi_strip_te0_neff": {"value": 2.44, "tol": 0.03,
+      "source": "Si 500x220 nm, oxide cladding, 1550 nm — standard SOI strip TE0 (e.g. Lumerical MODE / gdsfactory PDK references)"},
+    "soi_strip_tm0_neff": {"value": 1.78, "tol": 0.06,
+      "source": "same strip, TM0 — accepted range ~1.75-1.80"},
+    "width_step_te_T": {"value": 0.9927, "tol": 0.01,
+      "source": "internal FDFD full-wave cross-check (photonix waveguide_sparams)"},
+    "width_step_tm_T": {"value": 0.9967, "tol": 0.01,
+      "source": "internal TM FDFD full-wave cross-check"}
+  },
+  "external": {}
+}
