@@ -8,6 +8,7 @@ fails loudly instead of quietly disappearing from `photonix.*`.
 from __future__ import annotations
 
 import numpy as np
+from conftest import requires_jax
 
 import photonix as px
 import photonix.em as em
@@ -90,9 +91,6 @@ def test_scalar_solver_overestimates_high_contrast_index():
     fullvec = em.n_eff_fullvector(**kw)
     assert scalar > fullvec > 1.444
     assert 2.3 < fullvec < 2.55          # literature TE0 for 500x220 nm SOI
-
-
-from conftest import requires_jax
 
 
 @requires_jax
