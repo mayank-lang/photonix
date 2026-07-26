@@ -12,7 +12,6 @@ Saves: examples/outputs/vector_em_showcase.png
 """
 from __future__ import annotations
 
-import os
 import warnings
 
 import matplotlib
@@ -20,6 +19,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from _output import save
 
 import photonix.em as em
 from photonix.em.eme import Section, eme_smatrix
@@ -111,9 +111,7 @@ def main() -> None:
     fig.suptitle("photonix full-vector EM stack — 500×220 nm SOI strip @ 1.55 µm",
                  fontsize=13, weight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.97))
-    out = os.path.join(os.path.dirname(__file__), "outputs", "vector_em_showcase.png")
-    fig.savefig(out, dpi=130)
-    print(f"Saved {out}")
+    print("Saved", save(fig, "vector_em_showcase.png"))
 
 
 if __name__ == "__main__":

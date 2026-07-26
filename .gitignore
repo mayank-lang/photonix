@@ -9,6 +9,17 @@ dist/
 .venv/
 venv/
 *.gds
-examples/*.png
+
+# Generated figures. Examples write into examples/outputs/ (via examples/_output.py),
+# which is the only PNG location that is version-controlled. The broad ignore
+# catches figures written anywhere else -- e.g. by a script run from the repo
+# root -- so they cannot be committed by accident.
+*.png
 !examples/outputs/*.png
+
+# Editor / filesystem debris.
 .DS_Store
+.fuse_hidden*
+*~
+.idea/
+.vscode/

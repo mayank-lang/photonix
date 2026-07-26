@@ -32,6 +32,7 @@ from .sparams import (
     validate_sdict,
 )
 from .types import (
+    AliasedSDict,
     Array,
     Complex,
     Float,
@@ -58,7 +59,7 @@ __all__ = [
     "constants", "units",
     # types
     "Array", "Complex", "Float", "Model", "ModelFactory", "PortName", "PortPair",
-    "SCoo", "SDense", "SDict", "SType", "Settings",
+    "SCoo", "SDense", "SDict", "AliasedSDict", "SType", "Settings",
     "is_sdict", "is_sdense", "is_scoo", "ports_of",
     # sparams
     "as_sdict", "as_sdense", "sdict_to_sdense", "sdense_to_sdict",

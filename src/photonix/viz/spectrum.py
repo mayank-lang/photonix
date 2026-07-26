@@ -52,7 +52,7 @@ def plot_spectrum(
     >>> import photonix as px
     >>> wl = px.linspace(1.5, 1.6, 201)
     >>> s = px.circuit.mzi(delta_length=40.0)(wl=wl)
-    >>> ax = px.viz.plot_spectrum(s, wl, [("in0", "out0")])
+    >>> ax = px.viz.plot_spectrum(s, wl, [("o1", "o4")])
     >>> ax.get_xlabel()
     'Wavelength (µm)'
     """

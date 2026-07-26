@@ -2,14 +2,18 @@
 
 The circuit-assembled MZI (two couplers + two arms) lives in
 :mod:`photonix.circuit`; this closed form is an exact reference for validation
-and fast sweeps. Ports ``in0`` -> ``out0`` (bar) and ``out1`` (cross).
+and fast sweeps. Ports ``o1`` (input) -> ``o2`` (bar) and ``o3`` (cross), with
+the legacy ``in0``/``out0``/``out1`` names kept as lookup aliases.
 """
 from __future__ import annotations
 
 from photonix.core.backend import xp
-from photonix.core.types import SDict
+from photonix.core.types import AliasedSDict, SDict
 
-__all__ = ["mzi"]
+__all__ = ["mzi", "MZI_PORT_ALIASES"]
+
+#: Legacy semantic port names accepted on lookup -> canonical ``oN`` names.
+MZI_PORT_ALIASES = {"in0": "o1", "out0": "o2", "out1": "o3"}
 
 
 def mzi(
@@ -45,7 +49,10 @@ def mzi(
     Returns
     -------
     SDict
-        Ports ``in0`` (input), ``out0`` (bar), ``out1`` (cross).
+        Ports ``o1`` (input), ``o2`` (bar output), ``o3`` (cross output). The
+        legacy names ``in0``/``out0``/``out1`` remain valid *lookup* keys via
+        :class:`~photonix.core.types.AliasedSDict`, but are not stored as
+        separate terminals.
 
     Examples
     --------
@@ -53,8 +60,10 @@ def mzi(
     >>> import numpy as np
     >>> wl = px.linspace(1.5, 1.6, 1001)
     >>> s = px.components.mzi(wl=wl, delta_length=40.0)
-    >>> T = px.to_numpy(px.power(s[("in0","out0")]))
+    >>> T = px.to_numpy(px.power(s[("o1","o2")]))
     >>> bool(T.max() > 0.9 and T.min() < 0.1)   # full-contrast fringes
+    True
+    >>> bool(np.allclose(px.to_numpy(s[("in0","out0")]), px.to_numpy(s[("o1","o2")])))
     True
     """
     from .waveguide import neff_linear
@@ -85,12 +94,15 @@ def mzi(
     a_top = xp.exp(-alpha * xp.maximum(delta_length, 0.0))   # top longer (dL > 0)
     a_bot = xp.exp(-alpha * xp.maximum(-delta_length, 0.0))  # bottom longer (dL < 0)
     z = a_top * xp.exp(-1j * dphi)
-    bar = (t * t) * z - (k * k) * a_bot          # in0 -> out0
-    cross = -1j * t * k * (z + a_bot)            # in0 -> out1
+    bar = (t * t) * z - (k * k) * a_bot          # o1 -> o2
+    cross = -1j * t * k * (z + a_bot)            # o1 -> o3
 
     bar = xp.asarray(bar, dtype=complex)
     cross = xp.asarray(cross, dtype=complex)
-    return {
-        ("in0", "out0"): bar, ("out0", "in0"): bar,
-        ("in0", "out1"): cross, ("out1", "in0"): cross,
-    }
+    return AliasedSDict(
+        {
+            ("o1", "o2"): bar, ("o2", "o1"): bar,
+            ("o1", "o3"): cross, ("o3", "o1"): cross,
+        },
+        aliases=MZI_PORT_ALIASES,
+    )

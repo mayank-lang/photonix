@@ -1,8 +1,9 @@
 """Extract a circuit netlist from a placed layout.
 
 Two instance ports are considered *connected* when their centers coincide within
-a tolerance. The result is a :class:`photonix.circuit.Netlist` when the circuit
-package is importable, otherwise an equivalent plain-dict structure.
+a tolerance. The result is always a :class:`photonix.circuit.Netlist`, which
+:func:`photonix.circuit.circuit_from_netlist` simulates directly -- closing the
+layout -> netlist -> simulation loop described in ``docs/ARCHITECTURE.md``.
 """
 from __future__ import annotations
 
@@ -22,9 +23,8 @@ def extract_netlist(top: Cell, *, tol: float = 1e-3):
 
     Returns
     -------
-    photonix.circuit.Netlist | dict
-        A real ``Netlist`` if :mod:`photonix.circuit` is available, else a dict
-        with keys ``instances``/``connections``/``ports``.
+    photonix.circuit.Netlist
+        Ready to hand to :func:`photonix.circuit.circuit_from_netlist`.
 
     Examples
     --------
@@ -33,8 +33,10 @@ def extract_netlist(top: Cell, *, tol: float = 1e-3):
     >>> _ = top.add_ref(components.straight(10.0), origin=(0, 0), name="a")
     >>> _ = top.add_ref(components.straight(10.0), origin=(10, 0), name="b")
     >>> nl = extract_netlist(top)
-    >>> ("a" in getattr(nl, "instances", nl["instances"]))
+    >>> "a" in nl.instances
     True
+    >>> nl.connections                      # the two straights abut
+    {('a', 'o2'): ('b', 'o1')}
     """
     # Collect each reference's transformed ports.
     inst_ports: dict[str, dict[str, np.ndarray]] = {}
@@ -74,9 +76,9 @@ def extract_netlist(top: Cell, *, tol: float = 1e-3):
         if idx not in used:
             ports[f"{inst}_{pn}"] = (inst, pn)
 
-    try:
-        from photonix.circuit import Netlist
+    # Imported lazily (not at module scope) only to keep the layout -> circuit
+    # dependency one-directional; photonix.circuit is pure-Python core and is
+    # always importable, so there is no fallback path to take here.
+    from photonix.circuit import Netlist
 
-        return Netlist(instances=instances, connections=connections, ports=ports, name=top.name)
-    except Exception:  # noqa: BLE001
-        return {"instances": instances, "connections": connections, "ports": ports}
+    return Netlist(instances=instances, connections=connections, ports=ports, name=top.name)

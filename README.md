@@ -44,13 +44,23 @@ wl = px.linspace(1.50, 1.60, 501)          # wavelength sweep [µm]
 # Build a Mach–Zehnder interferometer and simulate it differentiably
 mzi = px.circuit.mzi(delta_length=20.0)     # µm path imbalance
 S = mzi(wl=wl)
-T = px.power(S[("in0", "out0")])            # transmission spectrum
+T = px.power(S[("o1", "o4")])               # bar transmission spectrum
 
 # Gradient of mean transmission w.r.t. the path imbalance — for free
-import photonix as px
 def fom(dl):
-    return px.power(px.circuit.mzi(delta_length=dl)(wl=wl)[("in0", "out0")]).mean()
+    return px.power(px.circuit.mzi(delta_length=dl)(wl=wl)[("o1", "o4")]).mean()
 g = px.grad(fom)(20.0)
+```
+
+Cross-section physics, and the layout → simulation loop:
+
+```python
+import photonix.em as em
+
+em.n_eff_fullvector(wl=1.55, width=0.5, thickness=0.22)   # ≈2.45, SOI TE0
+
+nl = px.layout.extract_netlist(top_cell)   # coincident ports → connections
+S  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # models default to px.components.MODELS
 ```
 
 ## Package layout
@@ -58,14 +68,18 @@ g = px.grad(fom)(20.0)
 | Subpackage | Purpose |
 |---|---|
 | `photonix.core` | Backend, units, constants, the `SDict` type system, S-param utils |
-| `photonix.em` | Rigorous EM solvers: scalar/semivector/full-vector FDE, FDFD, EME, bend loss, plus an optional MEEP/MPB **FDTD backend** (`photonix.em.meep`) |
+| `photonix.em` | All EM physics: scalar/semivector/full-vector FDE, slab, EIM, FDFD, EME, bend loss, cross-section geometry, dispersive materials, plus an optional MEEP/MPB **FDTD backend** (`photonix.em.meep`) |
 | `photonix.components` | Differentiable, parametric component models (waveguides, couplers, MZIs, rings, gratings) |
 | `photonix.circuit` | Netlist + differentiable S-parameter circuit solver |
-| `photonix.modes` | Vectorial cross-section eigenmode solver (n_eff, n_g, profiles) |
+| `photonix.modes` | Compatibility facade re-exporting `photonix.em`'s scalar solver, geometry and materials — *deprecated*, prefer `photonix.em` |
 | `photonix.layout` | Cells, routing, GDSII export, netlist extraction |
 | `photonix.pdk` | PDK-agnostic interface + an open example PDK |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |
+
+**Port naming.** Optical ports are `o1, o2, ... oN` everywhere. The legacy
+semantic names (`in0`/`out0`, `i1`/`t1`/`d2`) still work as lookup aliases; see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#port-naming).
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, and
 [`BUILD_SPEC.md`](BUILD_SPEC.md) for the developer contract.

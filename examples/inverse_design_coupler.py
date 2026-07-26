@@ -5,7 +5,7 @@ find the coupling that yields a target cross-port power. Demonstrates the
 differentiable-design workflow that sets photonix apart.
 
 Run:  python examples/inverse_design_coupler.py
-Saves: inverse_design_coupler.png
+Saves: examples/outputs/inverse_design_coupler.png
 """
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from _output import save
 
 import photonix as px
 import photonix.components as comp
@@ -42,8 +43,7 @@ def main() -> None:
     ax.set_title("Inverse design of a directional coupler")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    fig.savefig("inverse_design_coupler.png", dpi=130)
-    print("Saved inverse_design_coupler.png")
+    print("Saved", save(fig, "inverse_design_coupler.png"))
 
 
 if __name__ == "__main__":

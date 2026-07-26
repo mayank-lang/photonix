@@ -10,7 +10,7 @@ Quick start
 >>> wl = px.linspace(1.5, 1.6, 201)              # wavelength sweep [um]
 >>> mzi = px.circuit.mzi(delta_length=20.0)       # build an MZI circuit
 >>> S = mzi(wl=wl)                                 # differentiable S-parameters
->>> T = px.power(S[("in0", "out0")])               # transmission spectrum
+>>> T = px.power(S[("o1", "o4")])                  # bar transmission spectrum
 
 Design principles
 -----------------
@@ -66,14 +66,43 @@ __all__ = [
     "linspace", "asarray", "array", "WL_C_BAND", "WL_DEFAULT",
 ]
 
-# --- Optional subpackages (filled in by feature modules) -------------------- #
-# Each is imported defensively so that a partially-installed / in-development
-# tree still imports cleanly. As modules land, their names become available.
-for _name in ("components", "circuit", "modes", "layout", "pdk", "viz", "optim", "em"):
-    try:  # pragma: no cover - availability depends on what is installed
-        _mod = __import__(f"photonix.{_name}", fromlist=[_name])
-        globals()[_name] = _mod
+# --- Subpackages ------------------------------------------------------------ #
+# `viz` and `layout` genuinely depend on optional third-party packages
+# (matplotlib, gdstk), so a missing *dependency* degrades gracefully. Everything
+# else is pure photonix + numpy/scipy and must import, or something is broken.
+#
+# This used to be a blanket `except Exception: pass` over every subpackage, which
+# meant a typo or a real bug anywhere in the tree made the subpackage silently
+# vanish from `photonix.*` -- surfacing much later as a confusing AttributeError
+# instead of the actual traceback. Failures are now scoped and never silent.
+from . import circuit, components, em, modes, optim, pdk  # noqa: E402
+
+__all__ += ["components", "circuit", "modes", "em", "pdk", "optim"]
+
+#: Subpackages that could not be imported, mapped to the reason why.
+#: Empty on a complete install; inspect it if an optional feature is missing.
+UNAVAILABLE: dict[str, str] = {}
+
+for _name, _extra in (("layout", "layout"), ("viz", "viz")):
+    try:
+        globals()[_name] = __import__(f"photonix.{_name}", fromlist=[_name])
         __all__.append(_name)
-    except Exception:  # noqa: BLE001
-        pass
-del _name
+    except ImportError as _exc:  # pragma: no cover - depends on what is installed
+        # Only a *missing optional dependency* is tolerated. Record it rather
+        # than discarding it, and keep the original message.
+        UNAVAILABLE[_name] = (
+            f"{_exc}. Install the optional dependency with: pip install 'photonix[{_extra}]'"
+        )
+del _name, _extra
+
+__all__.append("UNAVAILABLE")
+
+
+def __dir__() -> list[str]:
+    """Restrict tab-completion / ``dir()`` to the documented public API.
+
+    Without this, ``annotations`` (bound as a side effect of
+    ``from __future__ import annotations``) and the private module machinery
+    show up alongside the real API.
+    """
+    return sorted(__all__)

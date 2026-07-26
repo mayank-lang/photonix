@@ -33,6 +33,64 @@ PortPair = tuple[PortName, PortName]
 SDict = dict[PortPair, Complex]
 """Sparse scattering dictionary: ``(in_port, out_port) -> complex coefficient``."""
 
+
+class AliasedSDict(dict):
+    """An :data:`SDict` that also accepts *legacy* port names on lookup.
+
+    photonix names optical ports ``o1, o2, ... oN`` everywhere (see
+    ``BUILD_SPEC.md``). A few early models used semantic names instead
+    (``in0``/``out0`` on the MZI, ``i1``/``t1``/``d2`` on the add-drop ring).
+    Those names are kept working as **read-only aliases**: the mapping still
+    *stores* only canonical keys, so :func:`ports_of`, the circuit solver and
+    every passivity/reciprocity check see one port per physical terminal, but
+    ``s[("in0", "out0")]`` resolves to ``s[("o1", "o2")]``.
+
+    Storing the legacy pairs as real entries instead would double-count
+    terminals and silently corrupt any circuit built from the model, which is
+    why lookup-time resolution is used.
+
+    Examples
+    --------
+    >>> s = AliasedSDict({("o1", "o2"): 1.0}, aliases={"in0": "o1", "out0": "o2"})
+    >>> sorted(s)                      # canonical keys only
+    [('o1', 'o2')]
+    >>> s[("in0", "out0")]             # legacy lookup still works
+    1.0
+    >>> ("in0", "out0") in s
+    True
+    """
+
+    __slots__ = ("aliases",)
+
+    def __init__(self, mapping=(), *, aliases: Mapping[str, str] | None = None):
+        super().__init__(mapping)
+        #: legacy port name -> canonical port name
+        self.aliases: dict[str, str] = dict(aliases or {})
+
+    def _canonical(self, key):
+        if not (isinstance(key, tuple) and len(key) == 2):
+            return key
+        a, b = key
+        return (self.aliases.get(a, a), self.aliases.get(b, b))
+
+    def __missing__(self, key):
+        canon = self._canonical(key)
+        if canon != key and dict.__contains__(self, canon):
+            return dict.__getitem__(self, canon)
+        raise KeyError(key)
+
+    def __contains__(self, key):
+        return dict.__contains__(self, key) or dict.__contains__(self, self._canonical(key))
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def copy(self) -> AliasedSDict:
+        return AliasedSDict(self, aliases=self.aliases)
+
 PortMap = dict[PortName, int]
 """Maps a port name to its row/column index in a dense S-matrix."""
 
@@ -109,7 +167,7 @@ def ports_of(x: SType) -> list[PortName]:
 
 __all__ = [
     "Float", "Complex", "Array", "PortName", "PortPair",
-    "SDict", "PortMap", "SDense", "SCoo", "SType", "Settings",
+    "SDict", "AliasedSDict", "PortMap", "SDense", "SCoo", "SType", "Settings",
     "Model", "ModelFactory",
     "is_sdict", "is_sdense", "is_scoo", "ports_of",
 ]

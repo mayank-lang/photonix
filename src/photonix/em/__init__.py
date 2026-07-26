@@ -11,6 +11,10 @@ Delivered:
 * EME<->FDFD cross-solver benchmark (TE and TM) agreeing to ~1%;
 * TM (Hz) FDFD solver, independently validating the vectorial TM EME;
 * EIM 2-D channel-mode estimator (exact in the slab limit, few-% on strips);
+* cross-section geometry with subpixel permittivity averaging, and Sellmeier
+  dispersive material models (:mod:`photonix.em.geometry`,
+  :mod:`photonix.em.materials`) -- these are the canonical implementations;
+  :mod:`photonix.modes` is a thin compatibility facade over them;
 * an optional Meep/MPB backend (:mod:`photonix.em.meep`) to which all FDTD needs
   are delegated -- MPB cross-section modes and 2-D Meep FDTD S-parameters, both in
   native photonix types (``VectorModeData`` / ``SDict``). It is **not** imported
@@ -32,6 +36,7 @@ from . import (
     fdfd,
     geometry,
     inverse,
+    materials,
     operators,
     slab,
     spectrum,
@@ -50,6 +55,8 @@ from .fde_vector import (
     solve_modes_fullvector,
     solve_modes_vector,
 )
+from .geometry import CrossSection, rectangular_waveguide
+from .materials import Material, silica, silicon, silicon_nitride
 from .slab import slab_neff, slab_neff_analytic
 from .spectrum import sweep
 
@@ -67,9 +74,16 @@ __all__ = [
     # `from photonix.em import *` raise ImportError on Meep-less installs.
     "fabrication",
     "components",
+    "materials",
     "spectrum",
     "inverse",
     "sweep",
+    "CrossSection",
+    "rectangular_waveguide",
+    "Material",
+    "silicon",
+    "silica",
+    "silicon_nitride",
     "ModeData",
     "solve_modes",
     "n_eff",

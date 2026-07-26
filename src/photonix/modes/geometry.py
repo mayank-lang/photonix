@@ -1,83 +1,27 @@
-"""Build 2-D waveguide cross-sections (permittivity grids)."""
+"""Waveguide cross-section geometry (compatibility re-export).
+
+.. deprecated:: 0.2
+   The canonical implementation now lives in :mod:`photonix.em.geometry`. This
+   module re-exports it unchanged so ``from photonix.modes import CrossSection,
+   rectangular_waveguide`` keeps working.
+
+Historically this module built the permittivity grid by *staircasing* the core
+boundary onto the grid. :mod:`photonix.em.geometry` instead uses **subpixel
+permittivity averaging**, which restores the O(h^2) convergence the solver
+assumes; the staircased version biased ``n_eff`` high by ~1% on an SOI strip.
+Keeping two grid builders meant :func:`photonix.modes.n_eff` and
+:func:`photonix.em.n_eff` returned different numbers under the same name, so the
+old one was retired rather than kept as a silent second answer.
+
+Examples
+--------
+>>> from photonix.modes import rectangular_waveguide
+>>> cs = rectangular_waveguide(width=0.5, thickness=0.22, resolution=30)
+>>> bool(cs.eps.max() > cs.eps.min())
+True
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-import numpy as np
+from photonix.em.geometry import CrossSection, rectangular_waveguide
 
 __all__ = ["CrossSection", "rectangular_waveguide"]
-
-
-@dataclass
-class CrossSection:
-    """A discretized waveguide cross-section.
-
-    Attributes
-    ----------
-    eps : ndarray
-        Relative permittivity (n^2) on the grid, shape ``(ny, nx)``.
-    x, y : ndarray
-        1-D coordinate arrays (µm).
-    """
-
-    eps: np.ndarray
-    x: np.ndarray
-    y: np.ndarray
-
-    @property
-    def n(self) -> np.ndarray:
-        """Refractive index grid (sqrt of permittivity)."""
-        return np.sqrt(self.eps)
-
-    @property
-    def dx(self) -> float:
-        return float(self.x[1] - self.x[0])
-
-    @property
-    def dy(self) -> float:
-        return float(self.y[1] - self.y[0])
-
-
-def rectangular_waveguide(
-    *,
-    width: float = 0.5,
-    thickness: float = 0.22,
-    n_core: float = 3.4757,
-    n_clad: float = 1.444,
-    margin: float = 1.5,
-    resolution: int = 40,
-) -> CrossSection:
-    """Rectangular core embedded in uniform cladding.
-
-    Parameters
-    ----------
-    width, thickness
-        Core dimensions in µm (x = width, y = thickness).
-    n_core, n_clad
-        Core and cladding refractive indices.
-    margin
-        Cladding margin added on every side (µm).
-    resolution
-        Grid points per µm.
-
-    Returns
-    -------
-    CrossSection
-
-    Examples
-    --------
-    >>> cs = rectangular_waveguide(width=0.5, thickness=0.22, resolution=30)
-    >>> cs.eps.max() > cs.eps.min()
-    True
-    """
-    wx = width + 2 * margin
-    wy = thickness + 2 * margin
-    nx = max(int(round(wx * resolution)), 8)
-    ny = max(int(round(wy * resolution)), 8)
-    x = np.linspace(-wx / 2, wx / 2, nx)
-    y = np.linspace(-wy / 2, wy / 2, ny)
-    eps = np.full((ny, nx), n_clad**2, dtype=float)
-    X, Y = np.meshgrid(x, y)
-    core = (np.abs(X) <= width / 2) & (np.abs(Y) <= thickness / 2)
-    eps[core] = n_core**2
-    return CrossSection(eps=eps, x=x, y=y)

@@ -28,7 +28,7 @@ WL_DEFAULT: float = WL_C_BAND
 
 # Common material refractive indices at 1.55 um (nondispersive defaults) ------ #
 # These are *defaults* for convenience; dispersive models live in
-# photonix.modes.materials.
+# photonix.em.materials.
 N_SI: float = 3.4757               # crystalline silicon @1.55um
 N_SIO2: float = 1.444             # silicon dioxide (cladding) @1.55um
 N_SIN: float = 1.9963             # stoichiometric silicon nitride @1.55um

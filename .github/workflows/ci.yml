@@ -27,10 +27,27 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint (ruff)
-        run: ruff check src tests
+        run: ruff check src tests benchmarks examples
 
       - name: Test (pytest)
         run: pytest tests -q
+
+      # Docstring examples are part of the public API contract. They were not
+      # executed before, and five of them had silently rotted.
+      - name: Doctests
+        run: pytest --doctest-modules src/photonix -q --ignore=src/photonix/em/meep
+
+      # The examples are the package's front door; a broken one is a broken
+      # release. Run them headless and fail on any traceback.
+      - name: Examples
+        env:
+          MPLBACKEND: Agg
+        run: |
+          for f in examples/*.py; do
+            case "$(basename "$f")" in _*) continue;; esac
+            echo "--- $f"
+            python "$f"
+          done
 
       - name: Benchmark smoke (photonix-only, no external solvers)
         run: python benchmarks/run.py

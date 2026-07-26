@@ -15,8 +15,9 @@ photonix enables 64-bit precision automatically and uses JAX if present
 ## 2. Simulate a circuit
 
 Every component is a function returning a scattering dictionary
-(`SDict`): `{(in_port, out_port): complex_amplitude}`. Circuits are built by
-connecting ports and solved differentiably.
+(`SDict`): `{(in_port, out_port): complex_amplitude}`. Ports are named
+`o1, o2, ... oN` throughout photonix. Circuits are built by connecting ports and
+solved differentiably.
 
 ```python
 import photonix as px
@@ -24,8 +25,12 @@ import photonix as px
 wl = px.linspace(1.50, 1.60, 1001)        # µm
 mzi = px.circuit.mzi(delta_length=40.0)    # two couplers + two arms
 s = mzi(wl=wl)
-T_bar = px.power(s[("in0", "out0")])       # |S|^2 transmission
+T_bar = px.power(s[("o1", "o4")])          # |S|^2 bar transmission
+T_cross = px.power(s[("o1", "o3")])        # cross output
 ```
+
+The MZI follows the 2×2 coupler convention: `o1`/`o2` in, `o3`/`o4` out, bar
+path `o1 → o4`. The older names (`in0`, `out0`, ...) still resolve as aliases.
 
 The solver eliminates internal ports with a single linear solve, so it handles
 feedback loops (ring resonators) exactly and stays differentiable and
@@ -35,23 +40,34 @@ feedback loops (ring resonators) exactly and stays differentiable and
 
 ```python
 import matplotlib; matplotlib.use("Agg")
-ax = px.viz.plot_spectrum(s, wl, [("in0", "out0"), ("in0", "out1")])
+ax = px.viz.plot_spectrum(s, wl, [("o1", "o4"), ("o1", "o3")])
 ax.figure.savefig("mzi.png")
 ```
 
 ## 4. Solve a waveguide mode
 
+All solvers live in `photonix.em`. (`photonix.modes` still works, but it is now
+just a compatibility facade over the same functions.)
+
 ```python
-import photonix.modes as modes
-r = modes.solve_modes(wl=1.55, width=0.5, thickness=0.22, resolution=50)
-print(r.neff0)                              # fundamental effective index
-ng = modes.group_index(wl=1.55, width=0.5, thickness=0.22)
+import photonix.em as em
+r = em.solve_modes(wl=1.55, width=0.5, thickness=0.22, resolution=50)
+print(r.neff0)                              # scalar effective index
+ng = em.group_index(wl=1.55, width=0.5, thickness=0.22, resolution=25)
+```
+
+`solve_modes` is the **scalar** solver: fast, and exact in the low-contrast
+limit, but it overestimates the index of a high-contrast SOI strip. For the
+physical quasi-TE value use the full-vector solver:
+
+```python
+em.n_eff_fullvector(wl=1.55, width=0.5, thickness=0.22)   # ≈2.45 vs scalar ≈2.61
 ```
 
 You can feed a real mode solve straight into a waveguide model:
 
 ```python
-neff_fn = lambda wl: modes.n_eff(wl=float(wl), width=0.5, thickness=0.22)
+neff_fn = lambda wl: em.n_eff(wl=float(wl), width=0.5, thickness=0.22)
 wg = px.components.straight(wl=1.55, length=100.0, neff=neff_fn)
 ```
 
@@ -83,6 +99,11 @@ top.add_ref(lc.straight(10.0), origin=(0, 0), name="a")
 top.add_ref(lc.straight(10.0), origin=(10, 0), name="b")
 lay.write_gds(top, "demo.gds")
 nl = lay.extract_netlist(top)               # -> a circuit.Netlist you can simulate
+s  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # models default to components.MODELS
 ```
+
+Extraction connects reference ports whose centres coincide, and names the
+remaining (unconnected) ports `"{instance}_{port}"` — so above, the composite
+runs from `"a_o1"` to `"b_o2"`.
 
 See the `examples/` directory for runnable scripts.

@@ -75,8 +75,14 @@ def my_component(*, wl=1.55, **params) -> SDict: ...
 
 **Conventions**
 * Lengths and wavelengths are in **micrometers (µm)** unless documented otherwise.
-* Port naming: optical ports `o1, o2, ...` OR semantic `in0, out0, ...`. Be
-  consistent within a component and document the ports in the docstring.
+* Port naming: optical ports are **always** `o1, o2, ... oN`, in every component,
+  circuit builder and layout cell, and are documented in the docstring. This is
+  what lets a layout cell's ports match its model's ports during netlist
+  extraction. Allowing a second "semantic" convention (`in0`, `out0`, ...) is what
+  produced the inconsistency that had to be unwound in 0.2 — do not reintroduce
+  it. Legacy names survive only as read-only aliases via
+  `core.types.AliasedSDict`; never store an alias as an extra `SDict` entry,
+  since that double-counts the terminal and corrupts any circuit using the model.
 * Reciprocal passive components: include both `(a,b)` and `(b,a)`. Use
   `reciprocal()` to symmetrize.
 * Use `units.db_per_cm_to_alpha_um`, `units.wl_to_freq`, etc. for conversions and
@@ -92,7 +98,9 @@ def my_component(*, wl=1.55, **params) -> SDict: ...
   eliminating internal ports. Implement the linear interconnection algorithm
   (Gaussian elimination / partial-trace on the dense form is acceptable and is
   fully differentiable). Must be `jit`/`grad` compatible and handle wavelength
-  batch dims. Provide `circuit_from_netlist(netlist, models) -> Model`.
+  batch dims. Provide `circuit_from_netlist(netlist, models=None) -> Model`,
+  where `models` defaults to `components.MODELS` so an extracted layout netlist
+  simulates with no extra wiring.
 - Convenience builders that other code expects: `mzi(...)`, `ring(...)` returning
   ready circuit models (these compose `components` if available, else accept
   models as args — keep a soft dependency: import components lazily).

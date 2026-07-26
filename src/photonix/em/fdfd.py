@@ -203,7 +203,16 @@ def waveguide_mode(eps_col, dy, wl, mode=0, polarization="te"):
     from .eme import slab_modes
 
     betas, fields, _ = slab_modes(np.asarray(eps_col, float), dy, wl, mode + 1, polarization)
-    return float(betas[mode]), fields[:, mode]
+    # slab_modes returns complex betas (evanescent and leaky modes need the
+    # imaginary part). FDFD port modes are guided, so the imaginary part is zero
+    # here -- take it explicitly rather than letting float() discard it silently.
+    beta = complex(betas[mode])
+    if abs(beta.imag) > 1e-9 * max(abs(beta), 1.0):
+        raise ValueError(
+            f"Mode {mode} of this port cross-section is not guided "
+            f"(beta = {beta:.6g}); FDFD port de-embedding needs a propagating mode."
+        )
+    return float(beta.real), np.real(fields[:, mode])
 
 
 def mode_source(ny, nx, col, profile, beta, dx, direction=1):

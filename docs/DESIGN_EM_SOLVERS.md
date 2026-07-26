@@ -42,9 +42,14 @@ core is the prerequisite for all of them.
 
 ## 2. Architecture
 
-New subpackage `photonix.em`, layered on `photonix.core`. The existing scalar
-solver in `photonix.modes` is kept as a fast approximation and re-homed as a
-special case; FDE becomes the rigorous default.
+New subpackage `photonix.em`, layered on `photonix.core`. The scalar solver is
+kept as a fast approximation and re-homed here as a special case; FDE is the
+rigorous default.
+
+> **Status (0.2):** this re-homing is complete. `photonix.em` owns the solvers,
+> the cross-section geometry and the material models. `photonix.modes` is now a
+> thin facade re-exporting them, not a second implementation — see
+> `docs/ARCHITECTURE.md`.
 
 ```
 src/photonix/em/
@@ -103,8 +108,8 @@ loss) computable.
 
 ### 3.3 Materials
 - Non-dispersive: scalar or diagonal/anisotropic ε tensor.
-- Dispersive (FDFD per-frequency): ε(ω) from Sellmeier (reuse
-  `photonix.modes.materials`) or tabulated n,k.
+- Dispersive (FDFD per-frequency): ε(ω) from Sellmeier
+  (`photonix.em.materials`) or tabulated n,k.
 - Dispersive (FDTD): pole models — Drude, (multi-)Lorentz, Debye — fitted to n,k
   and integrated with the auxiliary-differential-equation (ADE) update.
 - All material parameters are differentiable inputs (enables material/spatial
@@ -398,9 +403,11 @@ broadband varFDTD run in seconds-to-minutes on a GPU.
   "eme" | "varfdtd"`. Analytic stays the default; rigorous solvers are opt-in and
   cached. A solved component can be **fit** to a compact model for fast reuse
   (model extraction).
-- `photonix.modes`: the scalar solver is retained as `method="scalar"`; FDE is the
-  new rigorous default. Same `n_eff`/`group_index` interface, so callers don't
-  change.
+- `photonix.modes`: **done** — the scalar solver moved to `photonix.em.fde` and
+  this subpackage became a re-exporting facade. The `n_eff`/`group_index`
+  interface is unchanged, so callers did not have to change; the objects are now
+  literally the same (`photonix.modes.n_eff is photonix.em.n_eff`), which is what
+  stops the two from returning different numbers under one name.
 - `photonix.circuit`: unchanged — it already consumes any `SDict`, including those
   produced by FDFD/EME/varFDTD.
 - `photonix.pdk`: components can register a rigorous solver recipe alongside the
