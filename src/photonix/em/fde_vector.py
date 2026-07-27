@@ -516,12 +516,24 @@ def n_eff_fullvector(
     n_clad: float = 1.444,
     resolution: int = 40,
     margin: float = 1.5,
+    richardson: bool = False,
 ) -> float:
-    """Fundamental full-vector effective index."""
-    return solve_modes_fullvector(
-        wl=wl, width=width, thickness=thickness, n_core=n_core, n_clad=n_clad,
-        num_modes=1, resolution=resolution, margin=margin,
-    ).neff0
+    """Fundamental full-vector effective index.
+
+    Richardson extrapolation is **off by default** (see PHYSICS_AUDIT §B2/D1).
+    All 2-D solvers (``n_eff``, ``n_eff_vector``, ``n_eff_fullvector``) now
+    share the same default.
+    """
+    def _ne(res):
+        return solve_modes_fullvector(
+            wl=wl, width=width, thickness=thickness, n_core=n_core, n_clad=n_clad,
+            num_modes=1, resolution=res, margin=margin,
+        ).neff0
+
+    if not richardson:
+        return _ne(resolution)
+    n_c, n_f = _ne(resolution), _ne(2 * resolution)
+    return (4.0 * n_f - n_c) / 3.0
 
 
 if HAS_JAX:

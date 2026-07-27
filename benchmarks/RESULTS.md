@@ -8,4 +8,4 @@
 | width_step_te_T | |T00|^2 | 0.9932 | 0.9927 | 0.0005 | PASS | internal FDFD full-wave cross-check (photonix waveguide_sparams) |
 | width_step_tm_T | |T00|^2 | 0.9990 | 0.9967 | 0.0023 | PASS | internal TM FDFD full-wave cross-check |
 
-**4/4 cases within tolerance** (5 total).
+**2/2 external references within tolerance**, 2/2 internal FDFD cross-checks pass, 1 case has no reference (5 total).

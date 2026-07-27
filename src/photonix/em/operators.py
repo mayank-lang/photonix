@@ -8,9 +8,9 @@ deal in plain NumPy/SciPy.
 Grid convention: ``eps`` has shape ``(ny, nx)``, raster-ordered row-major (y
 outer, x inner) when flattened, matching ``numpy.reshape``.
 
-The full-vectorial / semivectorial polarization-resolved operators are the next
-EM increment (see ``docs/DESIGN_EM_SOLVERS.md``); only the validated scalar
-operator ships here.
+The full-vectorial and semivectorial polarization-resolved operators are in
+:mod:`photonix.em.fde_vector`; this module provides the scalar Helmholtz
+operator used by :mod:`photonix.em.fde`.
 """
 from __future__ import annotations
 

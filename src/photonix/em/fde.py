@@ -133,12 +133,23 @@ def slab_neff(
     subpixel averaging and optional Richardson extrapolation. Matches the
     closed-form slab solution to <0.1% -- the rigorous accuracy anchor.
 
+    Raises
+    ------
+    ValueError
+        If ``n_core <= n_clad`` (no guided mode can exist) or if the computed
+        effective index falls outside ``(n_clad, n_core)`` (see PHYSICS_AUDIT §A3).
+
     Examples
     --------
     >>> ne = slab_neff(thickness=0.22, resolution=40)
     >>> 1.444 < ne < 3.4757
     True
     """
+    if n_core <= n_clad:
+        raise ValueError(
+            f"n_core ({n_core}) must be greater than n_clad ({n_clad}) for a "
+            f"guided mode to exist."
+        )
     import scipy.sparse as sp
 
     from .geometry import slab_profile
@@ -156,9 +167,17 @@ def slab_neff(
         return float(np.sqrt(val[0]) / k0)
 
     if not richardson:
-        return _ne(resolution)
-    n_c, n_f = _ne(resolution), _ne(2 * resolution)
-    return (4.0 * n_f - n_c) / 3.0
+        result = _ne(resolution)
+    else:
+        n_c, n_f = _ne(resolution), _ne(2 * resolution)
+        result = (4.0 * n_f - n_c) / 3.0
+    if not (n_clad < result < n_core):
+        raise ValueError(
+            f"Computed n_eff ({result:.6f}) is outside the physical range "
+            f"({n_clad} < n_eff < {n_core}). No guided mode exists for the "
+            f"given parameters (thickness={thickness}, wl={wl})."
+        )
+    return result
 
 
 def n_eff(
@@ -170,9 +189,16 @@ def n_eff(
     n_clad: float = 1.444,
     resolution: int = 40,
     margin: float = 1.5,
-    richardson: bool = True,
+    richardson: bool = False,
 ) -> float:
-    """Fundamental-mode effective index (Richardson-extrapolated by default)."""
+    """Fundamental-mode effective index.
+
+    Richardson extrapolation is **off by default** for the 2-D solver because
+    the rectangular core's corner field singularity caps the achievable order
+    below the assumed p = 2, making the extrapolation counter-productive at
+    typical resolutions (see PHYSICS_AUDIT §B2). Pass ``richardson=True``
+    explicitly if you have verified convergence for your geometry.
+    """
     def _ne(res):
         return solve_modes(
             wl=wl, width=width, thickness=thickness, n_core=n_core, n_clad=n_clad,

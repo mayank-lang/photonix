@@ -145,16 +145,50 @@ class Netlist:
             self.settings[name] = {**self.settings.get(name, {}), **settings}
         return self
 
+    def _all_connected_terminals(self) -> set[InstancePort]:
+        """Return every terminal that participates in a connection."""
+        s: set[InstancePort] = set()
+        for a, b in self.connections.items():
+            s.add(a)
+            s.add(b)
+        return s
+
     def connect(self, a: InstancePort, b: InstancePort) -> Netlist:
-        """Connect internal port ``a`` to internal port ``b``."""
+        """Connect internal port ``a`` to internal port ``b``.
+
+        Raises immediately if either terminal is already connected or exposed.
+        """
         a = _as_instance_port(a)
         b = _as_instance_port(b)
+        used = self._all_connected_terminals()
+        for terminal in (a, b):
+            if terminal in used:
+                raise ValueError(
+                    f"Terminal {terminal!r} is already in a connection. "
+                    f"Each terminal may be connected at most once."
+                )
+            exposed_ips = set(self.ports.values())
+            if terminal in exposed_ips:
+                raise ValueError(
+                    f"Terminal {terminal!r} is already exposed as an external "
+                    f"port. A terminal cannot be both connected and exposed."
+                )
         self.connections[a] = b
         return self
 
     def expose(self, external: PortName, internal: InstancePort) -> Netlist:
-        """Expose ``internal`` ``(instance, port)`` as circuit port ``external``."""
-        self.ports[str(external)] = _as_instance_port(internal)
+        """Expose ``internal`` ``(instance, port)`` as circuit port ``external``.
+
+        Raises immediately if the terminal is already in a connection.
+        """
+        ip = _as_instance_port(internal)
+        used = self._all_connected_terminals()
+        if ip in used:
+            raise ValueError(
+                f"Terminal {ip!r} is already in an internal connection. "
+                f"A terminal cannot be both connected and exposed."
+            )
+        self.ports[str(external)] = ip
         return self
 
     def set(self, instance: str, **settings: Any) -> Netlist:
@@ -183,7 +217,16 @@ class Netlist:
         return out
 
     def validate(self) -> None:
-        """Raise ``ValueError`` if the netlist references unknown instances."""
+        """Raise ``ValueError`` if the netlist is structurally invalid.
+
+        Checks performed:
+
+        1. All instance names referenced in connections/ports exist.
+        2. No terminal appears in more than one connection (would create
+           energy — see PHYSICS_AUDIT §A4).
+        3. No terminal is both internally connected and externally exposed
+           (the solver would silently drive it from two sources).
+        """
         known = set(self.instances)
         for a, b in self.connections.items():
             for inst, _ in (a, b):
@@ -195,6 +238,28 @@ class Netlist:
             if inst not in known:
                 raise ValueError(
                     f"External port {ext!r} references unknown instance {inst!r}."
+                )
+
+        # A4 — no terminal may appear in more than one connection.
+        seen: dict[InstancePort, int] = {}
+        for idx, (a, b) in enumerate(self.connections.items()):
+            for terminal in (a, b):
+                if terminal in seen:
+                    raise ValueError(
+                        f"Terminal {terminal!r} appears in multiple connections "
+                        f"(connection {seen[terminal]} and {idx}). Each terminal "
+                        f"may be connected at most once."
+                    )
+                seen[terminal] = idx
+
+        # A4 — an exposed port must not also be internally connected.
+        connected = set(seen)
+        for ext, ip in self.ports.items():
+            if ip in connected:
+                raise ValueError(
+                    f"External port {ext!r} maps to {ip!r}, which is also "
+                    f"in an internal connection. A terminal cannot be both "
+                    f"connected and exposed."
                 )
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic

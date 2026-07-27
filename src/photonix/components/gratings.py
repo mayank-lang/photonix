@@ -49,6 +49,7 @@ def phase_shifter(
     *,
     wl=1.55,
     length: float = 100.0,
+    neff: float = 0.0,
     dn_dv: float = 0.0,
     voltage: float = 0.0,
     phase0: float = 0.0,
@@ -56,8 +57,17 @@ def phase_shifter(
 ) -> SDict:
     """Tunable phase shifter (e.g. thermo-optic or carrier-based).
 
-    Applies ``phi = phase0 + 2*pi/wl * (dn_dv * voltage) * length`` plus optional
-    propagation loss. Ports ``o1``/``o2``.
+    Applies ``phi = phase0 + 2*pi/wl * (neff + dn_dv * voltage) * length``
+    plus optional propagation loss. Ports ``o1``/``o2``.
+
+    Parameters
+    ----------
+    neff : float
+        Base effective index of the waveguide section. When non-zero, the
+        element accumulates the full propagation phase ``beta * L`` so it
+        is interchangeable with a ``straight`` of the same length in an MZI
+        arm (see PHYSICS_AUDIT §C4). Default ``0.0`` preserves backward
+        compatibility for pure phase-delta applications.
 
     Examples
     --------
@@ -70,7 +80,7 @@ def phase_shifter(
     from photonix.core.units import db_per_cm_to_alpha_um
 
     dn = dn_dv * voltage
-    phi = phase0 + 2.0 * xp.pi / wl * dn * length
+    phi = phase0 + 2.0 * xp.pi / wl * (neff + dn) * length
     alpha = db_per_cm_to_alpha_um(loss_db_cm)
     t = (xp.exp(-alpha * length) * xp.exp(-1j * phi)).astype(complex)
     return {("o1", "o2"): t, ("o2", "o1"): t}

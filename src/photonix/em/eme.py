@@ -428,14 +428,23 @@ class EMEResult:
     betas_out: np.ndarray
 
     def sdict(self, n_in: int = 1, n_out: int = 1) -> SDict:
-        """Scattering dict over the first ``n_in``/``n_out`` modes."""
+        """Scattering dict over the first ``n_in``/``n_out`` modes.
+
+        Port convention: input modes are ``o1 … o{n_in}``, output modes are
+        ``o{n_in+1} … o{n_in+n_out}``, following the project-wide ``oN``
+        convention. The output-side reflection block ``Rb`` is now included
+        (see PHYSICS_AUDIT §D2).
+        """
         out: SDict = {}
         for i in range(n_in):
             for j in range(n_out):
-                out[(f"in{i}", f"out{j}")] = complex(self.Tf[j, i])
-                out[(f"out{j}", f"in{i}")] = complex(self.Tb[i, j])
+                out[(f"o{i+1}", f"o{n_in+j+1}")] = complex(self.Tf[j, i])
+                out[(f"o{n_in+j+1}", f"o{i+1}")] = complex(self.Tb[i, j])
             for k in range(n_in):
-                out[(f"in{i}", f"in{k}")] = complex(self.Rf[k, i])
+                out[(f"o{i+1}", f"o{k+1}")] = complex(self.Rf[k, i])
+        for j in range(n_out):
+            for k in range(n_out):
+                out[(f"o{n_in+j+1}", f"o{n_in+k+1}")] = complex(self.Rb[k, j])
         return out
 
 

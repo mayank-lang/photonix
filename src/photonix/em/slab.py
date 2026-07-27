@@ -108,6 +108,14 @@ def slab_neff(
 
     Matches :func:`slab_neff_analytic` to <0.1% (Richardson, ``resolution>=30``).
 
+    Raises
+    ------
+    ValueError
+        If ``n_core <= n_clad`` (no guided mode can exist) or if the returned
+        effective index is outside the physical range ``n_clad < n_eff < n_core``
+        (indicating the eigensolver returned a box/cladding mode instead of a
+        guided mode — see PHYSICS_AUDIT §A3).
+
     Examples
     --------
     >>> import photonix.em as em
@@ -116,13 +124,37 @@ def slab_neff(
     >>> te > tm > 1.444   # TE is more confined than TM
     True
     """
+    if n_core <= n_clad:
+        raise ValueError(
+            f"n_core ({n_core}) must be greater than n_clad ({n_clad}) for a "
+            f"guided mode to exist."
+        )
     k0 = 2 * np.pi / wl
     solver = _te_1d if polarization == "te" else _tm_1d
     if polarization not in ("te", "tm"):
         raise ValueError("polarization must be 'te' or 'tm'")
-    m = max(int(round((thickness / 2) * resolution)), 3)
+    # B3: the old clamp max(..., 3) made resolution 5..30 give identical grids
+    # for a 220 nm slab; the parameter was silently ineffective.
+    m = max(int(round((thickness / 2) * resolution)), 1)
+    if m < 3:
+        import warnings
+        warnings.warn(
+            f"slab_neff: resolution={resolution} gives only {m} cell(s) in the "
+            f"half-core (thickness={thickness} µm). Consider resolution >= "
+            f"{int(np.ceil(3 / (thickness / 2)))} for this thickness.",
+            stacklevel=2,
+        )
     if not richardson:
-        return solver(thickness, n_core, n_clad, k0, m, margin)
-    n_c = solver(thickness, n_core, n_clad, k0, m, margin)
-    n_f = solver(thickness, n_core, n_clad, k0, 2 * m, margin)
-    return (4.0 * n_f - n_c) / 3.0
+        result = solver(thickness, n_core, n_clad, k0, m, margin)
+    else:
+        n_c = solver(thickness, n_core, n_clad, k0, m, margin)
+        n_f = solver(thickness, n_core, n_clad, k0, 2 * m, margin)
+        result = (4.0 * n_f - n_c) / 3.0
+    if not (n_clad < result < n_core):
+        raise ValueError(
+            f"Computed n_eff ({result:.6f}) is outside the physical range "
+            f"({n_clad} < n_eff < {n_core}). No guided mode exists for the "
+            f"given parameters (thickness={thickness}, wl={wl}, "
+            f"polarization={polarization!r})."
+        )
+    return result

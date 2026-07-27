@@ -47,7 +47,7 @@ def test_taper_more_adiabatic_higher_transmission():
 def test_sdict_export():
     r = eme_smatrix([Section(_strip(0.5), 5.0)], DX, WL, num_modes=4)
     s = r.sdict(n_in=1, n_out=1)
-    assert ("in0", "out0") in s and abs(abs(s[("in0", "out0")]) - 1.0) < 1e-9
+    assert ("o1", "o2") in s and abs(abs(s[("o1", "o2")]) - 1.0) < 1e-9
 
 
 # --------------------------------------------------------------------------- #

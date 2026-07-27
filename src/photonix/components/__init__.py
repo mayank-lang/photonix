@@ -10,7 +10,7 @@ from .couplers import coupler, directional_coupler, mmi1x2, mmi2x2
 from .gratings import attenuator, grating_coupler, phase_shifter, terminator
 from .mzi import mzi
 from .resonators import add_drop_ring, all_pass_ring, ring_coupler
-from .waveguide import bend, neff_linear, straight
+from .waveguide import bend, bend_from_solver, neff_linear, straight
 
 #: Registry of model name -> callable, used by PDKs and the circuit solver.
 MODELS = {
@@ -31,7 +31,7 @@ MODELS = {
 }
 
 __all__ = [
-    "straight", "bend", "neff_linear",
+    "straight", "bend", "bend_from_solver", "neff_linear",
     "directional_coupler", "coupler", "mmi1x2", "mmi2x2",
     "grating_coupler", "phase_shifter", "attenuator", "terminator",
     "ring_coupler", "all_pass_ring", "add_drop_ring",
