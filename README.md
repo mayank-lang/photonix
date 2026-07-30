@@ -6,7 +6,7 @@ photonix tries to bring the photonic design stack into a single library built on
 [JAX](https://github.com/google/jax).
 
 
-> Status: **v0.1.0 (beta).** MIT-licensed. Built for researchers.
+> Status: **v0.1.0 (beta).** MIT-licensed.
 
 
 ## Install
