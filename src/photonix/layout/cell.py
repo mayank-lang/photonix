@@ -8,6 +8,7 @@ of the differentiable path.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import cast
 
 import numpy as np
 
@@ -80,10 +81,12 @@ class Cell:
 
     # -- builders ----------------------------------------------------------- #
     def add_polygon(self, points, layer: tuple[int, int] = (1, 0)) -> Cell:
-        self.polygons.append((np.asarray(points, dtype=float), tuple(layer)))
+        self.polygons.append((np.asarray(points, dtype=float), cast(tuple[int, int], tuple(layer))))
         return self
 
     def add_ref(self, cell: Cell, origin=(0.0, 0.0), rotation=0.0, mirror=False, name=None) -> Reference:
+        if name is not None and any(ref.name == name for ref in self.references):
+            raise ValueError(f"Reference name {name!r} already exists in cell {self.name!r}.")
         ref = Reference(cell, tuple(origin), float(rotation), bool(mirror), name)
         self.references.append(ref)
         return ref
@@ -115,7 +118,7 @@ class Cell:
         out = dict(self.ports)
         for i, ref in enumerate(self.references):
             tag = ref.name or f"ref{i}"
-            for pn, prt in ref.cell.ports.items():
+            for pn, prt in ref.cell.get_ports().items():
                 out[f"{tag}/{pn}"] = prt.moved(ref.origin[0], ref.origin[1], ref.rotation, ref.mirror)
         return out
 

@@ -9,7 +9,10 @@ import numpy as np
 
 from .cell import Cell
 
-__all__ = ["straight", "bend_circular", "taper", "ring", "mmi1x2", "grating_coupler"]
+__all__ = [
+    "straight", "bend_circular", "taper", "ring", "directional_coupler",
+    "mmi1x2", "grating_coupler",
+]
 
 WG = (1, 0)
 
@@ -60,6 +63,29 @@ def ring(radius: float = 10.0, width: float = 0.5, layer=WG, npts: int = 200) ->
     outer = np.stack([(radius + h) * np.cos(th), (radius + h) * np.sin(th)], axis=1)
     inner = np.stack([(radius - h) * np.cos(th), (radius - h) * np.sin(th)], axis=1)
     c.add_polygon(np.concatenate([outer, inner[::-1]], axis=0), layer)
+    return c
+
+
+def directional_coupler(
+    length: float = 10.0,
+    gap: float = 0.2,
+    width: float = 0.5,
+    layer=WG,
+) -> Cell:
+    """Schematic two-waveguide directional coupler with canonical four ports."""
+    c = Cell("directional_coupler")
+    offset = (gap + width) / 2.0
+    half_width = width / 2.0
+    for y in (offset, -offset):
+        c.add_polygon(
+            [(0, y - half_width), (length, y - half_width),
+             (length, y + half_width), (0, y + half_width)],
+            layer,
+        )
+    c.add_port("o1", (0.0, offset), 180.0, width, layer)
+    c.add_port("o2", (0.0, -offset), 180.0, width, layer)
+    c.add_port("o4", (length, offset), 0.0, width, layer)
+    c.add_port("o3", (length, -offset), 0.0, width, layer)
     return c
 
 

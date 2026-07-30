@@ -12,7 +12,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from photonix.core.types import SDict
+from photonix.core.types import PortPair, SDict
 
 __all__ = ["sweep"]
 
@@ -46,10 +46,17 @@ def sweep(model: Callable[..., SDict], wls, **kwargs) -> SDict:
     (5,)
     """
     wls = np.asarray(wls, float)
+    if wls.ndim != 1 or wls.size == 0:
+        raise ValueError("wls must be a non-empty one-dimensional wavelength array")
+    if not np.all(np.isfinite(wls)) or np.any(wls <= 0):
+        raise ValueError("wls must contain only positive finite wavelengths")
     results = [model(wl=float(w), **kwargs) for w in wls]
-    keys = set()
+    # Preserve the first-seen model order.  A set made SDict iteration (and thus
+    # plot/serialization order) depend on hash randomisation across processes.
+    keys: dict[PortPair, None] = {}
     for r in results:
-        keys.update(r.keys())
+        for key in r:
+            keys.setdefault(key, None)
     out: SDict = {}
     for k in keys:
         out[k] = np.array([complex(r.get(k, 0j)) for r in results])

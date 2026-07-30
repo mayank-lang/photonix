@@ -39,7 +39,7 @@ def test_em_is_self_sufficient():
 
 def test_all_subpackages_import_and_are_attached():
     """A subpackage must never silently vanish from the top-level namespace."""
-    for name in ("core", "components", "circuit", "modes", "em", "pdk", "optim"):
+    for name in ("core", "components", "circuit", "modes", "em", "pdk", "optim", "multiphysics"):
         assert hasattr(px, name), name
     assert px.UNAVAILABLE == {}, f"subpackages skipped: {px.UNAVAILABLE}"
 

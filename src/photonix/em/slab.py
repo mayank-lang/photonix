@@ -2,7 +2,8 @@
 
 This is the analytic-anchored accuracy core of the vectorial FDE work. It solves
 the slab waveguide to <0.1% versus the closed-form transcendental for *both*
-polarizations, using the correct interface treatment for each:
+polarizations **when the mode is well-confined** (e.g. SOI 220 nm, the default
+parameters), using the correct interface treatment for each:
 
 * **TE** (E parallel to the interfaces, continuous): scalar Helmholtz with
   arithmetic subpixel-averaged permittivity.
@@ -15,6 +16,12 @@ polarizations, using the correct interface treatment for each:
 Richardson extrapolation across two resolutions cancels the leading O(h^2) term,
 reaching <0.1% on CPU-friendly grids. These validated 1-D operators are the
 building blocks for the 2-D polarization-resolved FDE.
+
+**Margin caveat (B1)**: for weakly-confined modes (low contrast or thin cores)
+the evanescent tail may extend beyond the default ``margin``, making domain
+truncation the dominant error source. Richardson cannot help because the
+truncation error is nearly identical at both resolutions. Increase ``margin``
+until it covers >= 3 decay lengths (see PHYSICS_AUDIT §B1).
 """
 from __future__ import annotations
 
@@ -39,6 +46,17 @@ def slab_neff_analytic(*, thickness=0.22, n_core=3.4757, n_clad=1.444, wl=1.55, 
     """
     from scipy.optimize import brentq
 
+    if polarization not in ("te", "tm"):
+        raise ValueError("polarization must be 'te' or 'tm'")
+    for name, value in (
+        ("thickness", thickness), ("n_core", n_core),
+        ("n_clad", n_clad), ("wl", wl),
+    ):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be positive and finite")
+    if n_core <= n_clad:
+        raise ValueError("n_core must be greater than n_clad")
+
     k0 = 2 * np.pi / wl
     ratio = (n_core**2 / n_clad**2) if polarization == "tm" else 1.0
     V = (thickness / 2) * k0 * np.sqrt(n_core**2 - n_clad**2)
@@ -54,8 +72,7 @@ def slab_neff_analytic(*, thickness=0.22, n_core=3.4757, n_clad=1.444, wl=1.55, 
     return float(np.sqrt(n_core**2 - (2.0 * u / (thickness * k0)) ** 2))
 
 
-def _te_1d(thickness, n_core, n_clad, k0, m, margin):
-    h = (thickness / 2) / m
+def _te_1d(thickness, n_core, n_clad, k0, h, margin):
     N = int(np.ceil((thickness / 2 + margin) / h))
     y = np.arange(-N, N + 1) * h
     # arithmetic subpixel-averaged eps (tangential field)
@@ -69,14 +86,23 @@ def _te_1d(thickness, n_core, n_clad, k0, m, margin):
     return float(np.sqrt(val[0]) / k0)
 
 
-def _tm_1d(thickness, n_core, n_clad, k0, m, margin):
-    h = (thickness / 2) / m
+def _tm_1d(thickness, n_core, n_clad, k0, h, margin):
     N = int(np.ceil((thickness / 2 + margin) / h))
     y = np.arange(-N, N + 1) * h
     n = len(y)
-    # face permittivity by material at the face midpoint (sharp)
-    ymid = 0.5 * (y[:-1] + y[1:])
-    af = np.where(np.abs(ymid) < thickness / 2, n_core**2, n_clad**2)
+    # Effective 1/eps on each segment between adjacent nodes. The TM flux is
+    # constant across a cut segment, so its resistance is integral(eps dy): the
+    # face coefficient is 1 / arithmetic-average(eps), including the exact
+    # core fraction when an interface falls between grid points.
+    seg_lo, seg_hi = y[:-1], y[1:]
+    seg_overlap = np.clip(
+        np.minimum(seg_hi, thickness / 2) - np.maximum(seg_lo, -thickness / 2),
+        0.0,
+        h,
+    )
+    seg_fraction = seg_overlap / h
+    eps_segment = seg_fraction * n_core**2 + (1.0 - seg_fraction) * n_clad**2
+    af = eps_segment
     # node cell-averaged 1/eps (subpixel)
     lo, hi = y - h / 2, y + h / 2
     ov = np.clip(np.minimum(hi, thickness / 2) - np.maximum(lo, -thickness / 2), 0.0, h)
@@ -84,8 +110,10 @@ def _tm_1d(thickness, n_core, n_clad, k0, m, margin):
     inv = frac * (1.0 / n_core**2) + (1 - frac) * (1.0 / n_clad**2)
     ap = np.zeros(n)
     ap[:-1] = (1.0 / af) / h**2
+    ap[-1] = (1.0 / n_clad**2) / h**2
     am = np.zeros(n)
     am[1:] = (1.0 / af) / h**2
+    am[0] = (1.0 / n_clad**2) / h**2
     main = -(ap + am) + k0**2
     A = sp.diags([ap[:-1], main, ap[:-1]], [-1, 0, 1]).tocsr()
     B = sp.diags(inv).tocsr()
@@ -124,6 +152,12 @@ def slab_neff(
     >>> te > tm > 1.444   # TE is more confined than TM
     True
     """
+    for name, value in (
+        ("thickness", thickness), ("n_core", n_core), ("n_clad", n_clad),
+        ("wl", wl), ("resolution", resolution), ("margin", margin),
+    ):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be positive and finite")
     if n_core <= n_clad:
         raise ValueError(
             f"n_core ({n_core}) must be greater than n_clad ({n_clad}) for a "
@@ -133,22 +167,24 @@ def slab_neff(
     solver = _te_1d if polarization == "te" else _tm_1d
     if polarization not in ("te", "tm"):
         raise ValueError("polarization must be 'te' or 'tm'")
-    # B3: the old clamp max(..., 3) made resolution 5..30 give identical grids
-    # for a 220 nm slab; the parameter was silently ineffective.
-    m = max(int(round((thickness / 2) * resolution)), 1)
-    if m < 3:
+    # ``resolution`` is exactly points per micrometre. The subpixel interface
+    # coefficients in both solvers permit a core boundary between grid points;
+    # there is no need to retune h so an integer number of cells fits a half-core.
+    h = 1.0 / float(resolution)
+    half_core_cells = (thickness / 2) / h
+    if half_core_cells < 3:
         import warnings
         warnings.warn(
-            f"slab_neff: resolution={resolution} gives only {m} cell(s) in the "
-            f"half-core (thickness={thickness} µm). Consider resolution >= "
+            f"slab_neff: resolution={resolution} gives only {half_core_cells:.2f} cells in the "
+            f"half-core (thickness={thickness} um). Consider resolution >= "
             f"{int(np.ceil(3 / (thickness / 2)))} for this thickness.",
             stacklevel=2,
         )
     if not richardson:
-        result = solver(thickness, n_core, n_clad, k0, m, margin)
+        result = solver(thickness, n_core, n_clad, k0, h, margin)
     else:
-        n_c = solver(thickness, n_core, n_clad, k0, m, margin)
-        n_f = solver(thickness, n_core, n_clad, k0, 2 * m, margin)
+        n_c = solver(thickness, n_core, n_clad, k0, h, margin)
+        n_f = solver(thickness, n_core, n_clad, k0, h / 2.0, margin)
         result = (4.0 * n_f - n_c) / 3.0
     if not (n_clad < result < n_core):
         raise ValueError(

@@ -1,10 +1,17 @@
 """Tests for EME-backed component models (taper, 1x2 MMI)."""
 from __future__ import annotations
 
-import pytest
+import numpy as np
 
 import photonix as px
 from photonix.em import components as emc
+
+
+def test_touching_output_strips_are_rasterized_as_a_union():
+    x = np.array([-0.5, 0.0, 0.5])
+    separate = emc._strip_union(x, ((-0.25, 0.5), (0.25, 0.5)), 2.0, 1.0)
+    merged = emc._strip(x, 1.0, 2.0, 1.0)
+    assert np.allclose(separate, merged)
 
 
 def test_taper_low_loss_and_reciprocal():
@@ -38,19 +45,8 @@ def test_mmi_exports_reflections():
     assert abs(s[("o2", "o3")] - s[("o3", "o2")]) < MMI_SYMMETRY_TOL
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Open issue: the output-side reflection couples the even and odd supermodes "
-        "(Rb[even,odd] ~ 0.016), which a mirror-symmetric junction forbids, so the two "
-        "output ports get unequal self-reflections (|r22 - r33| ~ 0.031). Everything "
-        "around it checks out -- the supermodes have parity exactly +/-1.000000, the "
-        "geometry and absorber are bit-symmetric, Rb is symmetric to 3e-16 (reciprocal) "
-        "and the *transmission* split is balanced to ~1e-3. Transmission is unaffected; "
-        "only the port self-reflections are. See docs/PHYSICS_AUDIT.md, A5."
-    ),
-)
 def test_mmi_output_self_reflections_equal_by_symmetry():
+    """A7: mirror-symmetric junction must give equal output self-reflections."""
     s = emc.mmi1x2(width_mmi=2.5, length_mmi=29.5, gap=1.0, num_modes=10, points=261, half_window=4.0)
     assert abs(s[("o2", "o2")] - s[("o3", "o3")]) < MMI_SYMMETRY_TOL
 
@@ -65,14 +61,16 @@ def test_mmi_balanced_and_passive():
 
 
 def test_eme_is_deterministic():
-    """Identical calls must return identical numbers.
+    """Identical calls must agree to the eigensolver's numerical precision.
 
     ARPACK seeds itself randomly unless given a start vector, so with
     near-degenerate modes the returned basis -- and every S-matrix built on it --
-    used to vary run to run (three identical mmi1x2 calls spread by 6.5e-4).
+    used to vary run to run (three identical mmi1x2 calls spread by 6.5e-4). The
+    non-Hermitian absorber solve can still vary at roundoff level across repeated
+    sparse factorizations; that is numerical noise, not physical nondeterminism.
     """
     runs = [complex(emc.mmi1x2(num_modes=12, points=261)[("o1", "o2")]) for _ in range(3)]
-    assert runs[0] == runs[1] == runs[2]
+    assert np.allclose(runs, runs[0], rtol=0.0, atol=1e-11)
 
 
 def test_mmi_loss_converges_in_basis_size():

@@ -17,10 +17,9 @@ Delivered:
   :mod:`photonix.modes` is a thin compatibility facade over them;
 * an optional Meep/MPB backend (:mod:`photonix.em.meep`) to which all FDTD needs
   are delegated -- MPB cross-section modes and 2-D Meep FDTD S-parameters, both in
-  native photonix types (``VectorModeData`` / ``SDict``). It is **not** imported
-  eagerly: ``import photonix.em`` works without Meep, but accessing ``em.meep``
-  (or ``from photonix.em import meep``) requires Meep and raises ImportError with
-  an install hint otherwise.
+  native photonix types (``VectorModeData`` / ``SDict``). Its pure specifications
+  are import-safe; only calls that construct Meep objects or run solvers require
+  the optional dependency.
 
 EME, FDFD, and varFDTD follow (see ``docs/DESIGN_EM_SOLVERS.md``).
 """
@@ -69,9 +68,7 @@ __all__ = [
     "eim",
     "eme",
     "fdfd",
-    # NOTE: "meep" is deliberately NOT in __all__: it is an optional backend
-    # exposed lazily via __getattr__ below, and listing it here would make
-    # `from photonix.em import *` raise ImportError on Meep-less installs.
+    "meep",
     "fabrication",
     "components",
     "materials",
@@ -108,9 +105,9 @@ __all__ = [
 def __getattr__(name: str):
     """Lazily expose the optional Meep backend on attribute access.
 
-    Keeping ``meep`` out of the eager imports above means ``import photonix.em``
-    never requires Meep. Touching ``em.meep`` imports the subpackage, which raises
-    a helpful ImportError when Meep is not installed (its hard requirement). We use
+    Keeping ``meep`` out of the eager imports above keeps the main EM import light.
+    The subpackage itself is import-safe; solver calls raise a helpful ImportError
+    when Meep is not installed. We use
     ``importlib.import_module`` rather than ``from . import meep`` so that a failed
     Meep import propagates ImportError directly instead of recursing back into this
     ``__getattr__`` through the import machinery's ``hasattr`` probe.

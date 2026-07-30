@@ -6,6 +6,8 @@ so ``grad`` flows through them.
 """
 from __future__ import annotations
 
+from typing import Any, cast
+
 from photonix.core.backend import xp
 from photonix.core.sparams import power
 from photonix.core.types import PortPair, SDict
@@ -41,7 +43,7 @@ def match_spectrum(sdict: SDict, port: PortPair, target_curve) -> float:
 
 def insertion_loss(sdict: SDict, port: PortPair) -> float:
     """Mean insertion loss in dB for ``port`` (positive = lossy)."""
-    t = power(sdict[port])
+    t = cast(Any, power(sdict[port]))
     return -10.0 * xp.mean(xp.log10(t + 1e-12))
 
 

@@ -7,13 +7,16 @@ profile, an FDFD device grid, or an inverse-design density -- maps onto it by
 
     weight = (eps - eps_low) / (eps_high - eps_low)
 
-which is exactly the linear-in-epsilon interpolation Meep's MaterialGrid performs,
-so the round trip is lossless for a two-material structure and a faithful
-piecewise-linear approximation otherwise. The weight computation
+which is exactly the linear-in-epsilon interpolation Meep's MaterialGrid performs.
+These values are **density-grid nodes**, however, not cell-centred pixels; use
+:func:`photonix.em.meep.geometry.build_pixel_block` when translating a physical
+FDFD/layout raster. The weight computation
 (:func:`material_grid_weights`) is pure NumPy and unit-tested without Meep; the
 thin :func:`to_material_grid` wrapper only touches Meep to build the object.
 """
 from __future__ import annotations
+
+from typing import cast
 
 import numpy as np
 
@@ -24,13 +27,24 @@ __all__ = [
     "index_grid",
     "to_material_grid",
     "medium",
+    "to_medium",
     "epsilon_lookup",
 ]
 
 
 def index_grid(eps: np.ndarray) -> np.ndarray:
     """Refractive index ``sqrt(eps)`` of a (real, lossless) permittivity grid."""
-    return np.sqrt(np.asarray(eps, dtype=float))
+    arr = _validate_eps(eps)
+    return np.sqrt(arr)
+
+
+def _validate_eps(eps: np.ndarray) -> np.ndarray:
+    arr = np.asarray(eps, dtype=float)
+    if arr.ndim == 0 or arr.size == 0:
+        raise ValueError("eps must be a non-empty array")
+    if not np.all(np.isfinite(arr)) or np.any(arr <= 0):
+        raise ValueError("eps must contain finite, positive relative permittivities")
+    return arr
 
 
 def material_grid_weights(
@@ -56,10 +70,16 @@ def material_grid_weights(
     >>> w.tolist()
     [[0.0, 1.0], [1.0, 0.0]]
     """
-    eps = np.asarray(eps, dtype=float)
+    eps = _validate_eps(eps)
     lo = float(np.min(eps)) if eps_low is None else float(eps_low)
     hi = float(np.max(eps)) if eps_high is None else float(eps_high)
-    if hi <= lo:
+    if not np.isfinite(lo) or not np.isfinite(hi) or lo <= 0 or hi <= 0:
+        raise ValueError("eps_low and eps_high must be positive and finite")
+    if hi < lo:
+        raise ValueError("eps_high must be greater than or equal to eps_low")
+    if hi == lo:
+        if not np.allclose(eps, lo):
+            raise ValueError("equal endpoints can only represent a uniform permittivity grid")
         return np.zeros_like(eps), lo, lo
     weights = np.clip((eps - lo) / (hi - lo), 0.0, 1.0)
     return weights, lo, hi
@@ -74,9 +94,13 @@ def epsilon_lookup(eps: np.ndarray, x: np.ndarray, y: np.ndarray):
     ``material_function`` for arbitrary, non-two-material profiles; kept Meep-free
     so it is unit-testable.
     """
-    eps = np.asarray(eps, dtype=float)
+    eps = _validate_eps(eps)
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
+    if x.ndim != 1 or y.ndim != 1 or eps.shape != (y.size, x.size):
+        raise ValueError("eps shape must be (len(y), len(x)) for one-dimensional x and y")
+    if x.size == 0 or y.size == 0 or not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError("x and y must be non-empty and finite")
 
     def g(px: float, py: float) -> float:
         # nearest index; no assumption of uniform spacing
@@ -92,8 +116,32 @@ def medium(*, index: float | None = None, epsilon: float | None = None):
     mp = require_meep()
     if (index is None) == (epsilon is None):
         raise ValueError("pass exactly one of `index` or `epsilon`")
-    eps = float(index) ** 2 if index is not None else float(epsilon)
+    eps = float(index) ** 2 if index is not None else float(cast(float, epsilon))
+    if not np.isfinite(eps) or eps <= 0:
+        raise ValueError("material permittivity must be positive and finite")
     return mp.Medium(epsilon=eps)
+
+
+def to_medium(material, *, wl: float):
+    """Freeze a native dispersive material to a Meep ``Medium`` at one wavelength.
+
+    Photonix :class:`~photonix.em.materials.Material` objects are wavelength-to-
+    index callables, not causal susceptibility fits. This conversion is therefore
+    intentionally single-frequency and non-dispersive; use an explicit Meep
+    ``Medium`` with Lorentz/Drude susceptibilities for broadband dispersive FDTD.
+    """
+    if not np.isfinite(wl) or wl <= 0:
+        raise ValueError("wl must be positive and finite")
+    if hasattr(material, "index"):
+        value = material.index(wl)
+    elif callable(material):
+        value = material(wl)
+    else:
+        raise TypeError("material must be a Photonix Material or wavelength-to-index callable")
+    arr = np.asarray(value)
+    if arr.ndim != 0 or np.iscomplexobj(arr):
+        raise ValueError("material must return one real scalar index at the requested wavelength")
+    return medium(index=float(arr))
 
 
 def to_material_grid(
@@ -112,7 +160,8 @@ def to_material_grid(
     :mod:`.modes` passes a raw epsilon array instead. Meep indexes the weight
     array ``[ix, iy]`` whereas photonix stores ``eps[iy, ix]``, so the weights
     are transposed here -- the one orientation subtlety, localised to this
-    function.
+    function. MaterialGrid weights are bilinearly interpolated density *nodes*;
+    they must not be described as piecewise-constant cell-centred epsilon samples.
     """
     mp = require_meep()
     weights, lo, hi = material_grid_weights(eps, eps_low=eps_low, eps_high=eps_high)

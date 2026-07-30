@@ -35,6 +35,10 @@ sensitivities of a system-level metric with respect to any physical parameter.
                         geometry · materials · [meep] FDTD backend
                         modes/  → compatibility facade over em/
                  └───────────────────────┬──────────────────────┘
+                 ┌─────────────────────────────────────────────┐
+   adapters      multiphysics/ prepared Elmer · DEVSIM · external
+                              jobs, capabilities, subprocess results
+                 └─────────────────────────────────────────────┘
                  ┌───────────────────────┴──────────────────────┐
    foundation     core/  backend(JAX) · types(SDict) · units · sparams
                  └──────────────────────────────────────────────┘

@@ -10,6 +10,7 @@ Anchors:
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from conftest import requires_jax
 
 import photonix as px
@@ -106,6 +107,39 @@ def test_fullvector_polarization_fractions():
     assert r.te_fraction[1] < 0.1       # TM-like (the hybrid Ey mode)
 
 
+def test_vector_custom_grid_guided_cutoff_uses_highest_exterior_index(monkeypatch):
+    """Vector mode labels use the highest-index exterior material as cutoff."""
+    import photonix.em.fde_vector as fde_vector
+
+    eps = np.ones((4, 4))
+    eps[-1] = 1.5**2
+
+    def fake_solve(*_args):
+        return np.array([1.6, 1.4]), np.zeros((2, 4, 4)), np.zeros(16)
+
+    monkeypatch.setattr(fde_vector, "_solve", fake_solve)
+    result = fde_vector.solve_modes_vector(eps=eps, num_modes=2)
+    assert result.guided.tolist() == [True, False]
+    assert result.n_guided == 1
+
+
+@pytest.mark.parametrize("solver", [em.solve_modes_vector, em.solve_modes_fullvector])
+def test_vector_custom_grid_rejects_nonuniform_coordinates(solver):
+    eps = np.ones((3, 4))
+    grid = ([0.0, 0.1, 0.3, 0.4], [0.0, 0.2, 0.4])
+    with pytest.raises(ValueError, match="uniformly spaced"):
+        solver(eps=eps, grid=grid)
+
+
+def test_vector_solvers_reject_nonpositive_mode_count():
+    import pytest
+
+    with pytest.raises(ValueError, match="num_modes"):
+        em.solve_modes_vector(num_modes=0)
+    with pytest.raises(ValueError, match="num_modes"):
+        em.solve_modes_fullvector(num_modes=-1)
+
+
 def test_fullvector_convergence():
     """TE0 settles (changes shrink) under grid refinement."""
     n20 = em.n_eff_fullvector(width=0.5, thickness=0.22, resolution=20)
@@ -166,12 +200,31 @@ def test_pml_straight_nonperturbing():
 
 def test_bend_loss_increases_as_radius_tightens():
     """Radiation loss grows as the bend tightens, with the physical mode tracked."""
-    r12 = em.bend_loss_fullvector(bend_radius=1.2, resolution=24)
-    r10 = em.bend_loss_fullvector(bend_radius=1.0, resolution=24)
+    # A reduced inner gap keeps the full grid on the physical R+x > 0 side of
+    # the conformal map for these deliberately tight radii.
+    r12 = em.bend_loss_fullvector(bend_radius=1.2, resolution=24, inner=0.1)
+    r10 = em.bend_loss_fullvector(bend_radius=1.0, resolution=24, inner=0.1)
     assert r10.loss_db_per_90deg > r12.loss_db_per_90deg > 0.0
     assert r10.loss_db_per_90deg > 1e-3          # appreciable at a tight bend
     assert r10.overlap > 0.9 and r12.overlap > 0.9  # tracked the guided mode
     assert r10.n_eff.imag != 0.0                 # complex n_eff (loss) resolved
+
+
+def test_bend_grid_rejects_conformal_singularity_crossing():
+    with pytest.raises(ValueError, match="does not cross x=-R"):
+        em.bend_loss_fullvector(bend_radius=1.0, resolution=24)
+
+
+def test_fullvector_pml_uses_distinct_integer_and_half_grid_samples():
+    from photonix.em.fde_vector import _pml_stretch
+
+    coord = np.linspace(-2.0, 2.0, 17)
+    h = coord[1] - coord[0]
+    bounds = (coord[0] - h / 2, coord[-1] + h / 2)
+    integer = _pml_stretch(coord, 2 * np.pi / 1.55, 0.75, 4.0, bounds=bounds)
+    half = _pml_stretch(coord + h / 2, 2 * np.pi / 1.55, 0.75, 4.0, bounds=bounds)
+    assert not np.allclose(integer, half)
+    assert integer[0].imag == pytest.approx(integer[-1].imag)
 
 
 # --------------------------------------------------------------------------- #
@@ -187,3 +240,17 @@ def test_fullvector_modes_biorthonormal():
     M = em.power_overlap(et, ht, cs.dx * cs.dy)
     assert np.max(np.abs(M - np.eye(4))) < 1e-10      # bi-orthonormal to machine eps
     assert 2.3 < float(neff[0].real) < 2.5            # fundamental in range
+
+
+def test_fullvector_magnetic_fields_include_modal_impedance():
+    """The first-order equation is Q E_t = n_eff H_t, not Q E_t = H_t."""
+    from photonix.em.fde_vector import _pq_operators
+    from photonix.em.geometry import rectangular_waveguide
+
+    cs = rectangular_waveguide(width=0.5, thickness=0.22, resolution=18)
+    k0 = 2 * np.pi / 1.55
+    neff, et, ht = em.fullvector_transverse_fields(
+        cs.eps, cs.dx, cs.dy, k0, num_modes=2
+    )
+    _p, q = _pq_operators(cs.eps, cs.dx, cs.dy, k0)
+    assert np.allclose(ht, (q @ et) / neff[None, :], atol=1e-10, rtol=1e-10)

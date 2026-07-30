@@ -26,6 +26,10 @@ __all__ = [
 
 def conic_kernel(radius_cells: float) -> np.ndarray:
     """Normalized conic (linear-decay) filter kernel of the given radius (cells)."""
+    if not np.isfinite(radius_cells) or radius_cells < 0:
+        raise ValueError("radius_cells must be non-negative and finite")
+    if radius_cells == 0:
+        return np.ones((1, 1), dtype=float)
     r = int(np.ceil(radius_cells))
     y, x = np.mgrid[-r:r + 1, -r:r + 1]
     dist = np.sqrt(x**2 + y**2)
@@ -35,7 +39,9 @@ def conic_kernel(radius_cells: float) -> np.ndarray:
 
 def conic_filter(rho: np.ndarray, radius_cells: float) -> np.ndarray:
     """Apply the conic density filter (enforces minimum feature size)."""
-    return convolve(rho, conic_kernel(radius_cells), mode="nearest")
+    # scipy.ndimage preserves the input dtype by default; without this cast an
+    # integer/bool density truncates every fractional filtered value to 0 or 1.
+    return convolve(np.asarray(rho, dtype=float), conic_kernel(radius_cells), mode="nearest")
 
 
 def conic_filter_adjoint(g: np.ndarray, radius_cells: float) -> np.ndarray:
@@ -53,6 +59,8 @@ def conic_filter_adjoint(g: np.ndarray, radius_cells: float) -> np.ndarray:
     K = conic_kernel(radius_cells)
     r = K.shape[0] // 2
     g = np.asarray(g, float)
+    if r == 0:
+        return g.copy()
     n0, n1 = g.shape
     gp = convolve2d(g, K, mode="full")            # adjoint of the 'valid' conv
     # Adjoint of replicate padding: fold pad strips onto the nearest edge cells,
@@ -70,6 +78,13 @@ def conic_filter_adjoint(g: np.ndarray, radius_cells: float) -> np.ndarray:
 
 def tanh_projection(rho: np.ndarray, beta: float, eta: float = 0.5) -> np.ndarray:
     """Smoothed Heaviside projection toward 0/1 (binarization sharpens with beta)."""
+    rho = np.asarray(rho, dtype=float)
+    if not np.isfinite(beta) or beta < 0:
+        raise ValueError("beta must be non-negative and finite")
+    if not np.isfinite(eta) or not 0 <= eta <= 1:
+        raise ValueError("eta must lie in [0, 1]")
+    if beta == 0:
+        return rho.copy()
     num = np.tanh(beta * eta) + np.tanh(beta * (rho - eta))
     den = np.tanh(beta * eta) + np.tanh(beta * (1.0 - eta))
     return num / den
@@ -77,6 +92,13 @@ def tanh_projection(rho: np.ndarray, beta: float, eta: float = 0.5) -> np.ndarra
 
 def tanh_projection_deriv(rho: np.ndarray, beta: float, eta: float = 0.5) -> np.ndarray:
     """d(tanh_projection)/d(rho)."""
+    rho = np.asarray(rho, dtype=float)
+    if not np.isfinite(beta) or beta < 0:
+        raise ValueError("beta must be non-negative and finite")
+    if not np.isfinite(eta) or not 0 <= eta <= 1:
+        raise ValueError("eta must lie in [0, 1]")
+    if beta == 0:
+        return np.ones_like(rho)
     den = np.tanh(beta * eta) + np.tanh(beta * (1.0 - eta))
     return beta * (1.0 - np.tanh(beta * (rho - eta)) ** 2) / den
 
@@ -88,6 +110,8 @@ def density_to_eps(rho, *, eps_min, eps_max, radius_cells=2.0, beta=8.0, eta=0.5
     Returns ``(eps, cache)`` where ``cache`` is reused by
     :func:`density_to_eps_vjp` for the gradient.
     """
+    if not np.isfinite(eps_min) or not np.isfinite(eps_max) or eps_max < eps_min:
+        raise ValueError("eps_min and eps_max must be finite with eps_max >= eps_min")
     rho_f = conic_filter(rho, radius_cells)
     rho_p = tanh_projection(rho_f, beta, eta)
     eps = eps_min + rho_p * (eps_max - eps_min)

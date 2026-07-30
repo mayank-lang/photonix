@@ -16,7 +16,11 @@ __all__ = ["adam", "minimize_scipy", "OptResult"]
 class OptResult(dict):
     """Lightweight result container (dict with attribute access)."""
 
-    __getattr__ = dict.get  # type: ignore[assignment]
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
 
 
 def adam(
@@ -48,12 +52,18 @@ def adam(
     Examples
     --------
     >>> import photonix as px
-    >>> res = px.optim.adam(lambda p: (p["x"] - 3.0) ** 2, {"x": 0.0}, steps=200)
-    >>> abs(float(res.params["x"]) - 3.0) < 1e-2
+    >>> res = px.optim.adam(lambda p: (p["x"] - 3.0) ** 2, {"x": 0.0}, steps=200)  # doctest: +SKIP
+    >>> abs(float(res.params["x"]) - 3.0) < 1e-2  # doctest: +SKIP
     True
     """
     if not HAS_JAX:
         raise RuntimeError("adam requires JAX. Install photonix[jax].")
+    if not isinstance(steps, int) or steps < 0:
+        raise ValueError(f"steps must be a non-negative integer, got {steps!r}.")
+    if lr <= 0 or eps <= 0:
+        raise ValueError("lr and eps must be positive.")
+    if not (0 <= b1 < 1 and 0 <= b2 < 1):
+        raise ValueError("b1 and b2 must satisfy 0 <= beta < 1.")
 
     import jax
 

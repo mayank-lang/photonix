@@ -9,6 +9,7 @@ extrapolation reach <0.1% on the analytic slab at CPU-friendly resolutions.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -34,6 +35,54 @@ def as_real_eps(eps, where: str = "this solver") -> np.ndarray:
             )
         eps = eps.real
     return np.asarray(eps, dtype=float)
+
+
+def _validate_eps_grid(eps, grid, *, where: str):
+    """Validate a uniform 2-D permittivity grid for the finite-difference solvers.
+
+    ``grid=None`` retains the historical unit-cell spacing.  Explicit coordinate
+    arrays must be finite, strictly increasing, uniformly spaced, and match the
+    corresponding permittivity-grid axis; the current finite-difference
+    operators do not support nonuniform meshes.
+    """
+    eps = as_real_eps(eps, where=where)
+    if eps.ndim != 2 or min(eps.shape, default=0) < 2:
+        raise ValueError("eps must be a two-dimensional grid with at least 2 cells per axis")
+    if not np.all(np.isfinite(eps)):
+        raise ValueError("eps must contain only finite values")
+
+    ny, nx = eps.shape
+    x: Any
+    y: Any
+    if grid is None:
+        x = np.arange(nx, dtype=float)
+        y = np.arange(ny, dtype=float)
+    else:
+        if not isinstance(grid, (tuple, list)) or len(grid) != 2:
+            raise ValueError("grid must be a two-item (x, y) tuple")
+        x = np.asarray(grid[0], dtype=float)
+        y = np.asarray(grid[1], dtype=float)
+
+    def spacing(coord, expected, name):
+        if coord.ndim != 1 or len(coord) != expected:
+            raise ValueError(
+                f"grid {name} must be one-dimensional with length {expected}"
+            )
+        if not np.all(np.isfinite(coord)):
+            raise ValueError(f"grid {name} must contain only finite coordinates")
+        steps = np.diff(coord)
+        if np.any(steps <= 0):
+            raise ValueError(f"grid {name} coordinates must be strictly increasing")
+        h = float(steps[0])
+        if not np.allclose(steps, h, rtol=1e-9, atol=1e-12 * max(1.0, abs(h))):
+            raise ValueError(
+                f"grid {name} must be uniformly spaced; nonuniform grids are not supported"
+            )
+        return h
+
+    dx = spacing(x, nx, "x")
+    dy = spacing(y, ny, "y")
+    return eps, x, y, dx, dy
 
 
 @dataclass
@@ -75,12 +124,27 @@ def rectangular_waveguide(
     >>> bool(cs.eps.min() < cs.eps.max())
     True
     """
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a positive finite number of points per micrometre")
+    if not np.isfinite(width) or width <= 0:
+        raise ValueError("width must be positive and finite")
+    if not np.isfinite(thickness) or thickness <= 0:
+        raise ValueError("thickness must be positive and finite")
+    if not np.isfinite(margin) or margin < 0:
+        raise ValueError("margin must be non-negative and finite")
+
     wx, wy = width + 2 * margin, thickness + 2 * margin
-    nx = max(int(round(wx * resolution)), 8)
-    ny = max(int(round(wy * resolution)), 8)
-    x = np.linspace(-wx / 2, wx / 2, nx)
-    y = np.linspace(-wy / 2, wy / 2, ny)
-    dx, dy = x[1] - x[0], y[1] - y[0]
+    # ``resolution`` means exactly what its public name says: samples per um.
+    # The old linspace construction included both requested domain endpoints,
+    # making dx = width / (n - 1) rather than 1 / resolution.  Treat x/y as
+    # cell centres instead and round the cell count up so the requested margin
+    # is never shortened by grid quantisation.
+    h = 1.0 / float(resolution)
+    nx = max(int(np.ceil(wx * resolution)), 8)
+    ny = max(int(np.ceil(wy * resolution)), 8)
+    x = (np.arange(nx, dtype=float) - 0.5 * (nx - 1)) * h
+    y = (np.arange(ny, dtype=float) - 0.5 * (ny - 1)) * h
+    dx = dy = h
     fx = _overlap(x, dx, -width / 2, width / 2)        # (nx,)
     fy = _overlap(y, dy, -thickness / 2, thickness / 2)  # (ny,)
     frac = fy[:, None] * fx[None, :]                    # area fraction in core
@@ -97,10 +161,17 @@ def slab_profile(
     resolution: int = 40,
 ) -> tuple[np.ndarray, np.ndarray]:
     """1-D subpixel-averaged slab permittivity profile ``(eps, y)``."""
+    if not np.isfinite(resolution) or resolution <= 0:
+        raise ValueError("resolution must be a positive finite number of points per micrometre")
+    if not np.isfinite(thickness) or thickness <= 0:
+        raise ValueError("thickness must be positive and finite")
+    if not np.isfinite(margin) or margin < 0:
+        raise ValueError("margin must be non-negative and finite")
+
     wy = thickness + 2 * margin
-    ny = max(int(round(wy * resolution)), 8)
-    y = np.linspace(-wy / 2, wy / 2, ny)
-    dy = y[1] - y[0]
+    dy = 1.0 / float(resolution)
+    ny = max(int(np.ceil(wy * resolution)), 8)
+    y = (np.arange(ny, dtype=float) - 0.5 * (ny - 1)) * dy
     fy = _overlap(y, dy, -thickness / 2, thickness / 2)
     eps = fy * n_core**2 + (1.0 - fy) * n_clad**2
     return eps, y

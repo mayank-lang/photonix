@@ -11,6 +11,7 @@ def test_softmin_is_lower_bound_and_weights_worst():
     v = np.array([1.0, 2.0, 5.0])
     sm, w = softmin(v, p=30.0)
     assert abs(sm - v.min()) < 0.1          # smooth min approaches the true min
+    assert sm <= v.min()                    # epigraph relaxation is a lower bound
     assert sm < v.mean()                    # and sits below the mean
     assert abs(w.sum() - 1.0) < 1e-12
     assert w[0] == w.max()  # weight concentrates on the worst (smallest) value
@@ -35,3 +36,18 @@ def test_robust_design_improves_worst_case():
         eps_min=nclad**2, eps_max=ncore**2, radius_cells=2.0, steps=10,
     )
     assert max(hist) > 1.2 * hist[0]  # worst-case objective improves
+
+
+def test_design_density_outside_mask_is_fixed_background():
+    ny = nx = 8
+    mask = np.zeros((ny, nx), bool)
+    mask[2:6, 2:6] = True
+    source = np.zeros((ny, nx), complex)
+    source[4, 1] = 1.0
+    rho, _eps, history, _perf = robust_focus_design(
+        [1.55], ny=ny, nx=nx, dx=0.1, dy=0.1, mask=mask,
+        source=source, target=(4, 6), eps_min=1.0, eps_max=4.0,
+        radius_cells=1.0, steps=0, npml=1,
+    )
+    assert history == []
+    assert np.all(rho[~mask] == 0.0)

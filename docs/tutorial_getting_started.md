@@ -98,6 +98,8 @@ top = lay.Cell("top")
 top.add_ref(lc.straight(10.0), origin=(0, 0), name="a")
 top.add_ref(lc.straight(10.0), origin=(10, 0), name="b")
 lay.write_gds(top, "demo.gds")
+# OASIS uses the same optional gdstk layout dependency:
+lay.write_oas(top, "demo.oas", validation="crc32")
 nl = lay.extract_netlist(top)               # -> a circuit.Netlist you can simulate
 s  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # models default to components.MODELS
 ```

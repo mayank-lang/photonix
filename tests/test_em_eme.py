@@ -50,6 +50,61 @@ def test_sdict_export():
     assert ("o1", "o2") in s and abs(abs(s[("o1", "o2")]) - 1.0) < 1e-9
 
 
+def test_slab_operator_has_both_dirichlet_faces():
+    """The modal Laplacian must not silently use Neumann on the left edge."""
+    from photonix.em.eme import _d_faces
+
+    n, h = 7, 0.2
+    d = _d_faces(n, h)
+    lap = (-d.T @ d).toarray() * h**2
+    expected = np.diag(-2.0 * np.ones(n))
+    expected += np.diag(np.ones(n - 1), 1) + np.diag(np.ones(n - 1), -1)
+    assert d.shape == (n + 1, n)
+    assert np.allclose(lap, expected)
+
+
+def test_absorber_modes_remain_eigenmodes_without_parity_projection():
+    """Symmetry comes from the operator, without modifying ARPACK eigenvectors."""
+    import scipy.sparse as sp
+
+    from photonix.em.eme import _d_faces, slab_modes, transverse_pml
+
+    eps = _strip(0.5)
+    k0 = 2 * np.pi / WL
+    d = _d_faces(len(eps), DX)
+    d_eps = transverse_pml(len(eps), DX, k0, (0.8, 1.0), eps_edge=float(eps[0]))
+    operator = -d.T @ d + sp.diags(k0**2 * (eps + d_eps))
+    beta, fields, _ = slab_modes(eps, DX, WL, 6, pml=(0.8, 1.0))
+
+    residuals = []
+    parities = []
+    for mode_beta, field in zip(beta, fields.T, strict=True):
+        lhs = operator @ field
+        rhs = mode_beta**2 * field
+        residuals.append(np.linalg.norm(lhs - rhs) / (np.linalg.norm(lhs) + np.linalg.norm(rhs)))
+        parities.append(
+            min(np.linalg.norm(field - field[::-1]), np.linalg.norm(field + field[::-1]))
+            / np.linalg.norm(field)
+        )
+    assert max(residuals) < 1e-8
+    assert max(parities) < 1e-8
+
+
+def test_invalid_eme_configuration_is_rejected():
+    import pytest
+
+    from photonix.em.eme import slab_modes, transverse_pml
+
+    with pytest.raises(ValueError, match="sections"):
+        eme_smatrix([], DX, WL)
+    with pytest.raises(ValueError, match="num_modes"):
+        slab_modes(_strip(0.5), DX, WL, 0)
+    with pytest.raises(ValueError, match="thickness"):
+        transverse_pml(len(X), DX, 2 * np.pi / WL, (-1.0, 1.0))
+    with pytest.raises(ValueError, match="length"):
+        Section(_strip(0.5), -1.0)
+
+
 # --------------------------------------------------------------------------- #
 # Vectorial TM EME (1/eps-weighted power overlap)
 # --------------------------------------------------------------------------- #

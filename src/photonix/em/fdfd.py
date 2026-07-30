@@ -35,8 +35,27 @@ def scpml_stretch(n: int, dh: float, npml: int, k0: float, m: int = 3, log_R: fl
     """Stretched-coordinate PML factors ``s`` at integer and half-integer points.
 
     ``s = 1 - i*sigma/(omega*eps0)`` graded polynomially over the PML region.
-    Returns ``(s_int, s_half)`` complex arrays of length ``n``.
+    Returns cell-centred ``s_int`` (length ``n``) and face-centred ``s_half``
+    (length ``n + 1``).  The two exterior faces are included so the discrete
+    divergence applies the same Dirichlet termination at both boundaries.
     """
+    if not isinstance(n, (int, np.integer)) or isinstance(n, (bool, np.bool_)) or n <= 0:
+        raise ValueError("n must be a positive integer")
+    if not isinstance(npml, (int, np.integer)) or isinstance(npml, (bool, np.bool_)) or npml < 0:
+        raise ValueError("npml must be a non-negative integer")
+    if not np.isfinite(dh) or dh <= 0:
+        raise ValueError("dh must be positive and finite")
+    if not np.isfinite(k0) or k0 <= 0:
+        raise ValueError("k0 must be positive and finite")
+    if not isinstance(m, (int, np.integer)) or isinstance(m, (bool, np.bool_)) or m < 0:
+        raise ValueError("m must be a non-negative integer")
+    if not np.isfinite(log_R) or log_R > 0:
+        raise ValueError("log_R must be finite and non-positive")
+    if npml == 0:
+        return np.ones(n, dtype=complex), np.ones(n + 1, dtype=complex)
+    if 2 * npml >= n:
+        raise ValueError("npml must leave at least one non-PML cell in the grid")
+
     eta0 = 376.730313668
     sigma_max = -(m + 1) * log_R / (2 * eta0 * npml * dh)
 
@@ -44,20 +63,35 @@ def scpml_stretch(n: int, dh: float, npml: int, k0: float, m: int = 3, log_R: fl
         return sigma_max * (p / npml) ** m if npml > 0 else 0.0 * p
 
     s_int = np.ones(n, dtype=complex)
-    s_half = np.ones(n, dtype=complex)
+    s_half = np.ones(n + 1, dtype=complex)
     omega_eps0 = k0 / eta0  # omega*eps0 = k0/eta0 (since omega*eps0 = k0*c*eps0 = k0/eta0)
+    # The PML occupies exactly ``npml`` cells per side. Cell centres therefore
+    # reach depth npml-1/2 while the two exterior faces reach the full depth
+    # npml. This placement is mirror-symmetric about the grid centre.
+    left_interface = npml - 0.5
+    right_interface = n - npml - 0.5
     for i in range(n):
-        # distance into the PML (cells) for integer point i
-        d_int = max(npml - i, 0) + max(i - (n - 1 - npml), 0)
-        d_half = max(npml - (i + 0.5), 0) + max((i + 0.5) - (n - 1 - npml), 0)
+        d_int = max(left_interface - i, 0) + max(i - right_interface, 0)
         s_int[i] = 1 - 1j * sigma(d_int) / omega_eps0
-        s_half[i] = 1 - 1j * sigma(d_half) / omega_eps0
+    for j in range(n + 1):
+        x_face = j - 0.5
+        d_half = max(left_interface - x_face, 0) + max(x_face - right_interface, 0)
+        s_half[j] = 1 - 1j * sigma(d_half) / omega_eps0
     return s_int, s_half
 
 
 def _d_forward(n, h):
-    e = np.ones(n)
-    return sp.diags([-e, e[:-1]], [0, 1]) / h  # forward difference (Dirichlet outer)
+    """Cell-to-face gradient including both exterior Dirichlet faces.
+
+    The returned matrix has shape ``(n + 1, n)``. Its first/last rows are the
+    differences from a zero exterior ghost value; interior rows are ordinary
+    nearest-neighbour differences. Consequently ``-D.T @ D`` is the symmetric
+    three-point Dirichlet Laplacian with ``-2`` on *both* boundary diagonals.
+    """
+    rows = np.concatenate(([0], np.arange(1, n), np.arange(1, n), [n]))
+    cols = np.concatenate(([0], np.arange(n - 1), np.arange(1, n), [n - 1]))
+    data = np.concatenate(([1.0], -np.ones(n - 1), np.ones(n - 1), [-1.0])) / h
+    return sp.coo_matrix((data, (rows, cols)), shape=(n + 1, n)).tocsr()
 
 
 class FDFD:
@@ -68,11 +102,25 @@ class FDFD:
         from .geometry import as_real_eps
 
         self.eps = as_real_eps(eps, where="FDFD")
+        if self.eps.ndim != 2 or min(self.eps.shape, default=0) < 2:
+            raise ValueError("eps must be a two-dimensional grid with at least 2 cells per axis")
+        if not np.all(np.isfinite(self.eps)):
+            raise ValueError("eps must contain only finite values")
+        if not np.isfinite(dx) or dx <= 0 or not np.isfinite(dy) or dy <= 0:
+            raise ValueError("dx and dy must be positive and finite")
+        if not np.isfinite(wl) or wl <= 0:
+            raise ValueError("wl must be positive and finite")
+        if not isinstance(npml, (int, np.integer)) or isinstance(npml, (bool, np.bool_)) or npml < 0:
+            raise ValueError("npml must be a non-negative integer")
+        if npml and 2 * npml >= min(self.eps.shape):
+            raise ValueError("npml must leave at least one non-PML cell on each axis")
+        if not isinstance(polarization, str) or polarization.lower() not in ("te", "tm"):
+            raise ValueError("polarization must be 'te' or 'tm'")
         self.ny, self.nx = self.eps.shape
-        self.dx, self.dy, self.wl = dx, dy, wl
+        self.dx, self.dy, self.wl = float(dx), float(dy), float(wl)
         self.k0 = 2 * np.pi / wl
-        self.npml = npml
-        self.polarization = polarization
+        self.npml = int(npml)
+        self.polarization = polarization.lower()
         self._A = None
         self._lu = None
 
@@ -101,10 +149,14 @@ class FDFD:
         Dxb = -Dxf.T.tocsc()
         Dyb = -Dyf.T.tocsc()
         eps = self.eps
-        ex = 0.5 * (eps + np.roll(eps, -1, axis=1))
-        ex[:, -1] = eps[:, -1]
-        ey = 0.5 * (eps + np.roll(eps, -1, axis=0))
-        ey[-1, :] = eps[-1, :]
+        # Permittivity on all faces, including both exterior boundary faces.
+        # 1/mean(eps) is the harmonic finite-volume coefficient for 1/eps.
+        ex = np.empty((ny, nx + 1), dtype=float)
+        ex[:, 0], ex[:, -1] = eps[:, 0], eps[:, -1]
+        ex[:, 1:-1] = 0.5 * (eps[:, :-1] + eps[:, 1:])
+        ey = np.empty((ny + 1, nx), dtype=float)
+        ey[0, :], ey[-1, :] = eps[0, :], eps[-1, :]
+        ey[1:-1, :] = 0.5 * (eps[:-1, :] + eps[1:, :])
         sxi2 = np.tile(sxi, ny)
         sxh2 = np.tile(sxh, ny)
         syi2 = np.repeat(syi, nx)
@@ -122,6 +174,10 @@ class FDFD:
         """Solve ``A e = source`` (source shaped like the grid). Returns field e."""
         if self._lu is None:
             self.factor()
+        assert self._lu is not None
+        source = np.asarray(source)
+        if source.shape != self.eps.shape:
+            raise ValueError(f"source must have shape {self.eps.shape}, got {source.shape}")
         b = np.asarray(source, complex).reshape(-1)
         e = self._lu.solve(b)
         return e.reshape(self.ny, self.nx)
@@ -130,6 +186,10 @@ class FDFD:
         """Solve ``A^T x = rhs`` (for gradients)."""
         if self._lu is None:
             self.factor()
+        assert self._lu is not None
+        rhs = np.asarray(rhs)
+        if rhs.shape != self.eps.shape:
+            raise ValueError(f"rhs must have shape {self.eps.shape}, got {rhs.shape}")
         x = self._lu.solve(np.asarray(rhs, complex).reshape(-1), trans="T")
         return x.reshape(self.ny, self.nx)
 
@@ -215,11 +275,46 @@ def waveguide_mode(eps_col, dy, wl, mode=0, polarization="te"):
     return float(beta.real), np.real(fields[:, mode])
 
 
+def _longitudinal_grid_params(beta: float, dx: float) -> tuple[float, float]:
+    """Return the discrete propagation constant ``q`` and flux factor ``g``.
+
+    The centred second-difference stencil represents a continuum port mode with
+    propagation constant ``beta`` by
+
+    ``beta**2 = 4 sin(q*dx/2)**2 / dx**2``.
+
+    Its conserved longitudinal flux is proportional to
+    ``beta*g = sin(q*dx)/dx``.  The continuum limit is ``q -> beta`` and
+    ``g -> 1``.  At and above ``beta*dx == 2`` the mode cannot be represented
+    by a real, non-degenerate phase advance on this grid.
+    """
+    beta = float(beta)
+    dx = float(dx)
+    if not np.isfinite(beta) or beta <= 0:
+        raise ValueError("beta must be positive and finite for a propagating port mode")
+    if not np.isfinite(dx) or dx <= 0:
+        raise ValueError("dx must be positive and finite")
+    half_phase_sine = 0.5 * beta * dx
+    if half_phase_sine >= 1.0:
+        raise ValueError(
+            "Port mode exceeds the longitudinal grid Nyquist limit: "
+            f"beta*dx = {beta * dx:.6g} must be < 2; reduce dx."
+        )
+    q = 2.0 * float(np.arcsin(half_phase_sine)) / dx
+    g = float(np.sin(q * dx) / (beta * dx))
+    return q, g
+
+
 def mode_source(ny, nx, col, profile, beta, dx, direction=1):
-    """Soft line source over two columns that launches ``profile`` forward."""
+    """Soft two-column source launching a continuum mode on the FDFD grid.
+
+    ``beta`` is the physical port propagation constant.  The relative source
+    phase uses its numerically dispersed grid counterpart ``q``.
+    """
+    q, _ = _longitudinal_grid_params(beta, dx)
     b = np.zeros((ny, nx), complex)
     b[:, col] = profile
-    b[:, col + direction] = profile * np.exp(-1j * beta * dx * direction)
+    b[:, col + direction] = profile * np.exp(-1j * q * dx * direction)
     return b
 
 
@@ -232,7 +327,8 @@ def _decompose(E, col, profile, beta, dy, dx, weight=None):
     norm = np.sum(w * profile**2) * dy
     c0 = np.sum(w * E[:, col] * profile) * dy / norm
     c1 = np.sum(w * E[:, col + 1] * profile) * dy / norm
-    ep, em = np.exp(1j * beta * dx), np.exp(-1j * beta * dx)
+    q, _ = _longitudinal_grid_params(beta, dx)
+    ep, em = np.exp(1j * q * dx), np.exp(-1j * q * dx)
     denom = ep - em
     fwd = (c0 * ep - c1) / denom        # forward (+x) amplitude at plane col
     bwd = (c1 - c0 * em) / denom        # backward (-x) amplitude at plane col
@@ -248,8 +344,11 @@ def waveguide_sparams(
 
     Injects the input waveguide mode, separates forward/backward at an input
     monitor (giving incident and reflected amplitudes), and the forward amplitude
-    at an output monitor (transmitted). Power-normalized by ``sqrt(beta)`` so
-    ``|S21|^2`` is the power transmission. Ports ``o1`` (in) and ``o2`` (out).
+    at an output monitor (transmitted). Port amplitudes use the conserved
+    discrete-grid flux ``beta*g = sin(q*dx)/dx`` for power normalization, where
+    ``q = 2*asin(beta*dx/2)/dx``. Thus ``|S21|^2`` is the power transmission even
+    when the longitudinal numerical dispersion differs between the two ports.
+    Ports ``o1`` (in) and ``o2`` (out).
 
     Both port reflections are returned: ``("o1","o1")`` from the forward solve
     and ``("o2","o2")`` from a second, right-side-incident solve that reuses the
@@ -275,13 +374,17 @@ def waveguide_sparams(
     ny, nx = eps.shape
     bi, mi = waveguide_mode(eps[:, in_eps_col if in_eps_col is not None else in_mon_col], dy, wl, mode, polarization)
     bo, mo = waveguide_mode(eps[:, out_eps_col if out_eps_col is not None else out_mon_col], dy, wl, mode, polarization)
+    _, gi = _longitudinal_grid_params(bi, dx)
+    _, go = _longitudinal_grid_params(bo, dx)
     wi = (1.0 / eps[:, in_mon_col]) if polarization == "tm" else None
     wo = (1.0 / eps[:, out_mon_col]) if polarization == "tm" else None
     sim = FDFD(eps, dx, dy, wl, npml=npml, polarization=polarization).factor()
     E = sim.solve(mode_source(ny, nx, src_col, mi, bi, dx))
     a_inc, a_refl = _decompose(E, in_mon_col, mi, bi, dy, dx, wi)
     a_out, _ = _decompose(E, out_mon_col, mo, bo, dy, dx, wo)
-    s21 = (a_out / a_inc) * np.sqrt(bo / bi)
+    # beta*g, rather than continuum beta alone, is the discrete stencil's
+    # conserved longitudinal flux per squared modal field amplitude.
+    s21 = (a_out / a_inc) * np.sqrt((bo * go) / (bi * gi))
     s11 = a_refl / a_inc
     # S22: right-side incidence. The operator is already LU-factored, so this is
     # one extra triangular solve. The source column mirrors src_col; at the
@@ -289,9 +392,11 @@ def waveguide_sparams(
     # device reflection the forward (+x) one.
     E2 = sim.solve(mode_source(ny, nx, nx - 1 - src_col, mo, bo, dx, direction=-1))
     b_fwd, b_inc = _decompose(E2, out_mon_col, mo, bo, dy, dx, wo)
+    _, b_out = _decompose(E2, in_mon_col, mi, bi, dy, dx, wi)
+    s12 = (b_out / b_inc) * np.sqrt((bi * gi) / (bo * go))
     s22 = b_fwd / b_inc
     return {
-        ("o1", "o2"): complex(s21), ("o2", "o1"): complex(s21),
+        ("o1", "o2"): complex(s12), ("o2", "o1"): complex(s21),
         ("o1", "o1"): complex(s11),
         ("o2", "o2"): complex(s22),
     }

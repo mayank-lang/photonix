@@ -25,8 +25,8 @@ Polarization (``polarization="te"`` or ``"tm"``):
   energy conserved to ~1e-12, and a smooth taper stays adiabatic with reflection
   at the ~1e-5 discretization floor.
 
-Radiation: closed window vs. PML
---------------------------------
+Radiation: closed window vs. graded absorber
+--------------------------------------------
 The transverse window is finite. With ``pml=None`` (the default) it is closed by
 Dirichlet walls, so every non-guided basis mode is a **box mode** of that window:
 it has real ``beta``, propagates without loss, and re-couples at downstream
@@ -34,17 +34,16 @@ interfaces. Power that should radiate away is therefore retained, and the
 computed loss of a radiating structure depends on how much of the box basis
 happens to be included -- it is not a converged quantity.
 
-Passing ``pml=(thickness_um, strength)`` applies a **stretched-coordinate PML**
-in the transverse direction, turning those box modes into genuinely leaky modes
-with ``Im(beta) < 0`` that attenuate as they propagate. This is what makes the
-radiated power actually leave the simulation, and it is the prerequisite for a
-converged loss figure on tapers, MMIs and other radiating structures.
+Passing the legacy-named ``pml=(thickness_um, strength)`` option applies a
+**graded imaginary-permittivity absorber** in the transverse direction, turning
+those box modes into leaky modes with ``Im(beta) < 0`` that attenuate as they
+propagate. It is intentionally not a stretched-coordinate PML; see
+:func:`transverse_pml` for the reason and its reflection caveat.
 
-Under PML the operator is complex-symmetric rather than Hermitian, so modes are
+With the absorber the operator is complex-symmetric rather than Hermitian, so modes are
 bi-orthonormal under the **unconjugated** product ``sum(w psi_l psi_m) dx`` with
-``w`` carrying the PML stretch factor (``w = s`` for TE, ``w = s/eps`` for TM).
-The interface algebra below is already written with unconjugated products, so it
-carries over unchanged.
+``w = 1`` for TE and ``w = 1/eps`` for TM. The interface algebra below is
+already written with unconjugated products, so it carries over unchanged.
 
 Interface S-matrix (modes orthonormal within a section, amplitudes power-
 normalized via ``D = diag(beta)``):
@@ -62,7 +61,7 @@ Sign convention
 Fields propagate as ``exp(-i beta z)``, so a decaying mode has ``Im(beta) < 0``.
 ``beta`` is always returned complex on that branch: guided modes are real,
 evanescent modes are negative-imaginary (they decay, they do not propagate), and
-PML leaky modes have both parts. Earlier releases clipped ``beta**2 < 0`` to
+absorber-leaky modes have both parts. Earlier releases clipped ``beta**2 < 0`` to
 ``beta = 0``, which made evanescent modes propagate losslessly and -- through the
 ``sqrt(beta)`` power normalization -- amplified them by ~1e6, so asking for more
 modes than the section could propagate produced an S-matrix with singular values
@@ -122,9 +121,22 @@ def transverse_pml(n: int, dx: float, k0: float, pml, eps_edge: float = 1.0, m: 
         Permittivity at the window edge, used to scale the absorption to the
         local index.
     """
+    if not isinstance(n, (int, np.integer)) or isinstance(n, (bool, np.bool_)) or n <= 0:
+        raise ValueError("n must be a positive integer")
+    if not np.isfinite(dx) or dx <= 0 or not np.isfinite(k0) or k0 <= 0:
+        raise ValueError("dx and k0 must be positive and finite")
+    if not isinstance(m, (int, np.integer)) or isinstance(m, (bool, np.bool_)) or m < 0:
+        raise ValueError("m must be a non-negative integer")
     if pml is None:
         return np.zeros(n, dtype=complex)
-    thickness, strength = pml
+    try:
+        thickness, strength = pml
+    except (TypeError, ValueError) as exc:
+        raise ValueError("pml must be None or a (thickness, strength) pair") from exc
+    if not np.isfinite(thickness) or thickness <= 0:
+        raise ValueError("absorber thickness must be positive and finite")
+    if not np.isfinite(strength) or strength < 0:
+        raise ValueError("absorber strength must be non-negative and finite")
     npml = int(round(thickness / dx))
     if npml <= 0:
         return np.zeros(n, dtype=complex)
@@ -148,26 +160,23 @@ def transverse_pml(n: int, dx: float, k0: float, pml, eps_edge: float = 1.0, m: 
 #: excluded from the interface algebra rather than rescaled (see ``_interface``).
 _BETA_CUTOFF = 1e-9
 
-#: A mode with more than this fraction of its |psi|^2 inside the absorber is a
-#: PML mode, not a mode of the structure. See :func:`_select_physical`.
-_PML_ENERGY_MAX = 0.35
+#: A mode with more than this fraction of its |psi|^2 inside the absorber is an
+#: absorber-localized mode, not a mode of the structure. See :func:`_select_physical`.
+_ABSORBER_ENERGY_MAX = 0.35
 
 
 def _select_physical(vals, vecs, npml, n_max, k0, want):
-    """Drop PML modes, keep the ``want`` most-confined physical ones.
+    """Drop absorber-localized modes and keep ``want`` physical modes.
 
-    A stretched-coordinate absorber supports its own dense band of eigenmodes.
-    Because the diagonal term carries ``k0^2 eps s``, and ``|s|`` reaches several
-    units inside the absorber, that band sits at ``Re(n_eff)`` just *below* the
-    core index -- exactly where shift-invert is aimed. Selecting by proximity to
-    the shift therefore returns PML modes rather than modes of the waveguide (on
-    a 500 nm SOI strip: a spurious band at ``n_eff ~ 3.49`` with ~58 % of its
-    energy inside the absorber, ahead of the true guided mode at 3.272).
+    Even a graded lossy boundary can return modes concentrated primarily inside
+    the absorber rather than the physical structure. Selecting by proximity to
+    the shift alone can therefore return absorber modes instead of waveguide or
+    radiation modes.
 
     Two physical criteria separate them:
 
-    * a mode of the structure keeps its energy in the *interior*, whereas a PML
-      mode is concentrated in the absorber; and
+    * a mode of the structure keeps its energy in the *interior*, whereas an
+      absorber-localized mode is concentrated in the lossy boundary; and
     * no mode can have ``Re(n_eff)`` above the highest index present.
 
     Returns ``(vals, vecs)`` filtered and ordered by descending ``Re(beta**2)``.
@@ -181,7 +190,7 @@ def _select_physical(vals, vecs, npml, n_max, k0, want):
     neff = np.sqrt(np.asarray(vals, dtype=complex)) / k0
     # `n_max` is a hard physical bound, so the index test is applied strictly --
     # relaxing it is what let the absorber band back in.
-    physical = (frac <= _PML_ENERGY_MAX) & (neff.real <= n_max)
+    physical = (frac <= _ABSORBER_ENERGY_MAX) & (neff.real <= n_max)
     idx = np.flatnonzero(physical)
     idx = idx[np.argsort(-np.real(np.asarray(vals)[idx]))]
     if idx.size < want:
@@ -214,12 +223,24 @@ def _beta_from_beta2(b2):
     return np.where(flip, -beta, beta)
 
 
+def _d_faces(n: int, h: float) -> sp.csr_matrix:
+    """Cell-to-face gradient with zero exterior values on both boundaries."""
+    rows = np.concatenate(([0], np.arange(1, n), np.arange(1, n), [n]))
+    cols = np.concatenate(([0], np.arange(n - 1), np.arange(1, n), [n - 1]))
+    data = np.concatenate(([1.0], -np.ones(n - 1), np.ones(n - 1), [-1.0])) / h
+    return sp.coo_matrix((data, (rows, cols)), shape=(n + 1, n)).tocsr()
+
+
 @dataclass
 class Section:
     """A z-uniform EME section: a 1-D permittivity profile and a length."""
 
     eps: np.ndarray   # (nx,) permittivity along x
     length: float     # z length (µm)
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.length) or self.length < 0:
+            raise ValueError("Section length must be non-negative and finite")
 
 
 def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
@@ -230,26 +251,35 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
     descending ``Re(beta**2)`` (most-confined first) and always on the
     ``Im(beta) <= 0`` branch so that ``exp(-i beta z)`` decays -- see the module
     docstring's sign convention. Guided modes come back real; evanescent modes
-    negative-imaginary; PML leaky modes with both parts.
+    negative-imaginary; absorber-leaky modes with both parts.
 
     ``fields`` are normalized under the **unconjugated** weighted product
     ``sum(w psi**2) dx = 1``, and the per-point ``weight`` is returned for use in
     the interface overlap:
 
-    ===========  ===================  =========================
-    polarization  weight (no PML)      weight (with PML)
-    ===========  ===================  =========================
-    ``"te"``      ``1``                ``s``
-    ``"tm"``      ``1/eps``            ``s/eps``
-    ===========  ===================  =========================
+    ===========  ====================  =========================
+    polarization  closed-window weight  absorber weight
+    ===========  ====================  =========================
+    ``"te"``      ``1``                 ``1``
+    ``"tm"``      ``1/eps``             ``1/eps``
+    ===========  ====================  =========================
 
     Parameters
     ----------
     pml
         ``None`` (closed Dirichlet window, real symmetric problem) or
-        ``(thickness_um, strength)`` for a stretched-coordinate absorber -- see
-        :func:`transverse_pml`. With PML the operator is complex-symmetric and a
-        non-Hermitian eigensolver is used.
+        ``(thickness_um, strength)`` for a graded lossy absorber -- see
+        :func:`transverse_pml`. With the absorber the operator is
+        complex-symmetric and a non-Hermitian eigensolver is used. The parameter
+        retains its historical name for API compatibility; it is not SC-PML.
+
+        **Caveat (C3)**: with ``pml=None`` the non-guided modes are **box modes**
+        of the finite Dirichlet window — they have real ``beta``, propagate
+        losslessly, and re-couple at downstream interfaces.  Radiated power is
+        retained in the simulation rather than lost, which over-estimates
+        transmission in multi-section cascades. Use the absorber
+        (``pml=(thickness, strength)``) for physically meaningful radiation
+        loss; it is the default in the EME-backed components.
 
     Examples
     --------
@@ -262,7 +292,14 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
     """
     from .geometry import as_real_eps
 
+    if (not isinstance(num_modes, (int, np.integer))
+            or isinstance(num_modes, (bool, np.bool_)) or num_modes <= 0):
+        raise ValueError("num_modes must be a positive integer")
+    if not np.isfinite(dx) or dx <= 0 or not np.isfinite(wl) or wl <= 0:
+        raise ValueError("dx and wl must be positive and finite")
     eps = as_real_eps(eps, where="slab_modes/EME")
+    if eps.ndim != 1 or eps.size < 3 or not np.all(np.isfinite(eps)):
+        raise ValueError("eps must be a finite one-dimensional array with at least 3 points")
     k0 = 2.0 * np.pi / wl
     n = len(eps)
     if polarization not in ("te", "tm"):
@@ -271,9 +308,10 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
     d_eps = transverse_pml(n, dx, k0, pml, eps_edge=float(eps[0]))
     use_pml = bool(np.any(d_eps != 0.0))
 
-    # Forward/backward difference pair; D_b = -D_f^T keeps the operator symmetric.
-    e = np.ones(n)
-    Df = sp.diags([-e, e[:-1]], [0, 1]) / dx
+    # Cell-to-face / face-to-cell pair. Including n+1 faces supplies both outer
+    # Dirichlet contributions; the previous n-face form silently imposed a
+    # Neumann condition on the left and Dirichlet on the right.
+    Df = _d_faces(n, dx)
     Db = -Df.T
 
     # The absorber goes into the *potential* term (the k0^2 diagonal), never into
@@ -283,6 +321,7 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
     # admits a dense band of absorber modes *above* the core index -- measured at
     # 33 of 60 returned modes, swamping the physical spectrum. Keeping B real
     # removes that band entirely while still absorbing.
+    weight: np.ndarray
     if polarization == "te":
         # d2psi/dx2 + k0^2 eps psi = beta^2 psi
         A = ((Db @ Df).astype(complex) + sp.diags(k0**2 * (eps.astype(complex) + d_eps))).tocsc()
@@ -290,10 +329,10 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
         weight = np.ones(n, dtype=complex)
     else:
         # d/dx[(1/eps) dHy/dx] + k0^2 (1 + d_eps/eps) Hy = beta^2 (1/eps) Hy
-        eps_face = 0.5 * (eps[:-1] + eps[1:])       # face permittivity (sharp, real)
-        inv_face = np.empty(n, dtype=complex)
-        inv_face[:-1] = 1.0 / eps_face
-        inv_face[-1] = 1.0 / eps[-1]
+        eps_face = np.empty(n + 1, dtype=float)
+        eps_face[0], eps_face[-1] = eps[0], eps[-1]
+        eps_face[1:-1] = 0.5 * (eps[:-1] + eps[1:])
+        inv_face = (1.0 / eps_face).astype(complex)
         pot = k0**2 * (1.0 + d_eps / eps)
         A = (Db @ sp.diags(inv_face) @ Df + sp.diags(pot)).tocsc()
         weight = (1.0 / eps).astype(complex)
@@ -319,7 +358,7 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
         vals, vecs = vals[:kk], vecs[:, :kk]
     else:
         # Real symmetric: keep the cheaper, more robust Hermitian path (and the
-        # exact numbers the non-PML tests were validated against).
+        # exact numbers the closed-window tests were validated against).
         vals, vecs = spla.eigsh(A.real, k=kk, M=B.real, sigma=sigma, which="LM", v0=v0)
         vals = vals.astype(complex)
         vecs = vecs.astype(complex)
@@ -340,6 +379,7 @@ def slab_modes(eps: np.ndarray, dx: float, wl: float, num_modes: int,
             vecs[:, i] = vecs[:, i] * np.sign(peak.real if peak.real != 0 else 1.0)
     if not use_pml:
         vecs = vecs.real.astype(complex)
+
     return betas[:num_modes], vecs[:, :num_modes], weight
 
 
@@ -365,7 +405,7 @@ def _interface(betaA, fieldsA, betaB, fieldsB, dx, weightB=None):
     Rb = O @ Tb - np.eye(len(betaB))
     # Similarity transform to power-normalized amplitudes. sqrt is the complex
     # principal branch: beta is real for guided modes, negative-imaginary for
-    # evanescent ones and complex under PML, so no clamping is needed.
+    # evanescent ones and complex with the absorber, so no clamping is needed.
     #
     # This used to floor beta at 1e-12 before the sqrt, which divided the rows
     # and columns of any non-propagating mode by ~1e-6 -- enough to push the
@@ -393,7 +433,7 @@ def _interface(betaA, fieldsA, betaB, fieldsB, dx, weightB=None):
 def _prop(beta, length):
     """Propagation through a uniform section: ``exp(-i beta L)`` per mode.
 
-    Complex ``beta`` on the ``Im <= 0`` branch means an evanescent or PML leaky
+    Complex ``beta`` on the ``Im <= 0`` branch means an evanescent or absorber-leaky
     mode attenuates over the section instead of sailing through unchanged.
     """
     P = np.diag(np.exp(-1j * np.asarray(beta, dtype=complex) * length))
@@ -466,7 +506,7 @@ def eme_smatrix(sections: list[Section], dx: float, wl: float, num_modes: int = 
         ``"te"`` (default) or the vectorial ``"tm"`` formulation.
     pml
         ``None`` for a closed Dirichlet window, or ``(thickness_um, strength)``
-        for a stretched-coordinate absorber. **Use PML whenever the structure
+        for a graded imaginary-permittivity absorber. **Use an absorber whenever the structure
         radiates** (tapers, MMIs, junctions): without it the non-guided basis
         modes are lossless box modes of the window, they carry radiated power to
         the far end and re-couple, and the resulting loss is a function of the
@@ -489,15 +529,17 @@ def eme_smatrix(sections: list[Section], dx: float, wl: float, num_modes: int = 
     >>> bool(abs(r.Tf[0, 0])**2 < 1.0)               # power genuinely leaves
     True
     """
+    if not sections:
+        raise ValueError("sections must contain at least one EME section")
     modes = [slab_modes(s.eps, dx, wl, num_modes, polarization, pml=pml) for s in sections]
     betas0, _f0, _w0 = modes[0]
     S = _prop(betas0, sections[0].length)
     for i in range(1, len(sections)):
         bA, fA, _wA = modes[i - 1]
         bB, fB, wB = modes[i]
-        # With PML the TE weight is the stretch factor rather than unity, so the
-        # overlap must carry it for both polarizations.
-        weightB = wB if (polarization == "tm" or pml is not None) else None
+        # The absorber changes the potential, not the modal weight. TM still
+        # requires its 1/eps overlap; TE uses the ordinary bilinear product.
+        weightB = wB if polarization == "tm" else None
         S = _star(S, _interface(bA, fA, bB, fB, dx, weightB))
         S = _star(S, _prop(bB, sections[i].length))
     Rf, Tf, Tb, Rb = S

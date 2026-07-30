@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from conftest import requires_jax
 from scipy.optimize import brentq
 
 import photonix as px
 import photonix.em as em
+from photonix.em import fde
 
 
 def _slab_analytic(t, n1, n2, wl):
@@ -38,13 +40,58 @@ def test_slab_convergence():
 
 
 def test_strip_guided():
-    ne = em.solve_modes(wl=1.55, width=0.5, thickness=0.22, resolution=35).neff0
-    assert 1.444 < ne < 3.4757
+    result = em.solve_modes(wl=1.55, width=0.5, thickness=0.22, resolution=35)
+    assert 1.444 < result.neff0 < 3.4757
+    assert result.n_guided == 1
+    assert result.guided.tolist() == [True]
+
+
+def test_custom_grid_guided_cutoff_uses_highest_exterior_index(monkeypatch):
+    """A substrate index, not the grid-wide minimum, defines the light line."""
+    import photonix.em.fde as fde
+
+    eps = np.ones((4, 4))
+    eps[-1] = 1.5**2
+
+    def fake_solve(*_args):
+        return np.array([1.6, 1.4]), np.zeros((2, 4, 4)), np.zeros(16)
+
+    monkeypatch.setattr(fde, "_solve_eps", fake_solve)
+    result = fde.solve_modes(eps=eps, num_modes=2)
+    assert result.guided.tolist() == [True, False]
+    assert result.n_guided == 1
+
+
+@pytest.mark.parametrize(
+    "grid, match",
+    [
+        (([0.0, 0.1, 0.3, 0.4], [0.0, 0.2, 0.4]), "uniformly spaced"),
+        (([0.0, 0.1, 0.2], [0.0, 0.2, 0.4]), "length 4"),
+        (([0.0, 0.1, 0.2, 0.3], [0.0, 0.2, 0.1]), "strictly increasing"),
+    ],
+)
+def test_custom_grid_validation(grid, match):
+    eps = np.ones((3, 4))
+    with pytest.raises(ValueError, match=match):
+        em.solve_modes(eps=eps, grid=grid)
+
+
+def test_mode_solver_rejects_nonpositive_mode_count():
+    import pytest
+
+    with pytest.raises(ValueError, match="num_modes"):
+        em.solve_modes(num_modes=0)
 
 
 def test_group_index_exceeds_neff():
     kw = dict(width=0.5, thickness=0.22, resolution=25)
     assert em.group_index(wl=1.55, **kw) > em.n_eff(wl=1.55, **kw)
+
+
+@pytest.mark.parametrize("wl, dwl", [(1.55, 0.0), (1.55, -0.1), (1.55, 1.55), (0.0, 0.1)])
+def test_group_index_rejects_invalid_difference_interval(wl, dwl):
+    with pytest.raises(ValueError):
+        em.group_index(wl=wl, dwl=dwl, resolution=10)
 
 
 @requires_jax
@@ -74,6 +121,37 @@ def test_slab_te_and_tm_under_0p1pct():
         assert abs(num - ana) / ana < 1e-3, (pol, num, ana)
 
 
+def test_slab_resolution_is_exact_points_per_micrometre():
+    """Adjacent resolutions must not collapse to the same core-aligned mesh."""
+    n40 = em.slab.slab_neff(resolution=40, richardson=False)
+    n41 = em.slab.slab_neff(resolution=41, richardson=False)
+    assert n40 != n41
+
+
+def test_scalar_solver_preserves_evanescent_propagation_constants(monkeypatch):
+    """Negative beta^2 roots remain distinct decaying modes, not zeros."""
+    import scipy.sparse as sp
+
+    values = np.array([4.0, -1.0, -9.0])
+
+    def fake_eigsh(_operator, **_kwargs):
+        return values, np.eye(3)
+
+    monkeypatch.setattr(fde, "helmholtz_operator", lambda *_args: sp.eye(3))
+    monkeypatch.setattr(fde.spla, "eigsh", fake_eigsh)
+    neff, _fields, _v0 = fde._solve_eps(np.ones((1, 3)), 1.0, 1.0, 2.0, 3)
+    assert neff[0] == pytest.approx(1.0)
+    assert neff[1] == pytest.approx(-0.5j)
+    assert neff[2] == pytest.approx(-1.5j)
+
+
+def test_group_index_can_include_material_dispersion(monkeypatch):
+    monkeypatch.setattr(fde, "n_eff", lambda *, n_core, **_kwargs: n_core)
+    material = lambda wavelength: 3.5 - 0.1 * (wavelength - 1.55)  # noqa: E731
+    ng = fde.group_index(wl=1.55, dwl=1e-3, core_material=material)
+    assert ng == pytest.approx(3.5 + 1.55 * 0.1)
+
+
 def test_slab_analytic_returns_fundamental_for_multimode_slab():
     """Thick (multimode) slab: the analytic root must stay on the fundamental
     branch instead of jumping across a tan() pole (it used to return ~1.455
@@ -85,6 +163,13 @@ def test_slab_analytic_returns_fundamental_for_multimode_slab():
         num = em.slab.slab_neff(thickness=0.5, wl=1.55, resolution=40, polarization=pol)
         assert abs(ana - num) / num < 1e-3, (pol, ana, num)
         assert ana > 3.0  # fundamental of a thick Si slab, not a higher branch
+
+
+def test_slab_analytic_rejects_invalid_inputs():
+    with pytest.raises(ValueError, match="polarization"):
+        em.slab.slab_neff_analytic(polarization="x")
+    with pytest.raises(ValueError, match="n_core"):
+        em.slab.slab_neff_analytic(n_core=1.4, n_clad=1.5)
 
 
 def test_te_more_confined_than_tm():

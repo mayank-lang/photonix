@@ -8,11 +8,13 @@ both the JAX and NumPy backends.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import cast
 
 from .backend import xp
 from .types import (
     PortMap,
     PortName,
+    SCoo,
     SDense,
     SDict,
     SType,
@@ -53,13 +55,20 @@ def sdict_to_sdense(sdict: SDict, ports: list[PortName] | None = None) -> SDense
     """
     if ports is None:
         ports = ports_of(sdict)
+    elif len(ports) != len(set(ports)):
+        raise ValueError("ports must contain each port name at most once.")
     port_map: PortMap = {p: i for i, p in enumerate(ports)}
+    missing = set(ports_of(sdict)) - set(port_map)
+    if missing:
+        raise ValueError(f"ports is missing SDict terminals: {sorted(missing)!r}.")
     n = len(ports)
 
     batch = _broadcast_shape(sdict.values()) if sdict else ()
     S = xp.zeros((*batch, n, n), dtype=complex)
-    for (pi, pj), val in sdict.items():
-        i, j = port_map[pi], port_map[pj]
+    for (p_in, p_out), val in sdict.items():
+        # Scattering matrices use the standard S[out, in] convention, while
+        # SDict keys are deliberately human-readable (in, out) pairs.
+        i, j = port_map[p_out], port_map[p_in]
         v = xp.broadcast_to(xp.asarray(val, dtype=complex), batch) if batch else xp.asarray(val, dtype=complex)
         S = _set(S, i, j, v)
     return S, port_map
@@ -77,40 +86,51 @@ def _set(S, i: int, j: int, value):
 def sdense_to_sdict(sdense: SDense, drop_zeros: bool = True, tol: float = 0.0) -> SDict:
     """Convert a dense ``(S, port_map)`` back to an :data:`SDict`."""
     S, port_map = sdense
-    inv = {idx: name for name, idx in port_map.items()}
+    S = xp.asarray(S)
     n = len(port_map)
+    if S.ndim < 2 or S.shape[-2:] != (n, n):
+        raise ValueError(
+            f"Dense S-matrix must end in shape ({n}, {n}), got {S.shape}."
+        )
+    indices = list(port_map.values())
+    if any(not isinstance(i, int) for i in indices) or set(indices) != set(range(n)):
+        raise ValueError("port_map indices must be the unique contiguous integers 0..N-1.")
+    inv = {idx: name for name, idx in port_map.items()}
     out: SDict = {}
-    for i in range(n):
-        for j in range(n):
-            val = S[..., i, j]
+    for i_out in range(n):
+        for j_in in range(n):
+            val = S[..., i_out, j_in]
             if drop_zeros:
-                mag = float(xp.max(xp.abs(val)))
-                if mag <= tol:
+                # An empty batch contains no samples from which to infer that
+                # an entry is zero, so preserve its structural matrix entry.
+                if val.size and float(xp.max(xp.abs(val))) <= tol:
                     continue
-            out[(inv[i], inv[j])] = val
+            out[(inv[j_in], inv[i_out])] = val
     return out
 
 
 def as_sdict(x: SType) -> SDict:
     """Coerce any scattering form to an :data:`SDict`."""
     if is_sdict(x):
-        return dict(x)
+        return dict(cast(SDict, x))
     if is_sdense(x):
-        return sdense_to_sdict(x)
+        return sdense_to_sdict(cast(SDense, x))
     if is_scoo(x):
-        Si, Sj, Sx, pm = x
+        Si, Sj, Sx, pm = cast(SCoo, x)
         inv = {idx: name for name, idx in pm.items()}
         out: SDict = {}
         for a, b, v in zip(list(Si), list(Sj), list(Sx), strict=False):
-            out[(inv[int(a)], inv[int(b)])] = v
+            key = (inv[int(b)], inv[int(a)])
+            # COO permits duplicate coordinates; their contributions add.
+            out[key] = out.get(key, 0) + v
         return out
     raise TypeError(f"Cannot coerce {type(x)!r} to SDict")
 
 
 def as_sdense(x: SType, ports: list[PortName] | None = None) -> SDense:
     """Coerce any scattering form to dense ``(S, port_map)``."""
-    if is_sdense(x):
-        return x
+    if is_sdense(x) and ports is None:
+        return cast(SDense, x)
     return sdict_to_sdense(as_sdict(x), ports)
 
 
@@ -139,6 +159,10 @@ def is_reciprocal(sdict: SDict, atol: float = 1e-6) -> bool:
 def is_passive(x: SType, atol: float = 1e-6) -> bool:
     """Check passivity: largest singular value of S is <= 1 (no power gain)."""
     S, _ = as_sdense(x)
+    if S.ndim < 2 or S.shape[-2] != S.shape[-1]:
+        raise ValueError(f"Passivity requires a square S-matrix, got shape {S.shape}.")
+    if S.shape[-1] == 0:
+        return True
     S2 = xp.reshape(S, (-1, S.shape[-2], S.shape[-1]))
     for k in range(S2.shape[0]):
         sv = xp.linalg.svd(S2[k], compute_uv=False)

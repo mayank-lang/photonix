@@ -13,6 +13,23 @@ def test_sweep_stacks_arrays():
     assert np.allclose(s[("o1", "o2")].imag, wls)
 
 
+def test_sweep_preserves_first_seen_port_order():
+    def model(wl):
+        if wl < 1.55:
+            return {("o2", "o1"): 1, ("o1", "o1"): 2}
+        return {("o1", "o2"): 3, ("o2", "o1"): 1}
+
+    s = sweep(model, [1.5, 1.6])
+    assert list(s) == [("o2", "o1"), ("o1", "o1"), ("o1", "o2")]
+
+
+def test_sweep_rejects_empty_wavelengths():
+    import pytest
+
+    with pytest.raises(ValueError, match="non-empty"):
+        sweep(lambda wl: {("o1", "o1"): wl}, [])
+
+
 def test_sweep_taper_broadband_high_transmission():
     from photonix.em.components import taper
 

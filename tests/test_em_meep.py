@@ -18,6 +18,8 @@ import importlib.util
 import numpy as np
 import pytest
 
+from photonix.em import meep
+
 MEEP_PRESENT = importlib.util.find_spec("meep") is not None
 needs_meep = pytest.mark.skipif(not MEEP_PRESENT, reason="Meep is not installed")
 def _has_mpb() -> bool:
@@ -32,10 +34,6 @@ def _has_mpb() -> bool:
 
 needs_mpb = pytest.mark.skipif(not _has_mpb(), reason="Meep/MPB is not installed")
 
-if MEEP_PRESENT:
-    from photonix.em import meep
-
-
 # --------------------------------------------------------------------------- #
 # Always-on: import contract / graceful but loud degradation
 # --------------------------------------------------------------------------- #
@@ -46,16 +44,13 @@ def test_em_imports_without_meep():
     assert hasattr(em, "solve_modes_fullvector")
 
 
-def test_meep_backend_requires_meep():
+def test_meep_backend_is_import_safe_but_runtime_is_guarded():
     if MEEP_PRESENT:
-        pytest.skip("Meep is installed; the absence path is not exercised here.")
-    # Both spellings must raise the install-hint ImportError.
+        assert meep.HAS_MEEP
+        return
+    assert not meep.HAS_MEEP
     with pytest.raises(ImportError, match="conda"):
-        from photonix.em import meep  # noqa: F401
-    import photonix.em as em
-
-    with pytest.raises(ImportError, match="conda"):
-        em.meep  # noqa: B018 - attribute access triggers the guarded import
+        meep.require_meep()
 
 
 def _load_meep_backend_standalone(*names):
@@ -136,15 +131,12 @@ def _stub_mp_mpb():
     return mp, mpb
 
 
-def test_mpb_eps_grid_becomes_raw_epsilon_array_not_materialgrid():
+def test_mpb_eps_grid_becomes_supported_sampled_material_not_materialgrid():
     """Integration contract with Meep's MPB (libpympb).
 
-    MPB's material dispatch (``get_material_pt`` / ``material_epsmu``) evaluates
-    Medium, epsilon-array (MATERIAL_FILE), user-function, and metal materials
-    only -- there is no MATERIAL_GRID branch, and hitting one calls
-    ``meep::abort``. An arbitrary eps grid must therefore reach ``mpb.ModeSolver``
-    as a float64 C-contiguous epsilon array used as ``default_material``
-    (dims ordered (nx, ny): Meep maps dims[0] to x), with no geometry objects.
+    MaterialGrid is not supported by MPB. The arbitrary grid is represented by
+    a supported position-dependent material callback on a block spanning the
+    lattice, with cell-centred (piecewise-constant) sampling.
     """
     modes = _load_modes_standalone()
     mp, mpb = _stub_mp_mpb()
@@ -160,15 +152,14 @@ def test_mpb_eps_grid_becomes_raw_epsilon_array_not_materialgrid():
     )
 
     default = ms.kwargs["default_material"]
-    assert isinstance(default, np.ndarray)
-    assert default.dtype == np.float64
-    assert default.flags["C_CONTIGUOUS"]
-    assert default.shape == (nx, ny)
-    assert np.array_equal(default, eps.T)
-    assert ms.kwargs["geometry"] == []
+    assert isinstance(default, _StubMedium)
+    (block,) = ms.kwargs["geometry"]
+    assert callable(block.material)
+    assert block.material(_StubV3(x[0], y[0])).epsilon == pytest.approx(eps[0, 0])
+    assert block.material(_StubV3(x[-1], y[-1])).epsilon == pytest.approx(eps[-1, -1])
     lat = ms.kwargs["geometry_lattice"]
-    assert lat.size.x == pytest.approx(float(x[-1] - x[0]))
-    assert lat.size.y == pytest.approx(float(y[-1] - y[0]))
+    assert lat.size.x == pytest.approx(nx * float(x[1] - x[0]))
+    assert lat.size.y == pytest.approx(ny * float(y[1] - y[0]))
     assert ms.kwargs["num_bands"] == 2
     assert np.array_equal(gx, x) and np.array_equal(gy, y)
 
@@ -215,12 +206,12 @@ def test_mpb_parametric_path_uses_block_and_medium():
 # --------------------------------------------------------------------------- #
 # Backend: unit bridge
 # --------------------------------------------------------------------------- #
-@needs_meep
 def test_meep_frequency_is_inverse_wavelength():
     assert meep.meep_frequency(1.55) == pytest.approx(1.0 / 1.55)
+    with pytest.raises(ValueError):
+        meep.meep_frequency(0)
 
 
-@needs_meep
 def test_neff_k_roundtrip():
     f = meep.meep_frequency(1.55)
     k = meep.k_from_n_eff(2.45, f)
@@ -231,7 +222,6 @@ def test_neff_k_roundtrip():
 # --------------------------------------------------------------------------- #
 # Backend: MaterialGrid weights
 # --------------------------------------------------------------------------- #
-@needs_meep
 def test_material_grid_weights_two_material():
     eps = np.array([[2.0, 12.0], [12.0, 2.0]])
     w, lo, hi = meep.material_grid_weights(eps)
@@ -239,7 +229,6 @@ def test_material_grid_weights_two_material():
     assert np.allclose(w, [[0.0, 1.0], [1.0, 0.0]])
 
 
-@needs_meep
 def test_material_grid_weights_uniform_collapses():
     eps = np.full((3, 3), 5.3)
     w, lo, hi = meep.material_grid_weights(eps)
@@ -247,25 +236,24 @@ def test_material_grid_weights_uniform_collapses():
     assert np.all(w == 0.0)
 
 
-@needs_meep
 def test_material_grid_weights_linear_and_clipped():
     eps = np.array([[1.0, 2.0, 3.0]])
     w, lo, hi = meep.material_grid_weights(eps, eps_low=1.0, eps_high=3.0)
     assert np.allclose(w, [[0.0, 0.5, 1.0]])
-    eps2 = np.array([[0.0, 4.0]])
+    eps2 = np.array([[0.5, 4.0]])
     w2, _, _ = meep.material_grid_weights(eps2, eps_low=1.0, eps_high=3.0)
     assert np.allclose(w2, [[0.0, 1.0]])
 
 
-@needs_meep
 def test_index_grid():
     assert np.allclose(meep.index_grid(np.array([4.0, 9.0])), [2.0, 3.0])
+    with pytest.raises(ValueError):
+        meep.index_grid(np.array([-1.0]))
 
 
 # --------------------------------------------------------------------------- #
 # Backend: geometry / coordinate mapping
 # --------------------------------------------------------------------------- #
-@needs_meep
 def test_cell_size_matches_pixel_count():
     eps = np.zeros((10, 20))
     sx, sy = meep.cell_size(eps, 0.05, 0.04)
@@ -273,16 +261,14 @@ def test_cell_size_matches_pixel_count():
     assert sy == pytest.approx(10 * 0.04)
 
 
-@needs_meep
 def test_col_row_centered_on_origin():
     assert meep.col_to_x(0, 100, 0.05) == pytest.approx(-2.5 + 0.025)
     assert meep.col_to_x(99, 100, 0.05) == pytest.approx(2.5 - 0.025)
     assert meep.row_to_y(0, 80, 0.05) == pytest.approx(-2.0 + 0.025)
 
 
-@needs_meep
 def test_devicegrid_properties():
-    eps = np.zeros((50, 120))
+    eps = np.ones((50, 120))
     d = meep.DeviceGrid(eps, 0.05, 0.025)
     assert d.shape == (50, 120)
     assert d.size == (pytest.approx(6.0), pytest.approx(1.25))
@@ -290,16 +276,160 @@ def test_devicegrid_properties():
     assert d.x_of_col(60) == pytest.approx(meep.col_to_x(60, 120, 0.05))
 
 
-@needs_meep
 def test_epsilon_lookup_nearest_cell():
     x = np.linspace(-1, 1, 5)
     y = np.linspace(-1, 1, 3)
-    eps = np.arange(15, dtype=float).reshape(3, 5)
+    eps = np.arange(15, dtype=float).reshape(3, 5) + 1.0
     g = meep.epsilon_lookup(eps, x, y)
     assert g(-1.0, -1.0) == eps[0, 0]
     assert g(1.0, 1.0) == eps[2, 4]
     assert g(0.0, 0.0) == eps[1, 2]
     assert g(10.0, 10.0) == eps[2, 4]
+
+
+def test_pml_padding_uses_ceil_and_zero_is_zero():
+    mods = _load_meep_backend_standalone("materials", "geometry", "fdtd")
+    eps = np.full((2, 3), 2.0)
+    padded, npx, npy = mods["fdtd"].pad_for_pml(eps, 0.3, 0.4, 1.0)
+    assert (npx, npy) == (4, 3)
+    assert padded.shape == (2 + 2 * npy, 3 + 2 * npx)
+    same, npx0, npy0 = mods["fdtd"].pad_for_pml(eps, 0.3, 0.4, 0.0)
+    assert (npx0, npy0) == (0, 0)
+    assert np.array_equal(same, eps) and same is not eps
+
+
+def test_mpb_fields_match_native_yx_dominant_component():
+    modes = _load_modes_standalone()
+
+    class Solver:
+        def get_efield(self, _band):
+            field = np.zeros((3, 2, 1, 3), dtype=complex)
+            field[:, :, 0, 0] = np.arange(6).reshape(3, 2)
+            return field
+
+    fields, fractions = modes._extract_fields(Solver(), 1, np.arange(3), np.arange(2))
+    assert fields.shape == (1, 2, 3)
+    assert np.array_equal(fields[0], np.arange(6).reshape(3, 2).T)
+    assert fractions[0] == pytest.approx(1.0)
+
+
+def test_full_two_port_assembly_uses_reverse_run(monkeypatch):
+    mods = _load_meep_backend_standalone("materials", "geometry", "fdtd")
+    fdtd = mods["fdtd"]
+    calls = []
+
+    def fake_one_way(grid, **kwargs):
+        calls.append((np.asarray(grid).copy(), kwargs))
+        return ((0.1 + 0.01j, 0.8 + 0.02j) if len(calls) == 1
+                else (0.2 + 0.03j, 0.7 + 0.04j))
+
+    monkeypatch.setattr(fdtd, "_one_way_sparams", fake_one_way)
+    eps = np.arange(24, dtype=float).reshape(4, 6) + 2.0
+    result = fdtd.waveguide_sparams(
+        eps,
+        dx=0.1,
+        dy=0.1,
+        wl=1.55,
+        src_col=0,
+        in_mon_col=1,
+        out_mon_col=5,
+    )
+    assert result == {
+        ("o1", "o1"): 0.1 + 0.01j,
+        ("o1", "o2"): 0.8 + 0.02j,
+        ("o2", "o2"): 0.2 + 0.03j,
+        ("o2", "o1"): 0.7 + 0.04j,
+    }
+    assert np.array_equal(calls[1][0], eps[:, ::-1])
+
+
+def test_waveguide_spectrum_preserves_wavelength_shape(monkeypatch):
+    mods = _load_meep_backend_standalone("materials", "geometry", "fdtd")
+    fdtd = mods["fdtd"]
+    monkeypatch.setattr(
+        fdtd,
+        "_one_way_sparams",
+        lambda _eps, **kwargs: (0j, complex(kwargs["wl"])),
+    )
+    wavelengths = np.array([[1.5, 1.55], [1.6, 1.65]])
+    result = fdtd.waveguide_spectrum(
+        np.ones((3, 5)),
+        wavelengths=wavelengths,
+        dx=0.1,
+        dy=0.1,
+        src_col=0,
+        in_mon_col=1,
+        out_mon_col=4,
+        bidirectional=False,
+    )
+    assert result[("o1", "o2")].shape == wavelengths.shape
+    assert np.allclose(result[("o1", "o2")].real, wavelengths)
+
+    dataset = fdtd.waveguide_dataset(
+        np.ones((3, 5)), wavelengths=np.array([1.5, 1.6]),
+        dx=0.1, dy=0.1, src_col=0, in_mon_col=1, out_mon_col=4,
+        bidirectional=False, metadata={"device": "straight"},
+    )
+    assert dataset.metadata["solver"] == "meep-fdtd"
+    assert dataset.metadata["device"] == "straight"
+    assert dataset.s.shape == (2, 2, 2)
+
+
+def test_prepare_layout_centres_polygons_and_ports():
+    from photonix.layout import Cell
+
+    cell = Cell("straight")
+    cell.add_polygon([(2, -0.25), (6, -0.25), (6, 0.25), (2, 0.25)], layer=(1, 0))
+    cell.add_port("o1", center=(2, 0), orientation=180, width=0.5, layer=(1, 0))
+    cell.add_port("o2", center=(6, 0), orientation=0, width=0.5, layer=(1, 0))
+    cell.add_port("diag", center=(4, 0), orientation=45, width=0.5, layer=(1, 0))
+    prepared = meep.prepare_layout(cell, [meep.LayerSpec((1, 0), epsilon=12.0)], margin=1.0)
+    assert prepared.dimensions == 2
+    assert prepared.origin == pytest.approx((4.0, 0.0))
+    assert prepared.cell_size == pytest.approx((6.0, 2.5, 0.0))
+    assert prepared.ports["o1"].center == pytest.approx((-2.0, 0.0))
+    assert prepared.ports["o1"].outward_normal == pytest.approx((-1.0, 0.0))
+    assert np.min(prepared.polygons[0].vertices[:, 0]) == pytest.approx(-2.0)
+    with pytest.raises(ValueError, match="axis-aligned"):
+        meep.port_region(prepared.ports["diag"])
+
+
+def test_prepare_layout_builds_finite_3d_stack_metadata():
+    import types
+
+    import photonix.em.meep.layout as meep_layout
+    from photonix.layout import Cell
+
+    cell = Cell("stack").add_polygon([(0, 0), (1, 0), (1, 1)], layer=(1, 0))
+    spec = meep.LayerSpec((1, 0), epsilon=4.0, thickness=0.22, z_center=10.0)
+    prepared = meep.prepare_layout(cell, [spec], margin=(0.5, 0.5, 0.8))
+    assert prepared.dimensions == 3
+    assert prepared.cell_size == pytest.approx((2.0, 2.0, 1.82))
+    assert prepared.z_origin == pytest.approx(10.0)
+
+    class Prism:
+        def __init__(self, vertices, height, axis, **kwargs):
+            self.vertices, self.height, self.axis = vertices, height, axis
+            self.kwargs = kwargs
+
+    stub = types.SimpleNamespace(
+        Vector3=_StubV3,
+        Medium=_StubMedium,
+        Prism=Prism,
+        inf=float("inf"),
+    )
+    original = meep_layout.require_meep
+    meep_layout.require_meep = lambda: stub
+    try:
+        built = meep_layout.build_layout_geometry(prepared)
+    finally:
+        meep_layout.require_meep = original
+    prism = built.geometry[0]
+    assert [(v.x, v.y) for v in prism.vertices] == [
+        tuple(point) for point in prepared.polygons[0].vertices
+    ]
+    assert all(v.z == pytest.approx(-0.11) for v in prism.vertices)
+    assert prism.height == pytest.approx(0.22)
 
 
 # --------------------------------------------------------------------------- #
@@ -323,7 +453,7 @@ def test_meep_material_grid_constructs():
     assert tuple(grid.grid_size)[:2] == (8, 8)
 
 
-@needs_meep
+@needs_mpb
 def test_meep_fdtd_straight_waveguide_transmits():
     dx = dy = 0.025
     ny, nx = int(3.0 / dy), int(4.0 / dx)

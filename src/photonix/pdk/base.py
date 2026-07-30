@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from .process import ProcessStudy
+
 __all__ = ["Layer", "ComponentSpec", "Pdk"]
 
 
@@ -58,6 +60,7 @@ class Pdk:
         self.name = name
         self.components: dict[str, ComponentSpec] = {}
         self.layers: dict[str, Layer] = {}
+        self.process_studies: dict[str, ProcessStudy] = {}
 
     def add_layer(self, layer: Layer) -> Pdk:
         self.layers[layer.name] = layer
@@ -68,6 +71,21 @@ class Pdk:
             name, layout, model, dict(layout_settings or {}), dict(model_settings or {})
         )
         return self
+
+    def add_process_study(self, name: str, study: ProcessStudy) -> Pdk:
+        """Register a named, explicitly calibrated process study."""
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("process study registry name must be a non-empty string")
+        if not isinstance(study, ProcessStudy):
+            raise TypeError("study must be a ProcessStudy")
+        self.process_studies[name.strip()] = study
+        return self
+
+    def get_process_study(self, name: str) -> ProcessStudy:
+        """Return a registered process study by name."""
+        if name not in self.process_studies:
+            raise KeyError(f"Process study {name!r} not in PDK {self.name!r}.")
+        return self.process_studies[name]
 
     def get_layout(self, name: str, **overrides):
         """Instantiate the layout :class:`Cell` for component ``name``."""

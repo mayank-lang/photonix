@@ -57,7 +57,7 @@ def main() -> None:
     # (c) bend loss vs radius (resolved regime; gentler bends fall below the PML
     #     noise floor for this confined strip, so we show R <= 1.5 um)
     radii = [1.0, 1.2, 1.35, 1.5]
-    loss = [em.bend_loss_fullvector(bend_radius=R, resolution=30).loss_db_per_90deg
+    loss = [em.bend_loss_fullvector(bend_radius=R, resolution=30, inner=0.1).loss_db_per_90deg
             for R in radii]
     print("bend loss dB/90:", [f"{r}:{v:.2e}" for r, v in zip(radii, loss, strict=False)])
 

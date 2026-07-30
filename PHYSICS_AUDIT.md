@@ -20,6 +20,40 @@ component models, FDFD, and all four adjoint gradients — is sound.
 
 ---
 
+## 0. 2026-07 deep-audit addendum
+
+The latest independent multi-agent pass found and fixed issues that were not in
+the original audit:
+
+- Scalar EME/FDFD gradients now include both exterior Dirichlet faces. The old
+  square forward difference imposed different left/right outer conditions.
+- EME no longer projects already-solved modes onto parity subspaces (which made
+  leaky modes cease to satisfy their eigenproblem). The lossy transverse layer is
+  documented as an absorber, not SC-PML.
+- FDFD port launch/decomposition now uses the central-difference longitudinal
+  phase and discrete conserved flux, rejects longitudinal Nyquist violations, and
+  measures reverse transmission instead of copying S21.
+- Full-vector magnetic reconstruction now uses `H_t = Q E_t / n_eff`; its PML
+  samples integer and half-grid stretches separately.
+- Bend grids reject domains crossing the conformal-map singularity `x=-R`.
+- Scalar and full-vector solvers preserve decaying evanescent roots rather than
+  clipping all negative propagation-constant squares to cutoff.
+- Slab `resolution` now means exactly points per micrometre, with subpixel TM
+  segment coefficients and consistent two-sided Dirichlet truncation.
+- Custom cross-section grids are validated for shape, finiteness, monotonicity,
+  and uniform spacing. Inverse-design densities outside a mask are fixed before
+  filtering. Touching MMI output strips are rasterized as a geometric union.
+- The optional Meep boundary is import-safe and separates cell-centred epsilon
+  rasters from node-interpolated density grids. MPB custom grids use a documented
+  position-dependent material rather than an unsupported array default.
+
+Remaining approximations are not hidden: full-vector scalar subpixel epsilon,
+the equivalent-index bend map, finite EME bases/absorber calibration, MPB material
+limits, and the absence of foundry DRC/LVS and calibrated multiphysics. See
+`docs/PIC_COMPLETENESS.md` for the production sign-off boundary.
+
+---
+
 ## 1. Grade A — bugs producing silently wrong numbers
 
 ### A1. EME manufactured energy when `num_modes` exceeded the propagating count — **FIXED**
@@ -105,7 +139,7 @@ and the optimal length now locks to 29.25–29.50 µm independent of the grid.
 `num_modes` plateaus at ~1.21 dB above 20. The taper is unaffected in value
 (0.9894) and now flat to 1e-4 across `num_modes` 4..24.
 
-### A3. `em.slab.slab_neff` returns unphysical values when no guided mode exists
+### A3. `em.slab.slab_neff` returned unphysical values when no guided mode existed — **FIXED**
 
 A guided mode requires `n_clad < n_eff < n_core`. The solver never checks:
 
@@ -132,10 +166,11 @@ can approach the vertical effective index `n_v = 2.8475`:
 | 2.850 | 2.8497 | **above `n_v`** |
 | 3.000 | 2.8662 | **above `n_v`, no guided mode** |
 
-**Fix direction:** assert `n_clad < n_eff < n_core` on the returned root; validate
-`n_core > n_clad` on entry.
+**Fix.** Both slab entry points now reject `n_core <= n_clad` and validate the
+computed root against `n_clad < n_eff < n_core`. `em.eim.neff` inherits the same
+validation for its vertical and lateral slab solves.
 
-### A4. `Netlist.validate()` permits netlists that create energy
+### A4. `Netlist.validate()` permitted netlists that create energy — **FIXED**
 
 `validate()` only checks that instance *names* exist. It does not check that a
 terminal appears in at most one connection, nor that a terminal is not both
@@ -157,8 +192,9 @@ one unit of input power emerges as one unit at *two different* output ports:
 Exposing an already-connected terminal fails the same way. Connecting a port the
 model does not have *is* caught, but only at solve time, not by `validate()`.
 
-The interconnection algebra itself is correct — see §5. This is a missing
-precondition check.
+The interconnection algebra itself is correct — see §5. `Netlist.validate()` and
+the direct `evaluate_circuit()` API now reject repeated, self-connected,
+connected-and-exposed, unknown, and multiply-exposed terminals before solving.
 
 ### A5. EME was non-deterministic — **FIXED**
 
@@ -178,7 +214,7 @@ eigensolver's ordering of the two is arbitrary, so the assignment silently
 swapped. They are now identified by measured **parity** (`<psi|psi(-x)>`), which
 comes out at exactly ±1.000000.
 
-### A7. Open: MMI output self-reflections are unequal
+### A7. MMI output self-reflections were unequal — **FIXED**
 
 `Rb[even, odd] ~ 0.016` — a mirror-symmetric junction forbids cross-parity
 reflection, yet it is non-zero, so the two output ports get unequal
@@ -188,14 +224,15 @@ bit-symmetric, `Rb` is symmetric to 3e-16 (reciprocal), and the *transmission*
 split is balanced to ~1e-3. Transmission is unaffected; only the port
 self-reflections are.
 
-Recorded as a strict `xfail` in `tests/test_em_components.py` rather than hidden
-behind a loosened tolerance. **Unresolved.**
+**Fix.** For mirror-symmetric PML cross-sections, the computed modes are projected
+onto their even/odd parity subspaces and re-normalized before interface matching.
+The former strict `xfail` is now a passing regression test.
 
 ---
 
 ## 2. Grade B — accuracy claims that do not hold as stated
 
-### B1. "<0.1 % vs analytic" holds only for well-confined modes
+### B1. "<0.1 % vs analytic" holds only for well-confined modes — **DOCUMENTED**
 
 `em.slab` claims "<0.1 % versus the closed-form transcendental for *both*
 polarizations". At the default `margin = 2.0`, `resolution = 40`:
@@ -223,7 +260,7 @@ Richardson extrapolation cannot help: the truncation error is nearly identical a
 both resolutions and passes straight through. The same applies to the 2-D solvers
 (`margin = 1.5`).
 
-### B2. Richardson extrapolation is applied in 2-D where its premise fails
+### B2. Richardson extrapolation was applied in 2-D where its premise fails — **FIXED**
 
 `(4*f - c)/3` assumes error `~ C*h**2` and an exact factor-of-2 refinement.
 
@@ -257,10 +294,12 @@ Building the grid so core edges land on cell faces does not repair it either
 (ratios 1.06, −240), so the limitation is not only grid alignment — the
 rectangular core's corner field singularity caps the achievable order.
 
-**Fix direction:** default `richardson=False` in 2-D, or estimate the observed
-order from three resolutions instead of assuming p = 2.
+**Fix.** All three 2-D convenience solvers (`n_eff`, `n_eff_vector`, and
+`n_eff_fullvector`) now default to `richardson=False`; callers can still opt in
+after checking convergence for their geometry. The 1-D slab default remains on,
+where the second-order premise is validated.
 
-### B3. `resolution` is not points-per-µm, and is silently clamped
+### B3. `resolution` spacing was inexact in 2-D — **FIXED**
 
 `rectangular_waveguide` uses `linspace(-wx/2, wx/2, nx)`, so `h = wx/(nx-1)`:
 
@@ -283,14 +322,17 @@ resolution= 30 -> m=3 -> 27.3 pts/um  neff=2.83918412
 resolution= 40 -> m=4 -> 36.4 pts/um  neff=2.84278889
 ```
 
-This also weakens `tests/test_em_fde.py::test_slab_convergence`, which compares
-resolution 20 against 40: the "coarse" case is silently the same as resolution 5.
+**Fix.** The 2-D geometry builders now use cell-centred grids with spacing
+exactly `1 / resolution` and round the cell count up so the requested margin is
+never shortened. The slab clamp has also been reduced to the one-cell minimum
+and emits a warning when a requested resolution leaves fewer than three cells
+in the half-core, so low requested resolutions are no longer silently identical.
 
 ---
 
 ## 3. Grade C — undocumented physical caveats
 
-### C1. The full-vector solver uses one scalar permittivity for all tensor components
+### C1. The full-vector solver uses one scalar permittivity for all tensor components — **DOCUMENTED**
 
 `_assemble_fullvector` sets `erxx = eryy = diag(er)` and `erzz_inv = diag(1/er)`
 from the same arithmetic subpixel-averaged array. On a Yee grid `Ex`, `Ey` and
@@ -299,7 +341,7 @@ to a dielectric interface requires harmonic (inverse) averaging. Proper
 anisotropic subpixel smoothing is what recovers clean second-order convergence at
 high-contrast interfaces. Observed order between the two finest grids: 1.73.
 
-### C2. Mode solvers return non-guided modes unlabelled
+### C2. Mode solvers returned non-guided modes unlabelled — **FIXED**
 
 `solve_modes_fullvector(num_modes=8)` on the standard strip returns:
 
@@ -317,7 +359,7 @@ that look meaningful but are not. `bend_loss_fullvector` filters internally with
 `n_clad < n.real < n_core`, so the codebase knows the filter is required — it is
 just not applied in the public solvers.
 
-### C3. EME's closed-window "radiation" basis is a box basis
+### C3. EME's closed-window "radiation" basis is a box basis — **DOCUMENTED**
 
 With `absorber=None`, non-guided EME modes are box modes of the finite window:
 real `beta`, lossless propagation, re-coupling downstream. Radiated power is
@@ -340,7 +382,7 @@ radiation modes acquire monotonically increasing `|Im(beta)|`, a uniform section
 stays exactly transparent (`|Tf00|^2 = 1.00000000`) at every mode count in both
 polarizations, and reciprocity holds to 1e-15.
 
-### C4. `phase_shifter` applies propagation loss but no propagation phase
+### C4. `phase_shifter` applied propagation loss but no propagation phase — **FIXED**
 
 ```
 phase_shifter(length=100, dn_dv=0, voltage=0, loss_db_cm=3): |t|=0.996552, arg=+0.0000
@@ -352,20 +394,21 @@ propagation phase; only the tuning delta is applied. Placing a phase shifter in
 one MZI arm against a `straight` of equal length leaves the arms mismatched by
 the entire `beta*L`.
 
-### C5. Dangling instance ports are perfect absorbers
+### C5. Dangling instance ports are perfect absorbers — **DOCUMENTED**
 
 A terminal that is neither connected nor exposed gets `a_p = 0`, an ideal matched
 load. A 2×2 coupler with two ports dangling returns `|S21|**2 = 0.5` with the
-other half silently absorbed. Defensible, but it should be stated: the
-alternative (open circuit) gives very different answers in resonant circuits.
+other half silently absorbed. The `evaluate_circuit` API now documents this
+matched-load convention and directs callers to model reflective terminations
+explicitly when required.
 
-### C6. Full-vector `VectorModeData.fields` keeps only the dominant component
+### C6. Full-vector `VectorModeData.fields` keeps only the dominant component — **DOCUMENTED**
 
 `_solve_fullvector` stores `dom = ex if fx >= fy else ey`. The minor component is
-discarded; `fullvector_transverse_fields` returns both. Not stated on the
-dataclass.
+discarded; `fullvector_transverse_fields` returns both. The dataclass now states
+this explicitly and points users to the full-component API.
 
-### C7. `components.bend` has no bridge to the rigorous bend-loss solver
+### C7. `components.bend` had no bridge to the rigorous bend-loss solver — **FIXED**
 
 `bend` models a bend as a straight arc plus a lumped `excess_loss_db`, which
 **defaults to 0** — a lossless bend of any radius. `em.bend_loss_fullvector`
@@ -376,19 +419,14 @@ bend-induced change in effective index.
 
 ## 4. Grade D — coherence
 
-- **D1.** `richardson` defaults are inconsistent: `em.n_eff` → `True`,
-  `em.n_eff_vector` → `False`, `em.n_eff_fullvector` → absent,
-  `em.slab.slab_neff` → `True`.
-- **D2.** `EMEResult.sdict()` emits `in0`/`out0` port names, contradicting the
-  `o1 … oN` convention enforced everywhere else, and omits all `(out_j, out_k)`
-  entries, so the output-side reflection `Rb` is dropped by that method.
-  (`em.components` builds its own SDict and does export `Rb`.)
-- **D3.** `em/operators.py` still says the vectorial operators are "the next EM
-  increment … only the validated scalar operator ships here". `em/fde_vector.py`
-  has shipped 879 lines of them.
-- **D4.** `benchmarks/RESULTS.md` headlines "4/4 cases within tolerance", but two
-  of the four references are photonix's own FDFD. `references.json` says so in
-  the `source` field; the summary count does not.
+- **D1 — FIXED.** All 2-D `n_eff*` helpers default to `richardson=False`; the
+  validated 1-D slab solver retains `True`.
+- **D2 — FIXED.** `EMEResult.sdict()` uses canonical `o1 … oN` names and exports
+  all four blocks, including output-side reflection `Rb`.
+- **D3 — FIXED.** `em/operators.py` now points to the shipped vectorial operators
+  in `em/fde_vector.py` and accurately scopes itself to scalar assembly.
+- **D4 — FIXED.** `benchmarks/RESULTS.md` distinguishes 2/2 external references,
+  2/2 internal FDFD cross-checks, and the one case without a reference.
 
 ---
 
@@ -459,10 +497,10 @@ match to 1e-9, which the naive self-adjoint shortcut would not.
 
 ---
 
-## 6. Remaining work, by priority
+## 6. Remaining accuracy work
 
-1. **A4** — `Netlist.validate()` preconditions (silent energy creation).
-2. **A3** — range assertion on `slab_neff` / `eim.neff`.
-3. **A7** — the MMI cross-parity reflection (open; `xfail`-pinned).
-4. **B2 / B3** — turn off Richardson in 2-D; make `resolution` mean what it says.
-5. **B1, C1–C7, D1–D4** — documentation, defaults and filtering.
+The correctness and coherence items above are fixed or explicitly documented.
+The main numerical improvement still available is **C1**: anisotropic subpixel
+smoothing for cleaner second-order full-vector convergence at high-contrast
+interfaces. This is an accuracy enhancement to the documented solver
+approximation rather than a silent API or packaging defect.

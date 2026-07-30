@@ -21,6 +21,22 @@ def test_filter_enforces_smoothness():
     assert out[10, 11] > 0                     # neighbors picked up weight
 
 
+def test_filter_handles_integer_density_and_zero_radius():
+    rho = np.zeros((7, 7), dtype=int)
+    rho[3, 3] = 1
+    out = fab.conic_filter(rho, radius_cells=2.0)
+    assert out.dtype.kind == "f"
+    assert 0 < out[3, 3] < 1
+    assert np.array_equal(fab.conic_filter(rho, radius_cells=0), rho)
+    assert np.array_equal(fab.conic_filter_adjoint(rho, radius_cells=0), rho)
+
+
+def test_zero_beta_projection_is_identity():
+    rho = np.array([0.1, 0.5, 0.9])
+    assert np.array_equal(fab.tanh_projection(rho, beta=0), rho)
+    assert np.array_equal(fab.tanh_projection_deriv(rho, beta=0), np.ones_like(rho))
+
+
 def test_conic_filter_adjoint_identity():
     """<c, A x> == <A^T c, x> to machine precision, incl. non-integer radii."""
     rng = np.random.default_rng(1)

@@ -61,4 +61,6 @@ def overlap(field_a, field_b) -> float:
     b = np.asarray(field_b).ravel()
     num = abs(np.vdot(a, b)) ** 2
     den = np.vdot(a, a).real * np.vdot(b, b).real
+    if den == 0:
+        raise ValueError("Mode overlap is undefined for a zero-norm field.")
     return float(num / den)

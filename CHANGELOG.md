@@ -6,11 +6,37 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed (package audit)
+
+- Corrected dense/COO scattering conversion to consistently use the standard
+  `S[out, in]` convention, including non-reciprocal devices and duplicate COO
+  entries.
+- Circuit and layout validation now rejects reused, self-connected,
+  multiply-exposed, ambiguous, and unknown terminals before they can create an
+  invalid network.
+- Geometry resolution is now an exact points-per-micrometre spacing; FDFD,
+  fabrication filters, inverse-design schedules, spectrum sweeps, routing,
+  plotting, and mode overlaps handle their zero/empty/invalid edge cases.
+- Custom mode grids classify guided modes against the highest exterior index,
+  avoiding false guidance below a substrate light line.
+- Package namespaces import on the minimal NumPy/SciPy installation, the README
+  version/install instructions match `pyproject.toml`, and wheel installation
+  is covered by package smoke checks.
+
 ### Fixed (physics)
 
 Findings from a full numerical audit of the EM stack; see `docs/PHYSICS_AUDIT.md`
 for the evidence behind each.
 
+- Corrected the asymmetric one-sided outer stencil in scalar EME/FDFD, removed
+  post-solve parity projection, and staggered integer/half-cell PML samples.
+- FDFD ports now use numerical longitudinal dispersion and conserved discrete
+  flux, reject Nyquist-invalid modes, and independently extract reverse S12.
+- Full-vector magnetic fields include the missing `1/n_eff`; bend domains cannot
+  cross the conformal singularity; evanescent roots are preserved.
+- Slab resolution is exact points per micrometre, custom mode grids are strictly
+  validated, masked inverse-design filtering has deterministic exterior density,
+  and touching MMI strips are rasterized as a union.
 - **EME no longer manufactures energy.** `slab_modes` clipped negative `beta**2`
   to `beta = 0`, so evanescent modes propagated without decay *and* the
   `sqrt(beta)` power normalization divided them by `sqrt(1e-12)`, amplifying them
@@ -36,6 +62,23 @@ for the evidence behind each.
 
 ### Added
 
+- Import-safe Meep/MPB specifications; exact native `Cell`/layer/port to Meep
+  prism/monitor conversion for 2-D and 3-D; distinct cell-centred and density-grid
+  realization; full bidirectional two-port and wavelength-array extraction with
+  optional reference normalization.
+- `SParameterDataset`: a versioned, validated sampled S-matrix contract with
+  circuit-model evaluation, interpolation, provenance, pickle-free NPZ I/O,
+  Touchstone 1.0 `S RI` interchange, and an optional scikit-rf bridge.
+- General native-layout Meep orchestration for complete multimode/multiport
+  matrices, with port-local direction conventions and optional reference-layout
+  normalization/background subtraction.
+- OASIS interchange through optional gdstk and safe external KLayout DRC/LVS
+  execution for opaque user/foundry decks.
+- Validated process-corner/covariance studies, PDK study registration, Elmer,
+  DEVSIM, Lumerical DEVICE, and generic licensed-solver adapters, plus unit-aware
+  mesh-field exchange and provenance-required linear index/permittivity response.
+- An explicit production-PIC completeness/sign-off document.
+
 - **Transverse absorber for EME** (`eme_smatrix(..., pml=(thickness, strength))`,
   on by default for the EME-backed components). Without it, non-guided basis
   modes are lossless box modes of the window that carry radiated power to the far
@@ -47,8 +90,7 @@ for the evidence behind each.
   3.272). Validated -- guided modes untouched to 1e-16, radiation modes acquire
   monotonically increasing loss, uniform sections stay exactly transparent, and
   reciprocity holds to 1e-15.
-- `docs/PHYSICS_AUDIT.md` -- the full audit: 4 remaining Grade-A bugs, 3 accuracy
-  claims that do not hold as stated, 7 undocumented modelling caveats, and the
+- `PHYSICS_AUDIT.md` -- the full numerical audit and resolution status, plus the
   list of what was verified correct (unit conversions, constants, coupler
   unitarity to 2e-16, circuit-vs-analytic ring to 1.8e-15, FDFD energy
   conservation, and all four adjoint gradients against finite differences).

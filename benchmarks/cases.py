@@ -38,7 +38,9 @@ def _soi_tm0() -> float:
 
 def _bend_loss_r1() -> float:
     import photonix.em as em
-    return em.bend_loss_fullvector(bend_radius=1.0, resolution=28).loss_db_per_90deg
+    return em.bend_loss_fullvector(
+        bend_radius=1.0, resolution=28, inner=0.1
+    ).loss_db_per_90deg
 
 
 def _step_T(pol: str) -> float:

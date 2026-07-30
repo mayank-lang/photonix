@@ -48,7 +48,7 @@ def demo_pdk() -> Pdk:
                       layout_settings=_WG_LAYOUT, model_settings=_WG_MODEL)
     pdk.add_component("bend", layout=_layout.bend_circular, model=_models.bend,
                       layout_settings=_WG_LAYOUT, model_settings=_WG_MODEL)
-    pdk.add_component("directional_coupler", layout=_layout.mmi1x2, model=_models.directional_coupler,
+    pdk.add_component("directional_coupler", layout=_layout.directional_coupler, model=_models.directional_coupler,
                       layout_settings=_WG_LAYOUT, model_settings={"coupling": 0.5})
     pdk.add_component("ring", layout=_layout.ring, model=_models.all_pass_ring,
                       layout_settings=_WG_LAYOUT, model_settings=_WG_MODEL)

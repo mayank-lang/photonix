@@ -36,10 +36,16 @@ dependencies = [
 jax = ["jax>=0.4.20", "jaxlib>=0.4.20"]
 layout = ["gdstk>=0.9"]
 viz = ["matplotlib>=3.7"]
-all = ["jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7", "networkx>=3.0"]
+rf = ["scikit-rf>=1.0"]
+multiphysics = ["meshio>=5.3"]
+all = [
+    "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7",
+    "networkx>=3.0", "scikit-rf>=1.0", "meshio>=5.3",
+]
 dev = [
     "pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.4", "mypy>=1.8",
     "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7", "networkx>=3.0",
+    "scikit-rf>=1.0", "meshio>=5.3",
 ]
 
 [project.urls]

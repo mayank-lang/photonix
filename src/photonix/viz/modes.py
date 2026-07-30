@@ -38,9 +38,17 @@ def plot_mode(field, x=None, y=None, *, ax=None, cmap: str = "RdBu_r"):
     if ax is None:
         _, ax = plt.subplots(figsize=(5, 4))
     f = to_numpy(field)
+    if f.ndim != 2 or f.size == 0:
+        raise ValueError(f"field must be a non-empty 2-D array, got shape {f.shape}.")
+    # Eigenmode fields are generally complex.  A signed field plot displays
+    # the real component; callers wanting magnitude can pass abs(field).
+    if __import__("numpy").iscomplexobj(f):
+        f = f.real
     extent = None
     if x is not None and y is not None:
         x, y = to_numpy(x), to_numpy(y)
+        if x.ndim != 1 or y.ndim != 1 or len(x) != f.shape[1] or len(y) != f.shape[0]:
+            raise ValueError("x/y coordinate lengths must match the field columns/rows.")
         extent = [float(x.min()), float(x.max()), float(y.min()), float(y.max())]
     vmax = float(abs(f).max()) or 1.0
     im = ax.imshow(f, origin="lower", extent=extent, cmap=cmap, vmin=-vmax, vmax=vmax, aspect="auto")

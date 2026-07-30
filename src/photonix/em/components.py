@@ -52,6 +52,17 @@ from .slab import slab_neff
 __all__ = ["taper", "mmi1x2"]
 
 
+def _index_at(value, wl: float, name: str) -> float:
+    if hasattr(value, "index"):
+        value = value.index(wl)
+    elif callable(value):
+        value = value(wl)
+    arr = np.asarray(value)
+    if arr.ndim != 0 or np.iscomplexobj(arr) or not np.isfinite(float(arr)) or float(arr) <= 0:
+        raise ValueError(f"{name} must be a positive real index or wavelength-to-index material")
+    return float(arr)
+
+
 def _vertical_index(thickness, n_core, n_clad, wl, polarization):
     vpol = "te" if polarization == "te" else "tm"
     return slab_neff(thickness=thickness, n_core=n_core, n_clad=n_clad, wl=wl, polarization=vpol)
@@ -93,6 +104,19 @@ def _strip(x, width, n_core_eff, n_clad, center=0.0):
     overlap = np.minimum(x + h / 2.0, hi) - np.maximum(x - h / 2.0, lo)
     frac = np.clip(overlap / h, 0.0, 1.0)
     return frac * n_core_eff**2 + (1.0 - frac) * n_clad**2
+
+
+def _strip_union(x, strips, n_core_eff, n_clad):
+    """Subpixel permittivity of the geometric union of 1-D strip intervals."""
+    x = np.asarray(x, dtype=float)
+    h = float(x[1] - x[0])
+    fraction = np.zeros_like(x)
+    for center, width in strips:
+        lo, hi = center - width / 2.0, center + width / 2.0
+        overlap = np.minimum(x + h / 2.0, hi) - np.maximum(x - h / 2.0, lo)
+        fraction += np.clip(overlap / h, 0.0, 1.0)
+    fraction = np.clip(fraction, 0.0, 1.0)
+    return fraction * n_core_eff**2 + (1.0 - fraction) * n_clad**2
 
 
 def _even_odd_indices(eps_out, dx, wl, num_modes, lat_pol, absorber):
@@ -156,6 +180,8 @@ def taper(
     >>> bool(0.0 < px.power(s[("o1", "o2")]) <= 1.0)
     True
     """
+    n_core = _index_at(n_core, wl, "n_core")
+    n_clad = _index_at(n_clad, wl, "n_clad")
     nve = _vertical_index(thickness, n_core, n_clad, wl, polarization)
     x = np.linspace(-half_window, half_window, points)
     dx = float(x[1] - x[0])
@@ -216,15 +242,19 @@ def mmi1x2(
     >>> bool(0.0 < t2 + t3 <= 1.0)         # passive
     True
     """
+    n_core = _index_at(n_core, wl, "n_core")
+    n_clad = _index_at(n_clad, wl, "n_clad")
     nve = _vertical_index(thickness, n_core, n_clad, wl, polarization)
     x = np.linspace(-half_window, half_window, points)
     dx = float(x[1] - x[0])
     offset = (gap + width_access) / 2.0
     eps_in = _strip(x, width_access, nve, n_clad, center=0.0)
     eps_mmi = _strip(x, width_mmi, nve, n_clad, center=0.0)
-    eps_out = np.maximum(
-        _strip(x, width_access, nve, n_clad, center=+offset),
-        _strip(x, width_access, nve, n_clad, center=-offset),
+    eps_out = _strip_union(
+        x,
+        ((+offset, width_access), (-offset, width_access)),
+        nve,
+        n_clad,
     )
     secs = [
         Section(eps_in, access_length),

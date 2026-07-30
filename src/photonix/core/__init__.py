@@ -19,6 +19,7 @@ from .backend import (
     vmap,
     xp,
 )
+from .dataset import SParameterDataset, touchstone_capabilities
 from .sparams import (
     as_sdense,
     as_sdict,
@@ -60,6 +61,7 @@ __all__ = [
     # types
     "Array", "Complex", "Float", "Model", "ModelFactory", "PortName", "PortPair",
     "SCoo", "SDense", "SDict", "AliasedSDict", "SType", "Settings",
+    "SParameterDataset", "touchstone_capabilities",
     "is_sdict", "is_sdense", "is_scoo", "ports_of",
     # sparams
     "as_sdict", "as_sdense", "sdict_to_sdense", "sdense_to_sdict",

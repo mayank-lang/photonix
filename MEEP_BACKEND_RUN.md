@@ -1,96 +1,119 @@
-# Running the Meep backend + full suite on a real machine
+# Running the Meep backend and full suite
 
-Everything below assumes you're at the repo root: `photonix/`.
+Run commands from the Photonix repository root.
 
 ## 1. Environment
 
-The Meep backend needs **Meep + MPB** (conda-only). The rest of photonix needs
-`numpy`, `scipy`, and (optionally) `jax`.
-
-> **Windows note:** conda-forge has **no Windows build of `pymeep`** (Linux/macOS
-> only). On Windows you must use **WSL2** (Ubuntu) — native Windows conda will fail
-> the solve. There is also **no `pymeep-extras` package**; MPB is bundled in
-> `pymeep`.
-
-```powershell
-# Windows only: install WSL2 + Ubuntu (PowerShell as admin), then reboot if asked
-wsl --install -d Ubuntu
-```
+The runtime backend needs Meep with bundled MPB. Meep is distributed through
+conda-forge for Linux/macOS; use WSL2 on Windows.
 
 ```bash
-# Linux / macOS / inside WSL Ubuntu: install Miniconda first, then:
 conda create -n photonix -c conda-forge python=3.11 pymeep
 conda activate photonix
-# faster parallel build instead of plain pymeep (optional):
-#   conda install -c conda-forge "pymeep=*=mpi_mpich_*"
-
-# photonix runtime deps
-pip install numpy scipy
-pip install "jax[cpu]"          # optional: enables the differentiable backend
-pip install pytest ruff         # dev: tests + lint
-
-# put the package on the path. From WSL, the repo is under /mnt/c/...
-#   cd "/mnt/c/Users/My PC/Desktop/Photonics/photonix"
-pip install -e .                # if there's a pyproject/setup
-export PYTHONPATH="$PWD/src"    # or just point at src/
+pip install -e ".[dev]"
+python -c "import meep, meep.mpb; print(meep.__version__)"
 ```
 
-Verify Meep imported:
-```bash
-python -c "import meep, meep.mpb; print('meep', meep.__version__)"
-```
+For the MPI build, select the appropriate `pymeep=*=mpi_mpich_*` conda package.
 
-## 2. The Meep backend tests
+## 2. Backend tests
 
 ```bash
-pytest tests/test_em_meep.py -v
+pytest tests/test_em_meep.py tests/test_meep_multiport.py -v
 ```
 
-Expected **with Meep installed**: the 2 contract tests pass and all 13 backend
-tests run (MaterialGrid weights, coordinate mapping, the unit bridge, MPB `n_eff`
-vs the in-house FDE, and a straight-waveguide FDTD transmission ≈ 1).
+Without Meep, all pure unit, layout, coordinate, and full-S assembly tests pass;
+only the three runtime tests skip. With Meep installed, also verify:
 
-Expected **without Meep**: the 2 contract tests pass, the 13 backend tests skip.
+- `test_mpb_neff_matches_fde`: MPB and native full-vector FDE agree within the
+  documented discretization tolerance;
+- `test_meep_material_grid_constructs`: density-grid realization succeeds;
+- `test_meep_fdtd_straight_waveguide_transmits`: a straight guide has near-unit
+  modal transmission.
 
-Two backend tests do real solves and are the ones to watch:
-- `test_mpb_neff_matches_fde` — MPB vs `n_eff_fullvector`, asserts agreement < 0.03.
-- `test_meep_fdtd_straight_waveguide_transmits` — straight guide, asserts 0.9 < T ≤ 1.02.
+The FDTD integration test requires MPB because `EigenModeSource` and eigenmode
+decomposition invoke it.
 
-If either fails on numbers (not import), it's almost certainly a tolerance/parity/
-resolution tune, not a structural bug — see notes in §5.
+## 3. Native-layout multimode and multiport matrices
 
-## 3. The full existing suite (~89 tests)
+`simulate_multiport_sparameters` expands each physical layout port into modal
+terminals and performs every incident run needed for the full square matrix:
+
+```python
+from photonix.em import meep
+
+prepared = meep.prepare_layout(
+    top,
+    [meep.LayerSpec((1, 0), epsilon=3.48**2)],
+    margin=1.5,
+)
+dataset = meep.simulate_multiport_sparameters(
+    prepared,
+    wavelengths=[1.50, 1.55, 1.60],
+    resolution=30,
+    port_modes={
+        "o1": meep.PortModeSpec((1, 2), monitor_offset=0.2),
+        "o2": meep.PortModeSpec((1, 2), monitor_offset=0.2),
+        "drop": (1,),
+    },
+    pml=1.0,
+)
+assert dataset.ports == ("o1:m1", "o1:m2", "o2:m1", "o2:m2", "drop:m1")
+```
+
+The matrix convention is `dataset.s[wavelength, outgoing, incoming]`. Meep band
+numbers are one-based. Each mode plane is decomposed with a wave-vector guess
+along its local outward normal, so coefficient direction 0 is outgoing and
+direction 1 is incident for ports on every side of the device. No reciprocity,
+mirror symmetry, or mode-isolation assumption is used.
+
+For quantitative work, pass a separately prepared straight `reference=` layout
+with identical port cross-sections and settings. Its incoming coefficient is the
+normalization denominator; its complete backward modal vector at the incident
+physical port is subtracted as launch background. Without that reference, the
+incoming coefficient measured in the device run is used, which can be biased by
+strong reflections or a source colocated with its monitor.
+
+## 4. Full verification
 
 ```bash
 pytest -q
+ruff check src tests benchmarks
+python -m mypy src/photonix
+python -m doctest README.md
+python -m build
 ```
 
-My changes were additive (a new `photonix.em.meep` subpackage + lazy hook in
-`em/__init__.py`), so the prior suite should remain green. The import contract is
-covered by `tests/test_em_meep.py::test_em_imports_without_meep`.
+The import/runtime boundary is covered by
+`test_meep_backend_is_import_safe_but_runtime_is_guarded`: specifications remain
+available without Meep, while object realization and solver calls fail locally
+with the installation hint.
 
-## 4. The external benchmark (real Meep reference numbers)
+## 5. External benchmark
 
 ```bash
 python benchmarks/run.py --external
 ```
 
-Without Meep it prints `[external] meep: skipped (ImportError: ...)`. With Meep it
-fills the SOI-strip TE0 `n_eff` (MPB) and width-step TE transmission (Meep FDTD)
-columns and writes `benchmarks/RESULTS.md`.
+With Meep installed this fills the MPB SOI-strip mode and Meep width-step columns.
+Without it the benchmark reports the external backend as skipped.
 
-## 5. Lint
+## 6. Numerical checks for a real Meep run
 
-```bash
-ruff check src/photonix/em/meep/ tests/test_em_meep.py benchmarks/external/meep_adapter.py
-```
+Do not treat one passing number as convergence. Repeat relevant runs while varying:
 
-## What to send back if something's off
+- spatial resolution and PML thickness;
+- source/monitor distance and decay threshold;
+- reference-plane position (S-parameter phase changes with it);
+- modal band/parity and transverse span;
+- the optional straight reference used by `normalization_eps`.
 
-- Full `pytest tests/test_em_meep.py -v` output (esp. the two solver tests).
-- `meep.__version__`.
-- If a number is just outside tolerance: the printed value. The likely knobs are
-  the eigenmode `parity` mapping in `fdtd.parity_for`, the FDTD `decay_by`
-  threshold / monitor placement, and MPB `resolution` — all are parameters, not
-  hard-coded assumptions.
-```
+For native-layout modal matrices also vary the source and monitor inward offsets,
+the modal basis size at every physical port, and the reference geometry. MPB
+mode launch/decomposition ignores magnetic, conductive, nonlinear, and dispersive
+material terms; propagating power-normalized modes are required before
+interpreting `abs(S)**2` as a power fraction. Diagonal port planes are rejected
+because the current native-layout adapter constructs axis-aligned Meep DFT planes.
+
+Report the Meep version, backend test output, and the values at each convergence
+setting when diagnosing a discrepancy.

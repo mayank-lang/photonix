@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
+from typing import cast
 
 from photonix.core.backend import xp
 from photonix.core.types import AliasedSDict, Model, SDict, ports_of
@@ -66,6 +67,13 @@ def evaluate_circuit(
     SDict
         Keyed by ``(external_in, external_out)`` over the exposed ports.
 
+    Notes
+    -----
+    An instance terminal that is neither connected nor exposed is terminated
+    in a matched load (its incident wave is zero). This is useful for unused
+    coupler ports, but is not equivalent to an open or reflective termination;
+    model those explicitly when required.
+
     Examples
     --------
     >>> import photonix as px
@@ -87,7 +95,39 @@ def evaluate_circuit(
             terminals.append((inst, p))
     index = {t: i for i, t in enumerate(terminals)}
     n = len(terminals)
-    if n == 0:
+
+    # Validate the direct functional API as rigorously as Netlist.validate().
+    # Otherwise repeated terminals create multi-way rows in Gamma and silently
+    # inject energy into a topology that the solver cannot represent.
+    connected: set[tuple[str, str]] = set()
+    for a, b in connections.items():
+        if a not in index or b not in index:
+            raise KeyError(f"Connection {a} <-> {b} references an unknown instance port.")
+        if a == b:
+            raise ValueError(f"A terminal cannot be connected to itself: {a!r}.")
+        for terminal in (a, b):
+            if terminal in connected:
+                raise ValueError(
+                    f"Terminal {terminal!r} appears in multiple connections. "
+                    "Each terminal may be connected at most once."
+                )
+            connected.add(terminal)
+
+    exposed: set[tuple[str, str]] = set()
+    for external, terminal in ports.items():
+        if terminal not in index:
+            raise KeyError(
+                f"External port {external!r} references unknown instance port {terminal!r}."
+            )
+        if terminal in connected:
+            raise ValueError(
+                f"External port {external!r} references internally connected terminal {terminal!r}."
+            )
+        if terminal in exposed:
+            raise ValueError(f"Instance port {terminal!r} is exposed more than once.")
+        exposed.add(terminal)
+
+    if n == 0 or not ports:
         return {}
 
     batch = _broadcast_batch(instances)
@@ -104,8 +144,6 @@ def evaluate_circuit(
     # 3. Interconnection matrix Gamma: a_p = b_q for each connected (p, q).
     Gamma = xp.zeros((n, n), dtype=complex)
     for a, b in connections.items():
-        if a not in index or b not in index:
-            raise KeyError(f"Connection {a} <-> {b} references an unknown instance port.")
         ia, ib = index[a], index[b]
         if hasattr(Gamma, "at"):
             Gamma = Gamma.at[ia, ib].set(1.0).at[ib, ia].set(1.0)
@@ -178,18 +216,22 @@ def circuit_from_netlist(
     """
     netlist.validate()
     if models is None:
-        from photonix.components import MODELS as models  # noqa: N811
+        from photonix.components import MODELS
+
+        registry = cast(Mapping[str, Callable[..., SDict]], MODELS)
+    else:
+        registry = models
 
     def model(*, wl=1.55, **overrides) -> SDict:
         inst_sdicts: dict[str, SDict] = {}
         for inst, model_name in netlist.instances.items():
-            if model_name not in models:
+            if model_name not in registry:
                 raise KeyError(
                     f"Model {model_name!r} for instance {inst!r} not in registry. "
-                    f"Known models: {sorted(models)}"
+                    f"Known models: {sorted(registry)}"
                 )
             settings = netlist.merged_settings(inst, overrides.get(inst))
-            inst_sdicts[inst] = models[model_name](wl=wl, **settings)
+            inst_sdicts[inst] = registry[model_name](wl=wl, **settings)
         out = evaluate_circuit(inst_sdicts, netlist.connections, netlist.ports)
         return AliasedSDict(out, aliases=port_aliases) if port_aliases else out
 
@@ -231,7 +273,10 @@ def mzi(
     """
     from photonix import components as _c
 
-    models = {"coupler": _c.directional_coupler, "straight": _c.straight}
+    models: dict[str, Callable[..., SDict]] = {
+        "coupler": _c.directional_coupler,
+        "straight": _c.straight,
+    }
     nl = Netlist(name="mzi")
     nl.add("c1", "coupler", coupling=coupling)
     nl.add("c2", "coupler", coupling=coupling)
@@ -266,7 +311,10 @@ def ring(
     """
     from photonix import components as _c
 
-    models = {"coupler": _c.directional_coupler, "straight": _c.straight}
+    models: dict[str, Callable[..., SDict]] = {
+        "coupler": _c.directional_coupler,
+        "straight": _c.straight,
+    }
     circ = 2.0 * math.pi * radius
     nl = Netlist(name="ring")
     nl.add("cpl", "coupler", coupling=coupling)

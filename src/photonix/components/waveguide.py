@@ -9,6 +9,9 @@ Ports
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypeAlias
+
 from photonix.core.backend import xp
 from photonix.core.constants import N_GROUP_SI_STRIP, WL_DEFAULT
 from photonix.core.types import SDict
@@ -16,7 +19,7 @@ from photonix.core.units import db_per_cm_to_alpha_um
 
 __all__ = ["straight", "bend", "bend_from_solver", "neff_linear"]
 
-IndexLike = "float | Callable"
+IndexLike: TypeAlias = float | Callable[..., object]
 
 
 def _eval_index(value, wl):
@@ -189,4 +192,3 @@ def bend_from_solver(
         excess_loss_db=result.loss_db_per_90deg * (angle / 90.0),
         wl0=wl0,
     )
-

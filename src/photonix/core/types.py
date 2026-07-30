@@ -21,7 +21,7 @@ Conversion helpers live in :mod:`photonix.core.sparams`.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 Float = Any        # backend float scalar or array
 Complex = Any      # backend complex scalar or array
@@ -160,8 +160,12 @@ def ports_of(x: SType) -> list[PortName]:
             names.add(i)
             names.add(j)
         return sorted(names)
-    if is_sdense(x) or is_scoo(x):
-        return sorted(x[-1], key=lambda n: x[-1][n])
+    if is_sdense(x):
+        port_map = cast(SDense, x)[1]
+        return sorted(port_map, key=port_map.__getitem__)
+    if is_scoo(x):
+        port_map = cast(SCoo, x)[3]
+        return sorted(port_map, key=port_map.__getitem__)
     raise TypeError(f"Unrecognized scattering type: {type(x)!r}")
 
 

@@ -28,10 +28,17 @@ import numpy as np
 
 from photonix.core.types import SDict
 
-from ._guard import meep_frequency, require_meep
-from .geometry import DeviceGrid, build_block
+from ._guard import meep_frequency, require_mpb
+from .geometry import DeviceGrid, build_block, build_pixel_block
 
-__all__ = ["waveguide_sparams", "build_simulation", "parity_for", "pad_for_pml"]
+__all__ = [
+    "waveguide_sparams",
+    "waveguide_spectrum",
+    "waveguide_dataset",
+    "build_simulation",
+    "parity_for",
+    "pad_for_pml",
+]
 
 
 def parity_for(mp, polarization: str):
@@ -69,8 +76,17 @@ def pad_for_pml(eps: np.ndarray, dx: float, dy: float, dpml: float):
     to offset the caller's column indices into the padded grid.
     """
     eps = np.asarray(eps, float)
-    npx = max(int(round(dpml / dx)), 1)
-    npy = max(int(round(dpml / dy)), 1)
+    if eps.ndim != 2 or 0 in eps.shape or not np.all(np.isfinite(eps)) or np.any(eps <= 0):
+        raise ValueError("eps must be a non-empty 2-D array of finite, positive permittivities")
+    dx, dy, dpml = float(dx), float(dy), float(dpml)
+    if not np.isfinite(dx) or dx <= 0 or not np.isfinite(dy) or dy <= 0:
+        raise ValueError("dx and dy must be positive and finite")
+    if not np.isfinite(dpml) or dpml < 0:
+        raise ValueError("dpml must be non-negative and finite")
+    npx = int(np.ceil(dpml / dx))
+    npy = int(np.ceil(dpml / dy))
+    if npx == 0 and npy == 0:
+        return eps.copy(), 0, 0
     eps_p = np.pad(eps, ((npy, npy), (npx, npx)), mode="edge")
     return eps_p, npx, npy
 
@@ -86,6 +102,7 @@ def build_simulation(
     fwidth_frac: float = 0.1,
     eig_parity=None,
     src_size_y: float | None = None,
+    grid_kind: str = "cell",
 ):
     """Assemble a 2-D Meep ``Simulation`` with an eigenmode source.
 
@@ -94,10 +111,26 @@ def build_simulation(
     the transverse extent of the eigenmode source/monitor plane (default: full
     device height). Returns ``(sim, info)``. Requires Meep.
     """
-    mp = require_meep()
+    mp, _mpb = require_mpb()  # EigenModeSource and mode monitors require MPB.
     fcen = meep_frequency(wl)
-    cell, geometry = build_block(device)
+    if (not isinstance(src_col, (int, np.integer)) or isinstance(src_col, (bool, np.bool_))
+            or not 0 <= src_col < device.shape[1]):
+        raise ValueError(f"src_col must be an integer in [0, {device.shape[1]})")
+    if not isinstance(mode, (int, np.integer)) or isinstance(mode, (bool, np.bool_)) or mode <= 0:
+        raise ValueError("mode must be a positive integer")
+    if not np.isfinite(dpml) or dpml < 0:
+        raise ValueError("dpml must be non-negative and finite")
+    if not np.isfinite(fwidth_frac) or fwidth_frac <= 0:
+        raise ValueError("fwidth_frac must be positive and finite")
+    if grid_kind == "cell":
+        cell, geometry = build_pixel_block(device)
+    elif grid_kind == "density":
+        cell, geometry = build_block(device)
+    else:
+        raise ValueError("grid_kind must be 'cell' or 'density'")
     sy = device.size[1] if src_size_y is None else float(src_size_y)
+    if not np.isfinite(sy) or sy <= 0 or sy > device.size[1] * (1 + 1e-12):
+        raise ValueError("src_size_y must be positive and no larger than the device height")
     parity = eig_parity if eig_parity is not None else parity_for(mp, polarization)
 
     source = mp.EigenModeSource(
@@ -113,12 +146,108 @@ def build_simulation(
         cell_size=cell,
         geometry=geometry,
         sources=[source],
-        boundary_layers=[mp.PML(dpml)],
+        boundary_layers=[mp.PML(dpml)] if dpml > 0 else [],
         resolution=int(round(device.resolution)),
         force_complex_fields=False,
     )
-    info = {"fcen": fcen, "parity": parity, "mode": mode, "sy": sy, "mp": mp}
+    decay_component = mp.Ez if polarization.lower() in ("te", "ez") else mp.Hz
+    info = {
+        "fcen": fcen,
+        "parity": parity,
+        "mode": mode,
+        "sy": sy,
+        "mp": mp,
+        "decay_component": decay_component,
+    }
     return sim, info
+
+
+def _validate_columns(nx: int, src_col: int, in_mon_col: int, out_mon_col: int) -> None:
+    values = (src_col, in_mon_col, out_mon_col)
+    if any(not isinstance(v, (int, np.integer)) or isinstance(v, (bool, np.bool_)) for v in values):
+        raise ValueError("source and monitor columns must be integers")
+    if not (0 <= src_col < in_mon_col < out_mon_col < nx):
+        raise ValueError(
+            "left-incidence columns must satisfy "
+            f"0 <= src_col < in_mon_col < out_mon_col < nx; got {values} for nx={nx}"
+        )
+
+
+def _one_way_sparams(
+    eps: np.ndarray,
+    *,
+    dx: float,
+    dy: float,
+    wl: float,
+    src_col: int,
+    in_mon_col: int,
+    out_mon_col: int,
+    polarization: str,
+    mode: int,
+    dpml: float,
+    decay_by: float,
+    fwidth_frac: float,
+    eig_parity,
+    pad_pml: bool,
+    normalization_eps: np.ndarray | None,
+) -> tuple[complex, complex]:
+    """Return ``(reflection, transmission)`` for left incidence."""
+    ny, nx = eps.shape
+    _validate_columns(nx, src_col, in_mon_col, out_mon_col)
+
+    def run(grid: np.ndarray):
+        if pad_pml:
+            eps_p, npx, _npy = pad_for_pml(grid, dx, dy, dpml)
+        else:
+            eps_p, npx = grid, 0
+        device = DeviceGrid(eps_p, dx, dy)
+        src_size_y = ny * dy
+        sim, info = build_simulation(
+            device,
+            wl=wl,
+            src_col=src_col + npx,
+            polarization=polarization,
+            mode=mode,
+            dpml=dpml,
+            fwidth_frac=fwidth_frac,
+            eig_parity=eig_parity,
+            src_size_y=src_size_y,
+        )
+        mp = info["mp"]
+        fcen, parity = info["fcen"], info["parity"]
+
+        def mode_region(col):
+            return mp.ModeRegion(
+                center=mp.Vector3(device.x_of_col(col + npx), 0),
+                size=mp.Vector3(0, src_size_y, 0),
+            )
+
+        in_mon = sim.add_mode_monitor(fcen, 0, 1, mode_region(in_mon_col))
+        out_mon = sim.add_mode_monitor(fcen, 0, 1, mode_region(out_mon_col))
+        decay_pt = mp.Vector3(device.x_of_col(out_mon_col + npx), 0)
+        sim.run(
+            until_after_sources=mp.stop_when_fields_decayed(
+                50,
+                info["decay_component"],
+                decay_pt,
+                decay_by,
+            )
+        )
+        bands = [mode]
+        a_in = sim.get_eigenmode_coefficients(in_mon, bands, eig_parity=parity)
+        a_out = sim.get_eigenmode_coefficients(out_mon, bands, eig_parity=parity)
+        # alpha[band, frequency, direction]: 0 = +x, 1 = -x.
+        return a_in.alpha[0, 0, 0], a_in.alpha[0, 0, 1], a_out.alpha[0, 0, 0]
+
+    fwd_in, bwd_in, fwd_out = run(eps)
+    if normalization_eps is None:
+        incident = fwd_in
+        reflected_background = 0.0
+    else:
+        incident, reflected_background, _reference_out = run(normalization_eps)
+    if abs(incident) <= np.finfo(float).tiny:
+        raise RuntimeError("Meep returned zero incident-mode amplitude; check the source mode and port geometry")
+    return complex((bwd_in - reflected_background) / incident), complex(fwd_out / incident)
 
 
 def waveguide_sparams(
@@ -126,7 +255,7 @@ def waveguide_sparams(
     *,
     dx: float,
     dy: float,
-    wl: float,
+    wl: float | np.ndarray,
     src_col: int,
     in_mon_col: int,
     out_mon_col: int,
@@ -137,6 +266,11 @@ def waveguide_sparams(
     fwidth_frac: float = 0.1,
     eig_parity=None,
     pad_pml: bool = True,
+    bidirectional: bool = True,
+    right_src_col: int | None = None,
+    right_in_mon_col: int | None = None,
+    right_out_mon_col: int | None = None,
+    normalization_eps: np.ndarray | None = None,
 ) -> SDict:
     """2-port S-parameters of a planar device via Meep FDTD.
 
@@ -149,55 +283,137 @@ def waveguide_sparams(
     transmission. ``polarization`` follows photonix's field-family labels (see
     :func:`parity_for`; pass ``"ez"``/``"hz"`` to be explicit).
 
-    Limitation: only the input-side reflection ``("o1","o1")`` is computed; a
-    right-side-incident S22 would require a second FDTD run. Call again with the
-    mirrored structure if S22 matters (the frequency-domain
-    :func:`photonix.em.fdfd.waveguide_sparams` returns S22 directly).
+    By default a second, right-incident run computes the complete two-port matrix;
+    no reciprocity or mirror-symmetry assumption is made. Set ``bidirectional=False``
+    to perform only the left-incident run. An array-valued ``wl`` returns arrays of
+    identical shape in the SDict (one narrow-band run per wavelength, which is more
+    robust than interpreting a single very-wide pulse across strongly dispersive
+    port modes).
+
+    ``normalization_eps`` may supply a same-shaped straight-through reference. Its
+    incident modal amplitude is used as the denominator, preserving the Meep phase
+    reference and reducing source-mismatch bias. Without it, the forward amplitude
+    measured in the device run is used; this is convenient but less accurate for
+    strong reflections or multimode launches.
 
     Requires Meep; raises :class:`ImportError` otherwise.
     """
+    wavelengths = np.asarray(wl, dtype=float)
+    if wavelengths.ndim:
+        if wavelengths.size == 0:
+            raise ValueError("wl must not be empty")
+        samples = [
+            waveguide_sparams(
+                eps,
+                dx=dx,
+                dy=dy,
+                wl=float(w),
+                src_col=src_col,
+                in_mon_col=in_mon_col,
+                out_mon_col=out_mon_col,
+                polarization=polarization,
+                mode=mode,
+                dpml=dpml,
+                decay_by=decay_by,
+                fwidth_frac=fwidth_frac,
+                eig_parity=eig_parity,
+                pad_pml=pad_pml,
+                bidirectional=bidirectional,
+                right_src_col=right_src_col,
+                right_in_mon_col=right_in_mon_col,
+                right_out_mon_col=right_out_mon_col,
+                normalization_eps=normalization_eps,
+            )
+            for w in wavelengths.reshape(-1)
+        ]
+        keys = samples[0].keys()
+        return {key: np.asarray([sample[key] for sample in samples]).reshape(wavelengths.shape) for key in keys}
+
+    wl_scalar = float(wavelengths)
+    if not np.isfinite(wl_scalar) or wl_scalar <= 0:
+        raise ValueError("wl must be positive and finite")
     eps = np.asarray(eps, float)
+    if eps.ndim != 2 or 0 in eps.shape or not np.all(np.isfinite(eps)) or np.any(eps <= 0):
+        raise ValueError("eps must be a non-empty 2-D array of finite, positive permittivities")
     ny, nx = eps.shape
-    if pad_pml:
-        eps_p, npx, _npy = pad_for_pml(eps, dx, dy, dpml)
-    else:
-        eps_p, npx, _npy = eps, 0, 0
-    device = DeviceGrid(eps_p, float(dx), float(dy))
-    src_size_y = ny * float(dy)  # physical (un-padded) transverse window, centred
+    dx, dy = float(dx), float(dy)
+    if not np.isfinite(dx) or dx <= 0 or not np.isfinite(dy) or dy <= 0:
+        raise ValueError("dx and dy must be positive and finite")
+    if not np.isfinite(decay_by) or not 0 < decay_by < 1:
+        raise ValueError("decay_by must lie strictly between zero and one")
+    norm = None if normalization_eps is None else np.asarray(normalization_eps, dtype=float)
+    if norm is not None and (
+        norm.shape != eps.shape or not np.all(np.isfinite(norm)) or np.any(norm <= 0)
+    ):
+        raise ValueError("normalization_eps must have the same shape as eps and be finite and positive")
 
-    sim, info = build_simulation(
-        device, wl=wl, src_col=src_col + npx, polarization=polarization, mode=mode,
-        dpml=dpml, fwidth_frac=fwidth_frac, eig_parity=eig_parity,
-        src_size_y=src_size_y,
+    s11, s21 = _one_way_sparams(
+        eps,
+        dx=dx,
+        dy=dy,
+        wl=wl_scalar,
+        src_col=src_col,
+        in_mon_col=in_mon_col,
+        out_mon_col=out_mon_col,
+        polarization=polarization,
+        mode=mode,
+        dpml=dpml,
+        decay_by=decay_by,
+        fwidth_frac=fwidth_frac,
+        eig_parity=eig_parity,
+        pad_pml=pad_pml,
+        normalization_eps=norm,
     )
-    mp = info["mp"]
-    fcen, parity = info["fcen"], info["parity"]
-
-    def mode_region(col):
-        return mp.ModeRegion(
-            center=mp.Vector3(device.x_of_col(col + npx), 0),
-            size=mp.Vector3(0, src_size_y, 0),
-        )
-
-    in_mon = sim.add_mode_monitor(fcen, 0, 1, mode_region(in_mon_col))
-    out_mon = sim.add_mode_monitor(fcen, 0, 1, mode_region(out_mon_col))
-
-    decay_pt = mp.Vector3(device.x_of_col(out_mon_col + npx), 0)
-    sim.run(until_after_sources=mp.stop_when_fields_decayed(
-        50, mp.Ez if parity == mp.ODD_Z else mp.Hz, decay_pt, decay_by))
-
-    bands = [mode]
-    a_in = sim.get_eigenmode_coefficients(in_mon, bands, eig_parity=parity)
-    a_out = sim.get_eigenmode_coefficients(out_mon, bands, eig_parity=parity)
-    # alpha[band, freq, direction]: 0 = +x (forward), 1 = -x (backward)
-    fwd_in = a_in.alpha[0, 0, 0]
-    bwd_in = a_in.alpha[0, 0, 1]
-    fwd_out = a_out.alpha[0, 0, 0]
-
-    s21 = complex(fwd_out / fwd_in)
-    s11 = complex(bwd_in / fwd_in)
-    return {
+    result: SDict = {
         ("o1", "o2"): s21,
-        ("o2", "o1"): s21,
         ("o1", "o1"): s11,
     }
+    if not bidirectional:
+        return result
+
+    rsrc = nx - 1 - src_col if right_src_col is None else right_src_col
+    rin = nx - 1 - in_mon_col if right_in_mon_col is None else right_in_mon_col
+    rout = nx - 1 - out_mon_col if right_out_mon_col is None else right_out_mon_col
+    flipped_cols = (nx - 1 - rsrc, nx - 1 - rin, nx - 1 - rout)
+    s22, s12 = _one_way_sparams(
+        eps[:, ::-1],
+        dx=dx,
+        dy=dy,
+        wl=wl_scalar,
+        src_col=flipped_cols[0],
+        in_mon_col=flipped_cols[1],
+        out_mon_col=flipped_cols[2],
+        polarization=polarization,
+        mode=mode,
+        dpml=dpml,
+        decay_by=decay_by,
+        fwidth_frac=fwidth_frac,
+        eig_parity=eig_parity,
+        pad_pml=pad_pml,
+        normalization_eps=None if norm is None else norm[:, ::-1],
+    )
+    result[("o2", "o1")] = s12
+    result[("o2", "o2")] = s22
+    return result
+
+
+def waveguide_spectrum(eps, *, wavelengths, **kwargs) -> SDict:
+    """Broadband convenience wrapper around :func:`waveguide_sparams`.
+
+    ``wavelengths`` may have any non-empty shape; each returned coefficient has
+    that same shape. Separate narrow-band runs keep each eigenmode source and
+    monitor locked to its requested frequency, which is conservative for
+    dispersive or cutoff-adjacent port modes.
+    """
+    return waveguide_sparams(eps, wl=np.asarray(wavelengths, dtype=float), **kwargs)
+
+
+def waveguide_dataset(eps, *, wavelengths, metadata=None, **kwargs):
+    """Return a versioned :class:`~photonix.core.SParameterDataset` from Meep."""
+    from photonix.core import SParameterDataset
+
+    wavelengths = np.asarray(wavelengths, dtype=float)
+    sdict = waveguide_spectrum(eps, wavelengths=wavelengths, **kwargs)
+    provenance = {"solver": "meep-fdtd", "polarization": kwargs.get("polarization", "te")}
+    provenance.update(dict(metadata or {}))
+    return SParameterDataset.from_sdict(wavelengths, sdict, ports=("o1", "o2"), metadata=provenance)

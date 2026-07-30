@@ -17,6 +17,9 @@ def test_cell_build_and_bbox():
 
 
 def test_gds_roundtrip():
+    import pytest
+
+    pytest.importorskip("gdstk")
     top = lay.Cell("demo")
     top.add_ref(lc.straight(10.0), origin=(0, 0), name="a")
     top.add_ref(lc.straight(10.0), origin=(10, 0), name="b")
@@ -25,6 +28,20 @@ def test_gds_roundtrip():
     assert os.path.getsize(path) > 0
     rd = lay.read_gds(path)
     assert len(rd.polygons) >= 2
+
+
+def test_oasis_roundtrip_when_gdstk_is_installed():
+    """Exercise the real serializer when available; minimal installs skip locally."""
+    import pytest
+
+    pytest.importorskip("gdstk")
+    top = lay.Cell("oas_demo")
+    top.add_ref(lc.straight(10.0), origin=(0, 0), name="a")
+    path = os.path.join(tempfile.mkdtemp(), "demo.oas")
+    lay.write_oas(top, path, validation="crc32")
+    assert os.path.getsize(path) > 0
+    rd = lay.read_oas(path)
+    assert len(rd.polygons) >= 1
 
 
 def test_route_connects_ports():

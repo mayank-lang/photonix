@@ -24,8 +24,8 @@ Design principles
 The public API is intentionally small and re-exports the most-used names from
 each subpackage. Subpackages (:mod:`photonix.core`, :mod:`photonix.circuit`,
 :mod:`photonix.components`, :mod:`photonix.modes`, :mod:`photonix.layout`,
-:mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`) can also be
-imported directly.
+:mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`,
+:mod:`photonix.multiphysics`, :mod:`photonix.interop`) can also be imported directly.
 """
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ __version__ = "0.1.0"
 from . import core  # noqa: E402
 from .core import (  # noqa: E402
     HAS_JAX,
+    SParameterDataset,
     as_sdense,
     as_sdict,
     backend_name,
@@ -43,6 +44,7 @@ from .core import (  # noqa: E402
     jit,
     power,
     to_numpy,
+    touchstone_capabilities,
     use_x64,
     value_and_grad,
     vmap,
@@ -63,38 +65,26 @@ __all__ = [
     "core",
     "HAS_JAX", "xp", "jit", "grad", "value_and_grad", "vmap", "use_x64",
     "backend_name", "power", "insertion_loss_db", "as_sdict", "as_sdense", "to_numpy",
-    "linspace", "asarray", "array", "WL_C_BAND", "WL_DEFAULT",
+    "linspace", "asarray", "array", "WL_C_BAND", "WL_DEFAULT", "SParameterDataset",
+    "touchstone_capabilities",
 ]
 
 # --- Subpackages ------------------------------------------------------------ #
-# `viz` and `layout` genuinely depend on optional third-party packages
-# (matplotlib, gdstk), so a missing *dependency* degrades gracefully. Everything
-# else is pure photonix + numpy/scipy and must import, or something is broken.
-#
-# This used to be a blanket `except Exception: pass` over every subpackage, which
-# meant a typo or a real bug anywhere in the tree made the subpackage silently
-# vanish from `photonix.*` -- surfacing much later as a confusing AttributeError
-# instead of the actual traceback. Failures are now scoped and never silent.
-from . import circuit, components, em, modes, optim, pdk  # noqa: E402
+# Optional third-party dependencies are imported at the feature boundary:
+# matplotlib inside plotting calls, gdstk inside GDSII/OASIS calls, and KLayout
+# only through an external batch invocation. The
+# subpackages themselves therefore import on a minimal NumPy/SciPy installation.
+# Import every namespace eagerly so an internal ImportError is never mistaken
+# for a missing optional dependency and silently hidden.
+from . import circuit, components, em, interop, layout, modes, multiphysics, optim, pdk, viz  # noqa: E402
 
-__all__ += ["components", "circuit", "modes", "em", "pdk", "optim"]
+__all__ += [
+    "components", "circuit", "modes", "em", "interop", "layout", "pdk", "viz", "optim", "multiphysics",
+]
 
-#: Subpackages that could not be imported, mapped to the reason why.
-#: Empty on a complete install; inspect it if an optional feature is missing.
+# Kept for compatibility with 0.1.x callers. Optional *features* now raise their
+# dependency error when called, so no complete subpackage can be unavailable.
 UNAVAILABLE: dict[str, str] = {}
-
-for _name, _extra in (("layout", "layout"), ("viz", "viz")):
-    try:
-        globals()[_name] = __import__(f"photonix.{_name}", fromlist=[_name])
-        __all__.append(_name)
-    except ImportError as _exc:  # pragma: no cover - depends on what is installed
-        # Only a *missing optional dependency* is tolerated. Record it rather
-        # than discarding it, and keep the original message.
-        UNAVAILABLE[_name] = (
-            f"{_exc}. Install the optional dependency with: pip install 'photonix[{_extra}]'"
-        )
-del _name, _extra
-
 __all__.append("UNAVAILABLE")
 
 

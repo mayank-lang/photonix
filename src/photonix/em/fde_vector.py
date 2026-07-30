@@ -185,6 +185,14 @@ class VectorModeData:
     ``te_fraction[i]`` is the fraction of mode ``i``'s transverse electric energy
     in ``Ex`` (``> 0.5`` => TE-like, ``< 0.5`` => TM-like). It is ``None`` for the
     semivectorial solver, which fixes the polarization by construction.
+
+    ``guided[i]`` is ``True`` when ``n_clad < Re(n_eff[i])``; modes below the
+    cladding index are box modes of the truncated domain and carry no physical
+    meaning (see PHYSICS_AUDIT §C2).
+
+    For a full-vector solve, ``fields[i]`` stores the dominant transverse
+    component (``Ex`` or ``Ey``) only. Use :func:`fullvector_transverse_fields`
+    when both electric and magnetic transverse components are required.
     """
 
     n_eff: np.ndarray
@@ -194,10 +202,24 @@ class VectorModeData:
     wl: float
     polarization: str
     te_fraction: np.ndarray | None = None
+    guided: np.ndarray | None = None
 
     @property
     def neff0(self) -> float:
         return float(np.real(self.n_eff[0]))
+
+    @property
+    def n_guided(self) -> int:
+        """Number of guided modes (``Re(n_eff) > n_clad``)."""
+        if self.guided is None:
+            return len(self.n_eff)
+        return int(np.sum(self.guided))
+
+
+def _exterior_index(eps: np.ndarray) -> float:
+    """Highest refractive index on the boundary of a custom cross-section."""
+    boundary = np.concatenate((eps[0], eps[-1], eps[1:-1, 0], eps[1:-1, -1]))
+    return float(np.sqrt(np.max(np.real(boundary))))
 
 
 def solve_modes_vector(
@@ -222,6 +244,12 @@ def solve_modes_vector(
     >>> 1.444 < r.neff0 < 3.4757
     True
     """
+    if (not isinstance(num_modes, (int, np.integer))
+            or isinstance(num_modes, (bool, np.bool_)) or num_modes <= 0):
+        raise ValueError("num_modes must be a positive integer")
+    if not np.isfinite(wl) or wl <= 0:
+        raise ValueError("wl must be positive and finite")
+    eps_user = eps is not None
     if eps is None:
         from .geometry import rectangular_waveguide
 
@@ -231,16 +259,20 @@ def solve_modes_vector(
         )
         eps, x, y, dx, dy = cs.eps, cs.x, cs.y, cs.dx, cs.dy
     else:
-        x, y = grid if grid is not None else (np.arange(eps.shape[1]), np.arange(eps.shape[0]))
-        dx = float(x[1] - x[0])
-        dy = float(y[1] - y[0])
+        from .geometry import _validate_eps_grid
+
+        eps, x, y, dx, dy = _validate_eps_grid(
+            eps, grid, where="solve_modes_vector"
+        )
     from .geometry import as_real_eps
 
     k0 = 2.0 * np.pi / wl
     neff, fields, _ = _solve(as_real_eps(eps, where="solve_modes_vector"), dx, dy, k0, polarization, num_modes)
+    n_clad_eff = _exterior_index(eps) if eps_user else n_clad
+    guided = np.real(neff) > n_clad_eff
     return VectorModeData(
         n_eff=neff, fields=fields, x=np.asarray(x), y=np.asarray(y),
-        wl=wl, polarization=polarization,
+        wl=wl, polarization=polarization, guided=guided,
     )
 
 
@@ -352,12 +384,31 @@ else:  # pragma: no cover - NumPy fallback has no autodiff
 # below the semivectorial 2.485 and the scalar 2.611, as it must be.
 # =========================================================================== #
 def _ddx_fwd(n, h):
+    """Square E-to-H derivative for the equal-size staggered Yee field spaces.
+
+    Unlike the scalar cell-to-face gradients in :mod:`photonix.em.eme` and
+    :mod:`photonix.em.fdfd`, this curl block intentionally has one exterior row.
+    Its paired H-to-E derivative is ``-_ddx_fwd(...).T`` and supplies the
+    complementary boundary on the dual grid. Replacing this block by the scalar
+    ``(n + 1, n)`` operator would make the P/Q component spaces incompatible;
+    doing so correctly requires a full component-staggered grid refactor.
+    """
     e = np.ones(n)
     return sp.diags([-e, e[:-1]], [0, 1], format="csc") / h
 
 
 def _assemble_fullvector(eps, dx, dy, k0):
-    """Sparse full-vector operator ``Omega = P @ Q`` (CSC); eigenvalues ``-n_eff^2``."""
+    """Sparse full-vector operator ``Omega = P @ Q`` (CSC); eigenvalues ``-n_eff^2``.
+
+    **Approximation (C1)**: ``erxx``, ``eryy``, and ``erzz_inv`` are all built
+    from the same arithmetic subpixel-averaged permittivity array.  On a Yee
+    grid ``Ex``, ``Ey`` and ``Ez`` sit at three different staggered locations,
+    and the field component *normal* to a dielectric interface should use
+    harmonic (inverse) averaging to recover clean second-order convergence.
+    With the current scalar treatment the observed convergence order at
+    high-contrast interfaces is ~1.73 instead of 2.  Implementing proper
+    anisotropic subpixel smoothing (à la Farjadpour et al.) would fix this.
+    """
     ny, nx = eps.shape
     n = ny * nx
     dex = sp.kron(sp.identity(ny), _ddx_fwd(nx, dx)) / k0
@@ -427,10 +478,15 @@ def _solve_fullvector(eps, dx, dy, k0, num_modes, want_left=False):
     sigma = -nmax2 * 1.0001
     k = int(min(max(num_modes, 1), A.shape[0] - 2))
     vals, vecs = spla.eigs(A, k=k, sigma=sigma, which="LM")
-    neff2 = -np.real(vals)
-    order = np.argsort(neff2)[::-1]
+    neff2 = -vals.astype(complex)
+    scale = np.maximum(1.0, np.abs(np.real(neff2)))
+    if np.any(np.abs(np.imag(neff2)) > 1e-7 * scale):
+        raise RuntimeError("lossless full-vector solve returned materially complex eigenvalues")
+    neff2 = np.real(neff2).astype(complex)
+    order = np.argsort(np.real(neff2))[::-1]
     vals, vecs, neff2 = vals[order], vecs[:, order], neff2[order]
-    neff = np.sqrt(np.clip(neff2, 0.0, None)).astype(complex)
+    neff = np.sqrt(neff2)
+    neff = np.where(np.imag(neff) > 0, -neff, neff)
 
     fields, te_frac = [], []
     for i in range(vecs.shape[1]):
@@ -477,12 +533,26 @@ def solve_modes_fullvector(
     Unlike :func:`solve_modes_vector`, the polarization is *not* fixed: each mode
     carries both ``Ex`` and ``Ey`` and is labelled by ``te_fraction``.
 
+    Notes
+    -----
+    The operator uses a single arithmetic subpixel-averaged permittivity for all
+    tensor components (``erxx = eryy = diag(eps)``).  On a Yee grid the field
+    component normal to an interface should use harmonic averaging; without it
+    the convergence order at high-contrast interfaces is ~1.73 instead of 2
+    (see PHYSICS_AUDIT §C1 and ``_assemble_fullvector``).
+
     Examples
     --------
     >>> r = solve_modes_fullvector(width=0.5, thickness=0.22, resolution=30)
     >>> 1.444 < r.neff0 < 3.4757
     True
     """
+    if (not isinstance(num_modes, (int, np.integer))
+            or isinstance(num_modes, (bool, np.bool_)) or num_modes <= 0):
+        raise ValueError("num_modes must be a positive integer")
+    if not np.isfinite(wl) or wl <= 0:
+        raise ValueError("wl must be positive and finite")
+    eps_user = eps is not None
     if eps is None:
         from .geometry import rectangular_waveguide
 
@@ -492,18 +562,22 @@ def solve_modes_fullvector(
         )
         eps, x, y, dx, dy = cs.eps, cs.x, cs.y, cs.dx, cs.dy
     else:
-        x, y = grid if grid is not None else (np.arange(eps.shape[1]), np.arange(eps.shape[0]))
-        dx = float(x[1] - x[0])
-        dy = float(y[1] - y[0])
+        from .geometry import _validate_eps_grid
+
+        eps, x, y, dx, dy = _validate_eps_grid(
+            eps, grid, where="solve_modes_fullvector"
+        )
     from .geometry import as_real_eps
 
     k0 = 2.0 * np.pi / wl
     neff, fields, te_frac, _ = _solve_fullvector(
         as_real_eps(eps, where="solve_modes_fullvector"), dx, dy, k0, num_modes
     )
+    n_clad_eff = _exterior_index(eps) if eps_user else n_clad
+    guided = np.real(neff) > n_clad_eff
     return VectorModeData(
         n_eff=neff, fields=fields, x=np.asarray(x), y=np.asarray(y),
-        wl=wl, polarization="full", te_fraction=te_frac,
+        wl=wl, polarization="full", te_fraction=te_frac, guided=guided,
     )
 
 
@@ -621,29 +695,34 @@ class BendMode:
     bend_radius: float | None
 
 
-def _pml_stretch(coord, k0, t_pml, smax, m=3):
+def _pml_stretch(coord, k0, t_pml, smax, m=3, bounds=None):
     """Stretched-coordinate PML factor ``s(u) = 1 - i smax (d/t)^m`` at both ends."""
-    lo = coord.min() + t_pml
-    hi = coord.max() - t_pml
+    edge_lo, edge_hi = (coord.min(), coord.max()) if bounds is None else bounds
+    lo = edge_lo + t_pml
+    hi = edge_hi - t_pml
     dl = np.clip((lo - coord) / t_pml, 0.0, None)
     dh = np.clip((coord - hi) / t_pml, 0.0, None)
     return 1.0 - 1j * smax * (dl ** m + dh ** m) / k0
 
 
 def _assemble_fullvector_pml(eps, dx, dy, k0, sx, sy):
-    """Complex full-vector operator with PML stretch vectors ``sx(x)``, ``sy(y)``."""
+    """Complex full-vector operator with staggered ``(integer, half)`` stretches."""
     ny, nx = eps.shape
     n = ny * nx
-    dex = sp.kron(sp.identity(ny), _ddx_fwd(nx, dx)) / k0
-    dey = sp.kron(_ddx_fwd(ny, dy), sp.identity(nx)) / k0
-    dhx = -dex.T.tocsc()
-    dhy = -dey.T.tocsc()
-    sxi = sp.diags(np.tile(1.0 / sx, ny))
-    syi = sp.diags(np.repeat(1.0 / sy, nx))
-    dex = sxi @ dex
-    dhx = sxi @ dhx
-    dey = syi @ dey
-    dhy = syi @ dhy
+    dex0 = sp.kron(sp.identity(ny), _ddx_fwd(nx, dx)) / k0
+    dey0 = sp.kron(_ddx_fwd(ny, dy), sp.identity(nx)) / k0
+    sx_integer, sx_half = sx
+    sy_integer, sy_half = sy
+    sxi = sp.diags(np.tile(1.0 / sx_integer, ny))
+    sxh = sp.diags(np.tile(1.0 / sx_half, ny))
+    syi = sp.diags(np.repeat(1.0 / sy_integer, nx))
+    syh = sp.diags(np.repeat(1.0 / sy_half, nx))
+    # Forward E->H differences live on half cells; their transpose H->E
+    # differences land on integer cells. Sharing a stretch misregisters the PML.
+    dex = sxh @ dex0
+    dhx = sxi @ (-dex0.T.tocsc())
+    dey = syh @ dey0
+    dhy = syi @ (-dey0.T.tocsc())
     er = np.asarray(eps).reshape(-1).astype(complex)
     erxx = sp.diags(er)
     eryy = sp.diags(er)
@@ -670,12 +749,22 @@ def _bend_grid(width, thickness, bend_radius, n_core, n_clad, resolution,
     start of the inner PML, so the absorber never overlaps the core (an
     overlapping PML fakes ~1e-5 modal loss on a lossless straight guide).
     """
+    x_in = width / 2 + inner + t_pml
     if bend_radius is None:
         x_out = width / 2 + 1.0 + t_pml
     else:
+        # The equivalent-index map is singular at x=-R.  Keep the complete
+        # innermost grid cell on the physical r=R+x>0 side of that singularity;
+        # otherwise squaring n*(1+x/R) creates an unphysical mirrored medium.
+        min_safe_radius = x_in + 0.5 / resolution
+        if bend_radius <= min_safe_radius:
+            raise ValueError(
+                f"bend_radius ({bend_radius}) is too small for the inward domain: "
+                f"it must exceed width/2 + inner + pml_thickness + half a cell "
+                f"({min_safe_radius:.6g}) so the grid does not cross x=-R"
+            )
         x_caustic = bend_radius * (n_guess / n_clad - 1.0)
         x_out = x_caustic + 0.6 + t_pml
-    x_in = width / 2 + inner + t_pml
     x = np.arange(-x_in, x_out + 1e-9, 1.0 / resolution)
     y = np.arange(-(thickness / 2 + 0.8 + t_pml), thickness / 2 + 0.8 + t_pml + 1e-9,
                   1.0 / resolution)
@@ -742,14 +831,45 @@ def bend_loss_fullvector(
     >>> abs(m.n_eff.imag) < 1e-6
     True
     """
+    for name, value in (
+        ("width", width), ("thickness", thickness), ("wl", wl),
+        ("n_core", n_core), ("n_clad", n_clad), ("resolution", resolution),
+        ("n_guess", n_guess),
+    ):
+        if not np.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be positive and finite")
+    if n_core <= n_clad:
+        raise ValueError("n_core must be greater than n_clad")
+    if bend_radius is not None and (not np.isfinite(bend_radius) or bend_radius <= 0):
+        raise ValueError("bend_radius must be positive and finite, or None")
+    if not isinstance(pml, (tuple, list)) or len(pml) != 2:
+        raise ValueError("pml must be a two-item (thickness, strength) tuple")
+    t_pml, smax = pml
+    if not np.isfinite(t_pml) or t_pml <= 0:
+        raise ValueError("PML thickness must be positive and finite")
+    if not np.isfinite(smax) or smax < 0:
+        raise ValueError("PML strength must be non-negative and finite")
+    if not np.isfinite(inner) or inner < 0:
+        raise ValueError("inner must be non-negative and finite")
+    if (not isinstance(num_modes, (int, np.integer))
+            or isinstance(num_modes, (bool, np.bool_)) or num_modes <= 0):
+        raise ValueError("num_modes must be a positive integer")
+
     k0 = 2.0 * np.pi / wl
     dx = dy = 1.0 / resolution
-    t_pml, smax = pml
     eps_b, eps_s, x, y, mask2 = _bend_grid(
         width, thickness, bend_radius, n_core, n_clad, resolution, t_pml, inner, n_guess
     )
-    sx = _pml_stretch(x, k0, t_pml, smax)
-    sy = _pml_stretch(y, k0, t_pml, smax)
+    x_bounds = (x[0] - 0.5 * dx, x[-1] + 0.5 * dx)
+    y_bounds = (y[0] - 0.5 * dy, y[-1] + 0.5 * dy)
+    sx = (
+        _pml_stretch(x, k0, t_pml, smax, bounds=x_bounds),
+        _pml_stretch(x + 0.5 * dx, k0, t_pml, smax, bounds=x_bounds),
+    )
+    sy = (
+        _pml_stretch(y, k0, t_pml, smax, bounds=y_bounds),
+        _pml_stretch(y + 0.5 * dy, k0, t_pml, smax, bounds=y_bounds),
+    )
 
     # straight reference fundamental on the same grid
     nes, ves = _fundamental_pml(eps_s, dx, dy, k0, sx, sy, n_guess, num_modes)
@@ -850,6 +970,9 @@ def fullvector_transverse_fields(eps, dx, dy, k0, num_modes=1):
     section). Do not use the unconjugated overlap as physical power for complex
     (leaky/PML) fields -- a global phase rotation changes it.
     """
+    if (not isinstance(num_modes, (int, np.integer))
+            or isinstance(num_modes, (bool, np.bool_)) or num_modes <= 0):
+        raise ValueError("num_modes must be a positive integer")
     P, Q = _pq_operators(np.asarray(eps, float), dx, dy, k0)
     Omega = (P @ Q).tocsc()
     nmax2 = float(np.asarray(eps).max())
@@ -859,7 +982,11 @@ def fullvector_transverse_fields(eps, dx, dy, k0, num_modes=1):
     neff = np.where(neff.real < 0, -neff, neff)
     order = np.argsort(-neff.real)
     neff, Et = neff[order], vecs[:, order]
-    Ht = (Q @ Et)
+    if np.any(np.abs(neff) < 1e-14):
+        raise ValueError("cannot reconstruct transverse H for a mode at cutoff")
+    # The first-order eigen-equation is Q E_t = n_eff H_t.  Dividing by the
+    # modal index is essential for the physical wave impedance across sections.
+    Ht = (Q @ Et) / neff[None, :]
     n = (np.asarray(eps).size)
     dA = dx * dy
     for kk in range(Et.shape[1]):

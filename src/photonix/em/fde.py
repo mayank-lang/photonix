@@ -5,7 +5,13 @@ Helmholtz eigenproblem ``A psi = (n_eff k0)^2 psi`` for the most-confined modes.
 
 Accuracy: subpixel permittivity averaging (``photonix.em.geometry``) plus
 ``richardson=True`` (combining resolutions ``r`` and ``2r`` to cancel the leading
-O(h^2) error) reaches <0.1% vs the analytic slab on modest, CPU-friendly grids.
+O(h^2) error) reaches <0.1% vs the analytic slab **for well-confined modes**
+(e.g. SOI 220 nm strip, ``margin >= 2.0``). For weakly-confined modes (low
+index contrast, thin cores) the evanescent tail extends beyond the default
+margin and the dominant error is **domain truncation**, not discretisation.
+Richardson extrapolation cannot help because the truncation error is nearly
+identical at both resolutions. In those cases increase ``margin`` until it
+covers at least 3–4 1/e decay lengths of the mode (see PHYSICS_AUDIT §B1).
 
 Differentiability: :func:`n_eff_eps` returns ``n_eff`` as a function of the
 permittivity grid with an exact analytic gradient (eigenvalue perturbation /
@@ -14,10 +20,10 @@ Hellmann-Feynman: ``d n_eff/d eps_k = x_k^2 / (2 n_eff)``) supplied via
 eigensolve runs on the host through ``jax.pure_callback`` so it stays traceable.
 
 Scope: this is the scalar FDE. The full-vectorial / polarization-resolved
-(TE/TM/hybrid) solver is the next EM increment -- see
-``docs/DESIGN_EM_SOLVERS.md``. Scalar n_eff slightly overestimates the true
-vectorial TE index for high-contrast strips; it is exact in the scalar limit and
-validated to <0.1% against the analytic slab.
+(TE/TM/hybrid) solver is in :mod:`photonix.em.fde_vector`. Scalar n_eff slightly
+overestimates the true vectorial TE index for high-contrast strips; it is exact
+in the scalar limit and validated to <0.1% against the analytic slab for
+well-confined modes.
 """
 from __future__ import annotations
 
@@ -36,17 +42,30 @@ __all__ = ["ModeData", "solve_modes", "n_eff", "n_eff_eps", "group_index", "slab
 
 @dataclass
 class ModeData:
-    """Result of an FDE solve."""
+    """Result of an FDE solve.
+
+    ``guided[i]`` is ``True`` when ``n_clad < Re(n_eff[i])``; modes below the
+    cladding index are box modes of the truncated domain and carry no physical
+    meaning (see PHYSICS_AUDIT §C2).
+    """
 
     n_eff: np.ndarray
     fields: np.ndarray
     x: np.ndarray
     y: np.ndarray
     wl: float
+    guided: np.ndarray | None = None
 
     @property
     def neff0(self) -> float:
         return float(np.real(self.n_eff[0]))
+
+    @property
+    def n_guided(self) -> int:
+        """Number of guided modes (``Re(n_eff) > n_clad``)."""
+        if self.guided is None:
+            return len(self.n_eff)
+        return int(np.sum(self.guided))
 
 
 def _solve_eps(eps, dy, dx, k0, num_modes):
@@ -60,7 +79,11 @@ def _solve_eps(eps, dy, dx, k0, num_modes):
     order = np.argsort(np.real(vals))[::-1]
     vals = vals[order]
     vecs = vecs[:, order]
-    betas = np.sqrt(np.clip(vals, 0.0, None).astype(complex))
+    # Keep below-cutoff information: for the package convention exp(-i beta z),
+    # an evanescent mode must have Im(beta) < 0. Clipping negative beta^2 to zero
+    # used to collapse every evanescent mode onto the cutoff root.
+    betas = np.sqrt(vals.astype(complex))
+    betas = np.where(np.imag(betas) > 0, -betas, betas)
     neff = betas / k0
     fields = np.array([vecs[:, i].reshape(ny, nx) for i in range(vecs.shape[1])])
     for i in range(fields.shape[0]):
@@ -79,6 +102,12 @@ def _cross_section(width, thickness, n_core, n_clad, resolution, margin):
         width=width, thickness=thickness, n_core=n_core, n_clad=n_clad,
         margin=margin, resolution=resolution,
     )
+
+
+def _exterior_index(eps: np.ndarray) -> float:
+    """Highest refractive index on the boundary of a custom cross-section."""
+    boundary = np.concatenate((eps[0], eps[-1], eps[1:-1, 0], eps[1:-1, -1]))
+    return float(np.sqrt(np.max(np.real(boundary))))
 
 
 def solve_modes(
@@ -102,19 +131,30 @@ def solve_modes(
     >>> 1.444 < r.neff0 < 3.4757
     True
     """
+    if (not isinstance(num_modes, (int, np.integer))
+            or isinstance(num_modes, (bool, np.bool_)) or num_modes <= 0):
+        raise ValueError("num_modes must be a positive integer")
+    if not np.isfinite(wl) or wl <= 0:
+        raise ValueError("wl must be positive and finite")
+    eps_user = eps is not None
     if eps is None:
         cs = _cross_section(width, thickness, n_core, n_clad, resolution, margin)
         eps, x, y = cs.eps, cs.x, cs.y
         dx, dy = cs.dx, cs.dy
     else:
-        x, y = grid if grid is not None else (np.arange(eps.shape[1]), np.arange(eps.shape[0]))
-        dx = float(x[1] - x[0])
-        dy = float(y[1] - y[0])
+        from .geometry import _validate_eps_grid
+
+        eps, x, y, dx, dy = _validate_eps_grid(eps, grid, where="solve_modes")
     from .geometry import as_real_eps
 
     k0 = 2.0 * np.pi / wl
     neff, fields, _ = _solve_eps(as_real_eps(eps, where="solve_modes"), dy, dx, k0, num_modes)
-    return ModeData(n_eff=neff, fields=fields, x=np.asarray(x), y=np.asarray(y), wl=wl)
+    # C2: label guided vs box modes.  When eps is auto-generated n_clad is the
+    # user parameter; when eps is passed directly derive from the grid edges.
+    n_clad_eff = _exterior_index(eps) if eps_user else n_clad
+    guided = np.real(neff) > n_clad_eff
+    return ModeData(n_eff=neff, fields=fields, x=np.asarray(x), y=np.asarray(y),
+                    wl=wl, guided=guided)
 
 
 def slab_neff(
@@ -212,11 +252,38 @@ def n_eff(
     return (4.0 * n_fine - n_coarse) / 3.0
 
 
-def group_index(*, wl: float = 1.55, dwl: float = 0.005, **kwargs) -> float:
-    """Group index ``n_g = n_eff - wl * d n_eff/d wl`` via central difference."""
-    n_p = n_eff(wl=wl + dwl, **kwargs)
-    n_m = n_eff(wl=wl - dwl, **kwargs)
-    n_0 = n_eff(wl=wl, **kwargs)
+def group_index(
+    *,
+    wl: float = 1.55,
+    dwl: float = 0.005,
+    core_material=None,
+    clad_material=None,
+    **kwargs,
+) -> float:
+    """Group index ``n_g = n_eff - wl * d n_eff/d wl`` via central difference.
+
+    Pass wavelength-to-index callables (including native ``Material`` objects) as
+    ``core_material``/``clad_material`` to include material dispersion. Omitting
+    them holds ``n_core``/``n_clad`` fixed and returns waveguide dispersion only.
+    """
+    if not np.isfinite(wl) or wl <= 0:
+        raise ValueError("wl must be positive and finite")
+    if not np.isfinite(dwl) or dwl <= 0 or dwl >= wl:
+        raise ValueError("dwl must be positive, finite, and smaller than wl")
+    def solve_at(wavelength: float) -> float:
+        local = dict(kwargs)
+        for name, material in (("n_core", core_material), ("n_clad", clad_material)):
+            if material is not None:
+                value = material.index(wavelength) if hasattr(material, "index") else material(wavelength)
+                arr = np.asarray(value)
+                if arr.ndim != 0 or np.iscomplexobj(arr) or not np.isfinite(float(arr)):
+                    raise ValueError(f"{name} material must return one finite real index")
+                local[name] = float(arr)
+        return n_eff(wl=wavelength, **local)
+
+    n_p = solve_at(wl + dwl)
+    n_m = solve_at(wl - dwl)
+    n_0 = solve_at(wl)
     return float(n_0 - wl * (n_p - n_m) / (2 * dwl))
 
 

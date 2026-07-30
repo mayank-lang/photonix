@@ -99,9 +99,20 @@ class Netlist:
     name: str | None = None
 
     def __post_init__(self) -> None:
+        if self.name is not None and not isinstance(self.name, str):
+            raise TypeError(f"Netlist name must be a string or None, got {self.name!r}.")
+        normalized_settings: dict[str, Settings] = {}
+        for inst, values in self.settings.items():
+            if not isinstance(inst, str) or not isinstance(values, Mapping):
+                raise TypeError("settings must map instance-name strings to mappings.")
+            normalized_settings[inst] = dict(values)
+        self.settings = normalized_settings
+
         # Normalize instances that carry inline {"model": ..., "settings": ...}.
         norm_instances: dict[str, str] = {}
         for inst, spec in self.instances.items():
+            if not isinstance(inst, str):
+                raise TypeError(f"Instance names must be strings, got {inst!r}.")
             if isinstance(spec, Mapping):
                 model_name = spec.get("model")
                 if not isinstance(model_name, str):
@@ -111,7 +122,11 @@ class Netlist:
                     )
                 norm_instances[inst] = model_name
                 inline = spec.get("settings")
-                if inline:
+                if inline is not None:
+                    if not isinstance(inline, Mapping):
+                        raise TypeError(
+                            f"Instance {inst!r} settings must be a mapping, got {inline!r}."
+                        )
                     merged = {**dict(inline), **self.settings.get(inst, {})}
                     self.settings[inst] = merged
             elif isinstance(spec, str):
@@ -128,9 +143,12 @@ class Netlist:
             _as_instance_port(a): _as_instance_port(b)
             for a, b in self.connections.items()
         }
-        self.ports = {
-            str(name): _as_instance_port(ip) for name, ip in self.ports.items()
-        }
+        normalized_ports: dict[PortName, InstancePort] = {}
+        for name, ip in self.ports.items():
+            if not isinstance(name, str):
+                raise TypeError(f"External port names must be strings, got {name!r}.")
+            normalized_ports[name] = _as_instance_port(ip)
+        self.ports = normalized_ports
 
     # -- builder-style mutators --------------------------------------------- #
     def add(self, name: str, model: str, **settings: Any) -> Netlist:
@@ -138,6 +156,8 @@ class Netlist:
 
         Returns ``self`` so calls can be chained.
         """
+        if not isinstance(name, str) or not isinstance(model, str):
+            raise TypeError("Instance and model names must be strings.")
         if name in self.instances:
             raise ValueError(f"Instance {name!r} already exists.")
         self.instances[name] = model
@@ -160,6 +180,8 @@ class Netlist:
         """
         a = _as_instance_port(a)
         b = _as_instance_port(b)
+        if a == b:
+            raise ValueError(f"A terminal cannot be connected to itself: {a!r}.")
         used = self._all_connected_terminals()
         for terminal in (a, b):
             if terminal in used:
@@ -182,17 +204,29 @@ class Netlist:
         Raises immediately if the terminal is already in a connection.
         """
         ip = _as_instance_port(internal)
+        if not isinstance(external, str):
+            raise TypeError(f"External port names must be strings, got {external!r}.")
+        if external in self.ports:
+            raise ValueError(f"External port {external!r} is already defined.")
         used = self._all_connected_terminals()
         if ip in used:
             raise ValueError(
                 f"Terminal {ip!r} is already in an internal connection. "
                 f"A terminal cannot be both connected and exposed."
             )
-        self.ports[str(external)] = ip
+        if ip in self.ports.values():
+            other = next(name for name, terminal in self.ports.items() if terminal == ip)
+            raise ValueError(
+                f"Terminal {ip!r} is already exposed as {other!r}; use port aliases "
+                "instead of exposing one physical terminal twice."
+            )
+        self.ports[external] = ip
         return self
 
     def set(self, instance: str, **settings: Any) -> Netlist:
         """Set per-instance parameter overrides for ``instance``."""
+        if instance not in self.instances:
+            raise KeyError(f"Cannot set parameters for unknown instance {instance!r}.")
         self.settings[instance] = {**self.settings.get(instance, {}), **settings}
         return self
 
@@ -228,7 +262,14 @@ class Netlist:
            (the solver would silently drive it from two sources).
         """
         known = set(self.instances)
+        unknown_settings = set(self.settings) - known
+        if unknown_settings:
+            raise ValueError(
+                f"Settings reference unknown instances: {sorted(unknown_settings)!r}."
+            )
         for a, b in self.connections.items():
+            if a == b:
+                raise ValueError(f"A terminal cannot be connected to itself: {a!r}.")
             for inst, _ in (a, b):
                 if inst not in known:
                     raise ValueError(
@@ -254,6 +295,7 @@ class Netlist:
 
         # A4 — an exposed port must not also be internally connected.
         connected = set(seen)
+        exposed: dict[InstancePort, str] = {}
         for ext, ip in self.ports.items():
             if ip in connected:
                 raise ValueError(
@@ -261,6 +303,12 @@ class Netlist:
                     f"in an internal connection. A terminal cannot be both "
                     f"connected and exposed."
                 )
+            if ip in exposed:
+                raise ValueError(
+                    f"External ports {exposed[ip]!r} and {ext!r} both map to "
+                    f"{ip!r}. Each physical terminal may be exposed only once."
+                )
+            exposed[ip] = ext
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         nm = f" {self.name!r}" if self.name else ""
