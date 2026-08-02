@@ -140,6 +140,29 @@ def test_vector_solvers_reject_nonpositive_mode_count():
         em.solve_modes_fullvector(num_modes=-1)
 
 
+def test_semivector_solver_uses_decaying_branch_for_evanescent_modes(monkeypatch):
+    """Negative beta^2 must give Im(beta)<0 for the exp(-i beta z) convention."""
+    import scipy.sparse as sp
+
+    import photonix.em.fde_vector as fde_vector
+
+    values = np.array([4.0, -1.0, -9.0])
+    vectors = np.eye(5, 3)
+
+    monkeypatch.setattr(fde_vector, "_assemble", lambda *_args: sp.eye(5, format="csc"))
+    monkeypatch.setattr(
+        fde_vector.spla,
+        "eigs",
+        lambda *_args, **_kwargs: (values, vectors),
+    )
+    neff, _fields, _v0 = fde_vector._solve(
+        np.ones((1, 5)), 1.0, 1.0, 2.0, "te", 3
+    )
+    assert neff[0] == pytest.approx(1.0)
+    assert neff[1] == pytest.approx(-0.5j)
+    assert neff[2] == pytest.approx(-1.5j)
+
+
 def test_fullvector_convergence():
     """TE0 settles (changes shrink) under grid refinement."""
     n20 = em.n_eff_fullvector(width=0.5, thickness=0.22, resolution=20)

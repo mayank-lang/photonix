@@ -25,7 +25,8 @@ The public API is intentionally small and re-exports the most-used names from
 each subpackage. Subpackages (:mod:`photonix.core`, :mod:`photonix.circuit`,
 :mod:`photonix.components`, :mod:`photonix.modes`, :mod:`photonix.layout`,
 :mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`,
-:mod:`photonix.multiphysics`, :mod:`photonix.interop`) can also be imported directly.
+:mod:`photonix.multiphysics`, :mod:`photonix.interop`,
+:mod:`photonix.diagnostics`) can also be imported directly.
 """
 from __future__ import annotations
 
@@ -36,13 +37,19 @@ from . import core  # noqa: E402
 from .core import (  # noqa: E402
     HAS_JAX,
     SParameterDataset,
+    SParameterDiagnostics,
+    analyze_sparameters,
     as_sdense,
     as_sdict,
     backend_name,
+    differentiate_samples,
     grad,
+    group_delay,
+    group_delay_dispersion,
     insertion_loss_db,
     jit,
     power,
+    project_passive,
     to_numpy,
     touchstone_capabilities,
     use_x64,
@@ -55,6 +62,9 @@ from .core.constants import WL_C_BAND, WL_DEFAULT  # noqa: E402
 # Enable 64-bit precision by default for numerical accuracy (photonics needs it).
 use_x64(True)
 
+# Reproducibility helpers inspect the now-configured numerical backend.
+from .diagnostics import runtime_info, show_config  # noqa: E402
+
 # Convenience re-exports of common array constructors on the active backend.
 linspace = xp.linspace
 asarray = xp.asarray
@@ -65,8 +75,11 @@ __all__ = [
     "core",
     "HAS_JAX", "xp", "jit", "grad", "value_and_grad", "vmap", "use_x64",
     "backend_name", "power", "insertion_loss_db", "as_sdict", "as_sdense", "to_numpy",
+    "analyze_sparameters", "project_passive", "SParameterDiagnostics",
+    "differentiate_samples", "group_delay", "group_delay_dispersion",
     "linspace", "asarray", "array", "WL_C_BAND", "WL_DEFAULT", "SParameterDataset",
     "touchstone_capabilities",
+    "runtime_info", "show_config",
 ]
 
 # --- Subpackages ------------------------------------------------------------ #

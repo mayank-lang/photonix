@@ -12,6 +12,8 @@ import numpy as np
 
 from .constants import C0_UM_S
 from .sparams import sdense_to_sdict, sdict_to_sdense
+from .spectral import group_delay as _group_delay
+from .spectral import group_delay_dispersion as _group_delay_dispersion
 from .types import SDict
 
 __all__ = ["SParameterDataset", "touchstone_capabilities"]
@@ -241,6 +243,64 @@ class SParameterDataset:
                 out[:, i, j] = real + 1j * imag
         metadata = {**self.metadata, "interpolated_from_samples": int(self.wavelengths.size)}
         return SParameterDataset(target, self.ports, out, metadata)
+
+    def group_delay(
+        self,
+        input_port: str,
+        output_port: str,
+        *,
+        stencil: int = 5,
+        magnitude_floor: float = 1.0e-12,
+        phase_step_limit: float | None = 0.9 * np.pi,
+    ) -> np.ndarray:
+        """Return a path's group delay in seconds at every sampled wavelength.
+
+        The port order follows the package-wide ``(input, output)`` SDict
+        convention.  Phase is unwrapped and differentiated with respect to
+        angular frequency on the exact (generally nonuniform) frequency grid.
+        See :func:`photonix.core.spectral.group_delay` for numerical safeguards.
+        """
+        try:
+            input_index = self.ports.index(input_port)
+            output_index = self.ports.index(output_port)
+        except ValueError as exc:
+            missing = input_port if input_port not in self.ports else output_port
+            raise KeyError(f"unknown dataset port {missing!r}; known ports: {self.ports!r}") from exc
+        return _group_delay(
+            self.wavelengths,
+            self.s[:, output_index, input_index],
+            stencil=stencil,
+            magnitude_floor=magnitude_floor,
+            phase_step_limit=phase_step_limit,
+        )
+
+    def group_delay_dispersion(
+        self,
+        input_port: str,
+        output_port: str,
+        *,
+        stencil: int = 5,
+        magnitude_floor: float = 1.0e-12,
+        phase_step_limit: float | None = 0.9 * np.pi,
+    ) -> np.ndarray:
+        """Return a path's group-delay dispersion in seconds squared.
+
+        The result is ``-d2 arg(S_out,in)/d omega2`` under Photonix's
+        ``exp(-1j*beta*length)`` propagation convention.
+        """
+        try:
+            input_index = self.ports.index(input_port)
+            output_index = self.ports.index(output_port)
+        except ValueError as exc:
+            missing = input_port if input_port not in self.ports else output_port
+            raise KeyError(f"unknown dataset port {missing!r}; known ports: {self.ports!r}") from exc
+        return _group_delay_dispersion(
+            self.wavelengths,
+            self.s[:, output_index, input_index],
+            stencil=stencil,
+            magnitude_floor=magnitude_floor,
+            phase_step_limit=phase_step_limit,
+        )
 
     def save_npz(self, path: str | Path) -> None:
         """Write a portable, non-pickle NPZ data contract."""

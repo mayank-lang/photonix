@@ -69,9 +69,20 @@ def all_pass_ring(
     """
     circumference = 2.0 * xp.pi * radius
     a, phi = _round_trip(wl, neff, ng, wl0, circumference, loss_db_cm)
-    t = xp.sqrt(1.0 - xp.asarray(coupling))
+    c = xp.asarray(coupling)
+    t = xp.sqrt(1.0 - c)
     z = xp.exp(-1j * phi)
-    H = (t - a * z) / (1.0 - t * a * z)
+    u = a * z
+    # Algebraically this is (t-u)/(1-t*u), but the feedback form below has two
+    # important numerical/physical advantages.  c/(1+t) evaluates 1-t without
+    # catastrophic cancellation for weak coupling, and an exactly uncoupled
+    # lossless ring has the correct H=1 limit instead of the removable 0/0 that
+    # occurs at a round-trip resonance.
+    one_minus_t = c / (1.0 + t)
+    denom = (1.0 - u) + u * one_minus_t
+    removable_singularity = (c == 0.0) & (xp.abs(denom) == 0.0)
+    denom = xp.where(removable_singularity, xp.ones_like(denom), denom)
+    H = t - c * u / denom
     return {("o1", "o2"): H, ("o2", "o1"): H}
 
 
@@ -135,14 +146,31 @@ def add_drop_ring(
     """
     circumference = 2.0 * xp.pi * radius
     a, phi = _round_trip(wl, neff, ng, wl0, circumference, loss_db_cm)
-    t1 = xp.sqrt(1.0 - xp.asarray(coupling1))
-    t2 = xp.sqrt(1.0 - xp.asarray(coupling2))
-    k1 = xp.sqrt(xp.asarray(coupling1))
-    k2 = xp.sqrt(xp.asarray(coupling2))
+    c1 = xp.asarray(coupling1)
+    c2 = xp.asarray(coupling2)
+    t1 = xp.sqrt(1.0 - c1)
+    t2 = xp.sqrt(1.0 - c2)
+    k1 = xp.sqrt(c1)
+    k2 = xp.sqrt(c2)
     z = xp.exp(-1j * phi)
-    denom = 1.0 - t1 * t2 * a * z
-    through = xp.asarray((t1 - t2 * a * z) / denom, dtype=complex)
-    through_add = xp.asarray((t2 - t1 * a * z) / denom, dtype=complex)
+    u = a * z
+    # Stable feedback denominator.  Computing 1-t1*t2 directly loses the
+    # linewidth when either power coupling is tiny; c/(1+t) is the accurate
+    # identity 1-sqrt(1-c).  With both couplers exactly off, the ring is
+    # disconnected and each bus must transmit with unit amplitude, including
+    # at wavelengths where the inaccessible ring is resonant.
+    one_minus_t1 = c1 / (1.0 + t1)
+    one_minus_t2 = c2 / (1.0 + t2)
+    one_minus_t1t2 = one_minus_t1 + t1 * one_minus_t2
+    denom = (1.0 - u) + u * one_minus_t1t2
+    uncoupled = (c1 == 0.0) & (c2 == 0.0)
+    removable_singularity = uncoupled & (xp.abs(denom) == 0.0)
+    denom = xp.where(removable_singularity, xp.ones_like(denom), denom)
+    # These feedback forms are exactly equivalent to
+    # (t1-t2*u)/denom and (t2-t1*u)/denom, respectively, while exposing
+    # the removable zero-coupling limit explicitly.
+    through = xp.asarray(t1 - c1 * t2 * u / denom, dtype=complex)
+    through_add = xp.asarray(t2 - c2 * t1 * u / denom, dtype=complex)
     drop = xp.asarray((-k1 * k2 * xp.sqrt(a) * xp.exp(-1j * phi / 2.0)) / denom, dtype=complex)
     return AliasedSDict(
         {

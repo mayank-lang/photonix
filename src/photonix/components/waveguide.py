@@ -166,8 +166,9 @@ def bend_from_solver(
 
     Notes
     -----
-    The loss is scaled linearly with angle (``loss_per_90 * angle/90``). This
-    is correct for distributed radiation loss but does not capture
+    The loss is scaled linearly with swept angle magnitude
+    (``loss_per_90 * abs(angle)/90``). This is correct for distributed
+    radiation loss but does not capture
     straight-to-bend junction (transition) loss, which is angle-independent.
     For short bends where junction loss dominates, consider a full FDTD
     simulation instead.
@@ -189,6 +190,9 @@ def bend_from_solver(
         wl=wl, radius=radius, angle=angle,
         neff=float(result.n_eff.real), ng=ng,
         loss_db_cm=loss_db_cm,
-        excess_loss_db=result.loss_db_per_90deg * (angle / 90.0),
+        # Bend handedness changes the layout direction, not the radiated power.
+        # A signed angle used here previously turned a clockwise bend's positive
+        # solver loss into optical gain.
+        excess_loss_db=result.loss_db_per_90deg * (abs(angle) / 90.0),
         wl0=wl0,
     )

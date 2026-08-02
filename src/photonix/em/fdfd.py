@@ -396,7 +396,13 @@ def waveguide_sparams(
     s12 = (b_out / b_inc) * np.sqrt((bi * gi) / (bo * go))
     s22 = b_fwd / b_inc
     return {
-        ("o1", "o2"): complex(s12), ("o2", "o1"): complex(s21),
+        # SDict keys are (input_port, output_port), whereas conventional
+        # matrix subscripts are S[output, input].  Thus the left-incident S21
+        # belongs to (o1, o2), and the independently extracted right-incident
+        # S12 belongs to (o2, o1).  Keeping this explicit matters for asymmetric
+        # ports/devices; reciprocity made the old transposition invisible on a
+        # uniform-waveguide regression.
+        ("o1", "o2"): complex(s21), ("o2", "o1"): complex(s12),
         ("o1", "o1"): complex(s11),
         ("o2", "o2"): complex(s22),
     }

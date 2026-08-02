@@ -1,12 +1,22 @@
 # photonix
 
-PIC based computational solver Python package compatible with MEEP (another OSS)
+Photonix is an accuracy-first Python toolkit for photonic integrated circuit
+(PIC) design. It connects differentiable compact models, S-parameter circuit
+simulation, electromagnetic solvers, layout, process studies, and external
+verification handoffs through one consistent port and data model.
 
-photonix tries to bring the photonic design stack into a single library built on
-[JAX](https://github.com/google/jax).
+| Layer | Delivered capability |
+|---|---|
+| Circuit | Differentiable named-port S-matrix assembly, including feedback networks |
+| Electromagnetics | Scalar, semivectorial, and full-vector FDE; 2-D FDFD and EME; optional Meep/MPB FDTD |
+| Accuracy & spectra | Adaptive Richardson/GCI studies; high-order group delay and GDD on nonuniform sweeps |
+| Physicality QA | Quantitative passivity, reciprocity, and losslessness checks plus pointwise passive projection |
+| Design | JAX gradients, inverse-design objectives, fabrication filters, and process variation studies |
+| Layout & exchange | Hierarchical cells, routing, GDSII/OASIS, Touchstone, extraction, and KLayout handoff |
 
-
-> Status: **v0.1.0 (beta).** MIT-licensed.
+> Status: **v0.1.0 (beta).** MIT-licensed. Photonix is a simulation and design
+> layer, not a substitute for a target foundry's qualified PDK, DRC/LVS decks,
+> or tape-out sign-off.
 
 
 ## Install
@@ -26,6 +36,15 @@ For an editable checkout, clone the repository and run
 
 photonix runs on a NumPy fallback backend when JAX is absent (autodiff disabled);
 install the `jax` extra for the full differentiable experience.
+
+Confirm the active backend, floating-point precision, devices, optional Python
+packages, and KLayout discovery before a reproducibility-sensitive run:
+
+```bash
+photonix info
+photonix info --json       # suitable for a simulation manifest or bug report
+# `python -m photonix info` is equivalent
+```
 
 ### Optional: FDTD via MEEP
 
@@ -133,6 +152,21 @@ nl = lay.extract_netlist(top)               # coincident ports → connections
 S  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # models default to px.components.MODELS
 ```
 
+## Accuracy is a workflow
+
+No single discretized result is "accurate" without evidence at the geometry and
+operating point being studied. For engineering use, sweep grid resolution and
+domain/PML size, sweep EME modal basis size where applicable, test S-parameter
+passivity and reciprocity under the correct power-wave normalization, and retain
+the runtime manifest with the result. Cross-check critical devices against an
+independent solver or measurement.
+
+[`docs/VALIDATION.md`](docs/VALIDATION.md) defines the evidence levels, solver
+selection guidance, and a result-qualification checklist. The executable
+[`examples/accuracy_workflow.py`](examples/accuracy_workflow.py) demonstrates an
+analytic anchor, convergence check, S-parameter physicality report, and runtime
+capture without claiming foundry qualification.
+
 ## Package layout
 
 | Subpackage | Purpose |
@@ -147,6 +181,7 @@ S  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # models default to px.compo
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |
+| `photonix.diagnostics` | Reproducible backend, precision, device, dependency, and external-tool manifests |
 
 **Port naming.** Optical ports are `o1, o2, ... oN` everywhere. The legacy
 semantic names (`in0`/`out0`, `i1`/`t1`/`d2`) still work as lookup aliases; see
@@ -157,7 +192,8 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, and
 production-PIC boundary and remaining sign-off gaps are in
 [`docs/PIC_COMPLETENESS.md`](docs/PIC_COMPLETENESS.md); executable open-source
 and licensed-tool handoffs are collected in
-[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+[`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md), and the numerical evidence policy
+is in [`docs/VALIDATION.md`](docs/VALIDATION.md).
 
 ## License
 

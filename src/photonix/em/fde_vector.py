@@ -156,6 +156,12 @@ def _solve(eps, dx, dy, k0, pol, num_modes, want_left=False):
     vals, vecs = vals[order], vecs[:, order]
 
     betas = np.sqrt(vals.astype(complex))
+    # Photonix propagates fields as exp(-i*beta*z).  The principal square root
+    # puts a negative beta**2 root on +i|beta|, which would grow in +z under
+    # that convention.  Select the same decaying -i|beta| branch used by the
+    # scalar and full-vector solvers, while leaving positive guided roots on
+    # +Re(beta).
+    betas = np.where(np.imag(betas) > 0, -betas, betas)
     neff = betas / k0
     ny, nx = eps.shape
     fields = np.array([np.real(vecs[:, i]).reshape(ny, nx) for i in range(vecs.shape[1])])

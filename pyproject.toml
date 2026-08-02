@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "photonix"
 version = "0.1.0"
-description = "Differentiable, GPU-accelerated, accuracy-first photonic integrated circuit design and simulation."
+description = "Accuracy-first, differentiable photonic integrated circuit design, simulation, and verification."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -23,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
 ]
 dependencies = [
     "numpy>=1.24",
@@ -38,6 +39,8 @@ layout = ["gdstk>=0.9"]
 viz = ["matplotlib>=3.7"]
 rf = ["scikit-rf>=1.0"]
 multiphysics = ["meshio>=5.3"]
+test = ["pytest>=7.4", "pytest-cov>=4.1"]
+release = ["build>=1.2", "twine>=5.0"]
 all = [
     "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7",
     "networkx>=3.0", "scikit-rf>=1.0", "meshio>=5.3",
@@ -47,6 +50,9 @@ dev = [
     "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7", "networkx>=3.0",
     "scikit-rf>=1.0", "meshio>=5.3",
 ]
+
+[project.scripts]
+photonix = "photonix.__main__:main"
 
 [project.urls]
 Homepage = "https://github.com/photonix/photonix"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import photonix as px
 import photonix.components as c
@@ -30,6 +31,25 @@ def test_straight_phase_and_loss():
     assert abs(float(px.power(s2[("o1", "o2")])) - 10 ** (-0.1)) < 1e-6
 
 
+def test_solver_bend_loss_is_independent_of_handedness(monkeypatch):
+    """Clockwise and counter-clockwise bends radiate equally; neither may gain."""
+    from types import SimpleNamespace
+
+    import photonix.em.fde_vector as fde_vector
+
+    monkeypatch.setattr(
+        fde_vector,
+        "bend_loss_fullvector",
+        lambda **_kwargs: SimpleNamespace(n_eff=2.4 + 1e-5j, loss_db_per_90deg=1.2),
+    )
+    ccw = c.bend_from_solver(angle=90.0)
+    cw = c.bend_from_solver(angle=-90.0)
+    p_ccw = float(px.power(ccw[("o1", "o2")]))
+    p_cw = float(px.power(cw[("o1", "o2")]))
+    assert p_cw == pytest.approx(p_ccw)
+    assert p_cw == pytest.approx(10.0 ** (-1.2 / 10.0))
+
+
 def test_grating_peak_wavelength(wl):
     s = c.grating_coupler(wl=wl, wl0=1.55)
     i = int(np.argmax(np.asarray(px.power(s[("o1", "o2")]))))
@@ -48,3 +68,38 @@ def test_ring_has_resonance():
     T = np.asarray(px.power(c.all_pass_ring(wl=wl, coupling=0.05, radius=10.0, loss_db_cm=50.0)[("o1", "o2")]))
     assert T.min() < 0.1          # deep resonant dip
     assert T.max() - T.min() > 0.8
+
+
+def test_uncoupled_lossless_rings_have_finite_transparent_bus_at_exact_resonance(monkeypatch):
+    """A disconnected ring cannot affect either bus, even at its eigenfrequency."""
+    import photonix.components.resonators as resonators
+
+    # Pin the round trip to z=exp(-i*phi)=1 exactly.  Constructing phi from a
+    # finite radius normally leaves a few ulps of trigonometric round-off, which
+    # would hide the removable 0/0 in the old closed form.
+    monkeypatch.setattr(resonators, "_round_trip", lambda *_args: (1.0, 0.0))
+
+    all_pass = c.all_pass_ring(
+        wl=1.55, coupling=0.0, radius=10.0, loss_db_cm=0.0,
+    )
+    assert np.isfinite(complex(all_pass[("o1", "o2")]))
+    assert complex(all_pass[("o1", "o2")]) == 1.0 + 0.0j
+
+    add_drop = c.add_drop_ring(
+        wl=1.55, coupling1=0.0, coupling2=0.0, radius=10.0,
+        loss_db_cm=0.0,
+    )
+    assert complex(add_drop[("o1", "o2")]) == 1.0 + 0.0j
+    assert complex(add_drop[("o4", "o3")]) == 1.0 + 0.0j
+    assert complex(add_drop[("o1", "o3")]) == 0.0 + 0.0j
+
+    # Below machine epsilon, sqrt(1-c) rounds to one.  The linewidth must still
+    # come from c itself: an infinitesimally coupled lossless all-pass has a pi
+    # phase flip at exact resonance, and a symmetric add-drop transfers all
+    # resonant power to the drop port.
+    weak = 1e-20
+    weak_all_pass = c.all_pass_ring(wl=1.55, coupling=weak)
+    assert complex(weak_all_pass[("o1", "o2")]) == pytest.approx(-1.0 + 0.0j)
+    weak_add_drop = c.add_drop_ring(wl=1.55, coupling1=weak, coupling2=weak)
+    assert complex(weak_add_drop[("o1", "o2")]) == pytest.approx(0.0 + 0.0j, abs=1e-12)
+    assert abs(complex(weak_add_drop[("o1", "o3")])) == pytest.approx(1.0)

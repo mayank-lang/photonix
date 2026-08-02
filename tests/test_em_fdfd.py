@@ -136,8 +136,8 @@ def test_port_phase_uses_longitudinal_grid_dispersion_and_checks_nyquist():
         mode_source(ny, nx, col, profile, beta=2.0 / dx, dx=dx)
 
 
-def test_waveguide_sparams_extracts_reverse_s12_with_discrete_flux(monkeypatch):
-    """S12 comes from the reverse solve and each direction uses discrete power flux."""
+def test_waveguide_sparams_assigns_forward_and_reverse_to_input_output_keys(monkeypatch):
+    """S21/S12 use SDict's (input, output) keys and discrete power flux."""
     import photonix.em.fdfd as fdfd
 
     beta_in, beta_out, dx = 2.0, 6.0, 0.2
@@ -181,8 +181,10 @@ def test_waveguide_sparams_extracts_reverse_s12_with_discrete_flux(monkeypatch):
     flux_in, flux_out = grid_flux(beta_in), grid_flux(beta_out)
     expected_s21 = (1.0 / 2.0) * np.sqrt(flux_out / flux_in)
     expected_s12 = (3.0 / 4.0) * np.sqrt(flux_in / flux_out)
-    assert np.allclose(s[("o2", "o1")], expected_s21)
-    assert np.allclose(s[("o1", "o2")], expected_s12)
+    # Conventional S21 is output 2 due to input 1, hence Photonix key
+    # (input=o1, output=o2).  S12 is the independently simulated reverse path.
+    assert np.allclose(s[("o1", "o2")], expected_s21)
+    assert np.allclose(s[("o2", "o1")], expected_s12)
     assert not np.allclose(s[("o1", "o2")], s[("o2", "o1")])
     assert np.allclose(s[("o2", "o2")], 0.1)
 

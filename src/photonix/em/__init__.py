@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from . import (
     components,
+    convergence,
     eim,
     eme,
     fabrication,
@@ -40,6 +41,7 @@ from . import (
     slab,
     spectrum,
 )
+from .convergence import GridConvergenceResult, adaptive_convergence, estimate_convergence
 from .fde import ModeData, group_index, n_eff, n_eff_eps, solve_modes
 from .fde_vector import (
     BendMode,
@@ -71,6 +73,7 @@ __all__ = [
     "meep",
     "fabrication",
     "components",
+    "convergence",
     "materials",
     "spectrum",
     "inverse",
@@ -99,6 +102,9 @@ __all__ = [
     "BendMode",
     "fullvector_transverse_fields",
     "power_overlap",
+    "GridConvergenceResult",
+    "estimate_convergence",
+    "adaptive_convergence",
 ]
 
 

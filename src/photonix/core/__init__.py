@@ -20,6 +20,7 @@ from .backend import (
     xp,
 )
 from .dataset import SParameterDataset, touchstone_capabilities
+from .quality import SParameterDiagnostics, analyze_sparameters, project_passive
 from .sparams import (
     as_sdense,
     as_sdict,
@@ -32,6 +33,7 @@ from .sparams import (
     sdict_to_sdense,
     validate_sdict,
 )
+from .spectral import differentiate_samples, group_delay, group_delay_dispersion
 from .types import (
     AliasedSDict,
     Array,
@@ -62,9 +64,11 @@ __all__ = [
     "Array", "Complex", "Float", "Model", "ModelFactory", "PortName", "PortPair",
     "SCoo", "SDense", "SDict", "AliasedSDict", "SType", "Settings",
     "SParameterDataset", "touchstone_capabilities",
+    "SParameterDiagnostics", "analyze_sparameters", "project_passive",
     "is_sdict", "is_sdense", "is_scoo", "ports_of",
     # sparams
     "as_sdict", "as_sdense", "sdict_to_sdense", "sdense_to_sdict",
     "reciprocal", "is_reciprocal", "is_passive", "power",
     "insertion_loss_db", "validate_sdict",
+    "differentiate_samples", "group_delay", "group_delay_dispersion",
 ]
