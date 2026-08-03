@@ -80,3 +80,5 @@ ignore = ["E741"]
 python_version = "3.10"
 ignore_missing_imports = true
 warn_unused_ignores = false
+# Check Photonix itself without parsing version-sensitive third-party stubs.
+no_site_packages = true
