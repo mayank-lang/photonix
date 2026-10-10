@@ -399,7 +399,40 @@ def bbox_gap(p: np.ndarray, q: np.ndarray) -> float:
 
 
 def check_bundle_clearance(lines: Sequence[np.ndarray], min_center_distance: float, what: str = "routes") -> None:
-    """Raise :class:`RoutingError` if any two centre lines come closer than ``min_center_distance``."""
+    """Raise :class:`RoutingError` if any two centre lines come closer than ``min_center_distance``.
+
+    Candidate pairs come from a KD-tree over the centre lines resampled at
+    ``step = min_center_distance / 4``: two curves closer than the threshold
+    always have samples closer than ``threshold + step``, so the prefilter
+    cannot miss a violation. Candidates are then checked exactly.
+    """
+    from scipy.spatial import cKDTree
+
+    if len(lines) < 2:
+        return
+    step = min_center_distance / 4.0
+    dense = [_densify(np.asarray(line, dtype=float), step)[0] for line in lines]
+    labels = np.concatenate([np.full(len(q), k) for k, q in enumerate(dense)])
+    pairs = cKDTree(np.concatenate(dense)).query_pairs(min_center_distance + step, output_type="ndarray")
+    if len(pairs) == 0:
+        return
+    la, lb = labels[pairs[:, 0]], labels[pairs[:, 1]]
+    other = la != lb
+    candidates = sorted({(int(min(a, b)), int(max(a, b))) for a, b in zip(la[other], lb[other], strict=True)})
+    for i, j in candidates:
+        if bbox_gap(lines[i], lines[j]) >= min_center_distance:
+            continue
+        dist = polyline_distance(lines[i], lines[j])
+        if dist < min_center_distance - 1e-6:
+            raise RoutingError(
+                f"{what} {i} and {j} come within {dist:.4g} um centre-to-centre "
+                f"(need >= {min_center_distance:.4g} um)"
+            )
+
+
+def _check_bundle_clearance_exhaustive(lines: Sequence[np.ndarray], min_center_distance: float,
+                                       what: str = "routes") -> None:
+    """Reference O(N^2) version of :func:`check_bundle_clearance` (used by the tests)."""
     for i in range(len(lines)):
         for j in range(i + 1, len(lines)):
             if bbox_gap(lines[i], lines[j]) >= min_center_distance:

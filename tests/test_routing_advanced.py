@@ -457,6 +457,29 @@ def test_bundle_errors_are_explicit():
         lay.route_bundle(ins, [lay.Port(f"o{k}", (30.0, 50.0 + 2 * k), 180) for k in range(4)], radius=10.0)
 
 
+def test_bundle_clearance_prefilter_matches_exhaustive_check():
+    """The KD-tree prefiltered clearance check never misses what the O(N^2) exact check finds."""
+    from photonix.layout._route_common import _check_bundle_clearance_exhaustive, check_bundle_clearance
+
+    def raises(fn, *args) -> bool:
+        try:
+            fn(*args)
+        except lay.RoutingError:
+            return True
+        return False
+
+    rng = np.random.default_rng(3)
+    outcomes = set()
+    for _ in range(80):
+        lines = [np.cumsum(rng.normal(size=(int(rng.integers(2, 10)), 2)) * rng.uniform(1.0, 20.0), axis=0)
+                 + rng.uniform(-40, 40, 2) for _ in range(4)]
+        thr = float(rng.uniform(0.3, 4.0))
+        fast = raises(check_bundle_clearance, lines, thr)
+        assert fast == raises(_check_bundle_clearance_exhaustive, lines, thr)
+        outcomes.add(fast)
+    assert outcomes == {True, False}
+
+
 def test_fanout_sbends():
     ports = [lay.Port(f"p{k}", (0.0 - 3.0 * (k % 2), 127.0 * k), 0) for k in range(4)]
     routes, new = lay.fanout(ports, pitch=10.0, dx=600.0, min_radius=50.0, kind="cosine", min_space=5.0)

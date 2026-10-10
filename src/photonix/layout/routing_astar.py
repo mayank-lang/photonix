@@ -40,6 +40,16 @@ edge must be at least ``r``.
 The two straight leads that leave ``port1`` and enter ``port2`` (length
 ``max(d, r + grid/sqrt(2))``) are exempt, because they must abut the devices
 the ports belong to.
+
+Self-crossing
+-------------
+A grid search cannot see its own path, so when the goal needs a loop the
+cheapest grid route may cross itself. Such a result is never returned: the
+router then takes the cheapest closed-form topology of
+:func:`~photonix.layout.route_auto` (same cost function, up to six bends) that
+is self-clear and clears every obstacle, and raises
+:class:`~photonix.layout.RoutingError` if there is none. That fallback is
+correct but not optimal around obstacles.
 """
 from __future__ import annotations
 
