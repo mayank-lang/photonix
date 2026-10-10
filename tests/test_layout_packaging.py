@@ -414,6 +414,22 @@ def test_check_floorplan_edge_coupler_facets():
     assert issues(770.0, d=trench) == [] and issues(800.0, d=trench) == [("facet", ("ec",))]
 
 
+def test_die_frame_survives_a_layout_round_trip(tmp_path):
+    die = die_frame((1000.0, 1000.0), dicing_lane=50.0, keepout=50.0, facet_sides=("E",),
+                    facet_trench_layer=(97, 0), facet_trench_width=20.0, die_id="X1")
+    chip = _chip(die, ("ec", lc.edge_coupler(200.0), (778.0, 500.0), 0.0), ("wg", lc.straight(10.0), (99.0, 300.0), 0.0))
+    path = os.fspath(tmp_path / "die.gds")
+    lay.write_layout(chip, path)
+    back = lay.read_layout(path)
+    frame = next(r.cell for r in back.references if r.name == "frame")
+    assert isinstance(frame, lay.DieCell)
+    assert (frame.die_size, frame.dicing_lane, frame.keepout, frame.facet_sides, frame.facet_trench_width) == \
+        (die.die_size, die.dicing_lane, die.keepout, die.facet_sides, die.facet_trench_width)
+    issues = [(i.kind, i.instances) for i in lay.check_floorplan(back, frame)]
+    assert issues == [(i.kind, i.instances) for i in lay.check_floorplan(chip, die)] == [("keepout", ("wg",)),
+                                                                                         ("facet", ("ec",))]
+
+
 # --------------------------------------------------------------------------- #
 # Automated-test labels
 # --------------------------------------------------------------------------- #

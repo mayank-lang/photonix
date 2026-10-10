@@ -46,7 +46,7 @@ snapped to the database grid.
 | Instance names | `SREF` property `INSTANCE_NAME_ATTR` (= 1) |
 | Labels | `LabeledCell.labels` ↔ GDS `TEXT` (OASIS `TEXT` has no rotation/magnification) |
 | Ports | sidecar → PinRec pins → labels on edges, per structure (below) |
-| `model`, `model_settings`, original names | JSON sidecar only |
+| `model`, `model_settings`, original names, `DieCell` floorplan attributes | JSON sidecar only |
 
 ### Ports
 
@@ -93,8 +93,10 @@ snapped to the database grid.
   record layout checks the bytes on disk independently of gdstk. It
   covers units, structure names, boundary counts and integer areas, `SREF`
   instance-name properties, pin paths with their layer property, and port
-  text. When the `klayout` Python package is installed, its reader is
-  compared as well.
+  text. For a rotated, reflected `AREF`, each expanded instance origin
+  equals `P1 + i (P2 − P1)/cols + j (P3 − P1)/rows`, computed from the
+  decoded `COLROW`/`XY` records. When the `klayout` Python package is
+  installed, its reader is compared as well.
 * Files written by the legacy `write_gds` (labels only, polygons fractured at
   199 vertices) reproduce the snapped cell tree. The flattened geometry
   differs by less than a tenth of a grid step along every edge (XOR area

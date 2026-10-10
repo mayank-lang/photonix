@@ -113,10 +113,16 @@ def _decode_gds(path):
         if rtype == 0x03:                                   # UNITS
             units = (_real8(payload[:8]), _real8(payload[8:16]))
         elif rtype == 0x06:                                 # STRNAME
-            cur = {"boundaries": [], "srefs": [], "paths": [], "texts": []}
+            cur = {"boundaries": [], "srefs": [], "paths": [], "texts": [], "arefs": []}
             structs[payload.rstrip(b"\0").decode()] = cur
-        elif rtype in (0x08, 0x0A, 0x09, 0x0C):             # BOUNDARY, SREF, PATH, TEXT
+        elif rtype in (0x08, 0x0A, 0x09, 0x0C, 0x0B):       # BOUNDARY, SREF, PATH, TEXT, AREF
             el = {"kind": rtype, "props": {}}
+        elif rtype == 0x13:                                 # COLROW
+            el["colrow"] = struct.unpack(">hh", payload)
+        elif rtype == 0x1A:                                 # STRANS
+            el["reflect"] = bool(struct.unpack(">H", payload)[0] & 0x8000)
+        elif rtype == 0x1C:                                 # ANGLE (degrees)
+            el["angle"] = _real8(payload)
         elif rtype == 0x0D:
             el["layer"] = struct.unpack(">h", payload)[0]
         elif rtype in (0x0E, 0x16):                         # DATATYPE, TEXTTYPE
@@ -132,7 +138,7 @@ def _decode_gds(path):
         elif rtype == 0x2C:                                 # PROPVALUE
             el["props"][el.pop("_attr")] = payload.rstrip(b"\0").decode()
         elif rtype == 0x11:                                 # ENDEL
-            key = {0x08: "boundaries", 0x0A: "srefs", 0x09: "paths", 0x0C: "texts"}[el["kind"]]
+            key = {0x08: "boundaries", 0x0A: "srefs", 0x09: "paths", 0x0C: "texts", 0x0B: "arefs"}[el["kind"]]
             cur[key].append(el)
         elif rtype == 0x04:
             break
@@ -563,6 +569,25 @@ def test_arrays_expand_and_match_gdstk_flatten(tmp_path, fmt):
     assert oa.keys() == ra.keys() and all(oa[k] == pytest.approx(ra[k], rel=1e-12) for k in oa)
     key = lambda p: (p[1], tuple(np.round(np.mean(p[0], axis=0), 6)))   # noqa: E731
     assert sorted(map(key, ours)) == sorted(map(key, ref))
+
+
+def test_aref_instances_follow_the_gdsii_lattice_definition(tmp_path):
+    """AREF XY = origin, origin + cols*v_col, origin + rows*v_row (parent frame), decoded without gdstk."""
+    path = os.fspath(tmp_path / "aref.gds")
+    lib = gdstk.Library()
+    unit = lib.new_cell("u")
+    unit.add(gdstk.rectangle((0, 0), (1, 2)))
+    lib.new_cell("top").add(gdstk.Reference(unit, origin=(3, -4), rotation=np.radians(30), x_reflection=True,
+                                            columns=4, rows=3, spacing=(5, 9)))
+    lib.write_gds(path)
+    (aref,) = _decode_gds(path)[1]["top"]["arefs"]
+    cols, rows = aref["colrow"]
+    p1, p2, p3 = aref["xy"] * 1e-3
+    want = sorted(tuple(np.round(p1 + i * (p2 - p1) / cols + j * (p3 - p1) / rows, 9))
+                  for i in range(cols) for j in range(rows))
+    back = lay.read_layout(path)
+    assert sorted(tuple(np.round(r.origin, 9)) for r in back.references) == want
+    assert {(r.rotation, r.mirror) for r in back.references} == {(round(aref["angle"], 9), aref["reflect"])}
 
 
 def test_magnified_reference_is_flattened_or_rejected(tmp_path):

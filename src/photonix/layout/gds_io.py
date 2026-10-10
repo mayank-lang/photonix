@@ -44,7 +44,8 @@ What a round trip preserves
      merged) through the label, and its centre is the label position
      (projected onto the run if it lies off it by more than 1.5 grid steps).
 
-* **Circuit semantics** (``model``, ``model_settings``) only through the
+* **Circuit semantics** (``model``, ``model_settings``) and the floorplan
+  attributes of a :class:`~photonix.layout.placement.DieCell` only through the
   sidecar. Without it a leaf structure is marked
   :data:`~photonix.layout.GEOMETRY_ONLY` and extraction refuses to simulate
   it rather than guess.
@@ -93,6 +94,7 @@ import numpy as np
 from .cell import ELECTRICAL, GEOMETRY_ONLY, OPTICAL, Cell, Port
 from .gds import _fingerprint, _gdstk
 from .labels import Label, LabeledCell
+from .placement import DieCell
 
 __all__ = [
     "read_layout", "write_layout", "LayoutArtifact", "list_top_cells", "layout_units", "infer_ports",
@@ -353,6 +355,15 @@ def _decode(value: Any) -> Any:
     return value
 
 
+def _die_attrs(cell: Cell) -> dict | None:
+    """The floorplan attributes of a :class:`~photonix.layout.placement.DieCell` (``None`` otherwise)."""
+    if not isinstance(cell, DieCell):
+        return None
+    return {"die_size": [float(v) for v in cell.die_size], "dicing_lane": float(cell.dicing_lane),
+            "keepout": float(cell.keepout), "facet_sides": list(cell.facet_sides),
+            "facet_trench_width": float(cell.facet_trench_width)}
+
+
 def _settings_key(cell: Cell) -> str:
     """Canonical text of ``model_settings`` for de-duplication (``repr`` for values JSON cannot hold)."""
     try:
@@ -435,7 +446,7 @@ class _Writer:
             labels = [(lb.text, lb.position, lb.layer, lb.rotation, lb.magnification, lb.anchor)
                       for lb in (cell.labels if isinstance(cell, LabeledCell) else [])]
             payload = repr((_fingerprint(cell, self.fp_memo), cell.model, _settings_key(cell), labels,
-                            [(self.key(r.cell), r.name) for r in cell.references]))
+                            _die_attrs(cell), [(self.key(r.cell), r.name) for r in cell.references]))
             self.key_memo[k] = hashlib.sha256(payload.encode()).hexdigest()
         return self.key_memo[k]
 
@@ -630,6 +641,9 @@ def write_layout(
                            "width": p.width, "layer": list(p.layer), "port_type": p.port_type}
                           for p in c.ports.values()],
             }
+            die_attrs = _die_attrs(c)
+            if die_attrs is not None:
+                entries[name]["die"] = die_attrs
         from photonix import __version__
 
         doc = {
@@ -993,7 +1007,14 @@ class _Reader:
                           StaleSidecarWarning, stacklevel=3)
             self.stale.append(gname)
             entry = None
-        cell = LabeledCell(entry["name"] if entry is not None else gname)
+        cell: LabeledCell
+        if entry is not None and entry.get("die"):
+            die = entry["die"]
+            cell = DieCell(entry["name"], die_size=(float(die["die_size"][0]), float(die["die_size"][1])),
+                           dicing_lane=float(die["dicing_lane"]), keepout=float(die["keepout"]),
+                           facet_sides=tuple(die["facet_sides"]), facet_trench_width=float(die["facet_trench_width"]))
+        else:
+            cell = LabeledCell(entry["name"] if entry is not None else gname)
         g = self.grid
         for poly in gcell.polygons:
             for off in _offsets(poly):
