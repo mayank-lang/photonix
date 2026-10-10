@@ -609,7 +609,12 @@ def write_layout(
         # A default sidecar left by an earlier write would describe the file just overwritten.
         stale = sidecar_path_for(target)
         if os.path.exists(stale):
-            os.remove(stale)
+            try:
+                _load_sidecar(stale)
+            except (ValueError, OSError):
+                pass  # not ours: leave it alone
+            else:
+                os.remove(stale)
     else:
         side = sidecar_path_for(target) if sidecar is True else os.fspath(sidecar)
         reread = {c.name: c for c in _read_lib(target, kind).cells}
@@ -862,7 +867,7 @@ class _Reader:
         self.magnification = magnification
         self.memo: dict[str, LabeledCell] = {}
         self.visiting: set[str] = set()
-        self.mag_memo: dict[tuple[str, float], LabeledCell] = {}
+        self.mag_memo: dict[tuple[int, float], LabeledCell] = {}
         self.stale: list[str] = []
 
     # -- elements -------------------------------------------------------- #
@@ -960,7 +965,7 @@ class _Reader:
         return best[1] if best is not None else (1, 0)
 
     def _magnified(self, child: LabeledCell, mag: float) -> LabeledCell:
-        key = (child.name, mag)
+        key = (id(child), mag)
         if key not in self.mag_memo:
             flat = child.flatten()
             scaled = LabeledCell(f"{child.name}_mag{mag:g}", model=GEOMETRY_ONLY)
@@ -1006,7 +1011,8 @@ class _Reader:
             for off in _offsets(lbl):
                 pos = _norm(np.asarray(lbl.origin, dtype=float) + off, g)
                 cell.labels.append(Label(str(lbl.text), (float(pos[0]), float(pos[1])), (lbl.layer, lbl.texttype),
-                                         math.degrees(lbl.rotation), float(lbl.magnification), str(lbl.anchor)))
+                                         _clean_angle(math.degrees(lbl.rotation)), float(lbl.magnification),
+                                         str(lbl.anchor)))
         used_names: set[str] = set()
         for gref in gcell.references:
             self._reference(cell, gref, used_names, where)

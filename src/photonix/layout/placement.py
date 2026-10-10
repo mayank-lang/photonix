@@ -22,6 +22,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
@@ -181,19 +182,30 @@ def grid(
 class _MaxRects:
     """MaxRects free-rectangle bookkeeping for one bin (Jylänki 2010, section 4)."""
 
-    def __init__(self, width: float, height: float, eps: float):
+    def __init__(self, width: float, height: float, eps: float, heuristic: str = "bssf"):
         self.free: list[tuple[float, float, float, float]] = [(0.0, 0.0, width, height)]
         self.eps = eps
+        self.heuristic = heuristic
+
+    def _score(self, fx: float, fy: float, fw: float, fh: float, rw: float, rh: float) -> tuple[float, ...]:
+        left_h, left_v = fw - rw, fh - rh
+        short, long_ = min(left_h, left_v), max(left_h, left_v)
+        if self.heuristic == "bssf":      # Best Short Side Fit
+            return (short, long_, fy, fx)
+        if self.heuristic == "blsf":      # Best Long Side Fit
+            return (long_, short, fy, fx)
+        if self.heuristic == "baf":       # Best Area Fit
+            return (fw * fh - rw * rh, short, fy, fx)
+        return (fy + rh, fx, fy, fx)      # "bl": Bottom-Left (lowest top edge, then leftmost)
 
     def find(self, w: float, h: float, rotate: bool):
-        """Best-Short-Side-Fit position: minimise the shorter leftover side, then the longer."""
+        """Best free position for a ``w x h`` box under the bin's heuristic (``None`` if it fits nowhere)."""
         best = None
         options = [(w, h, False)] + ([(h, w, True)] if rotate and abs(w - h) > self.eps else [])
         for fx, fy, fw, fh in self.free:
             for rw, rh, rotated in options:
                 if rw <= fw + self.eps and rh <= fh + self.eps:
-                    left_h, left_v = fw - rw, fh - rh
-                    score = (min(left_h, left_v), max(left_h, left_v), fy, fx, rotated)
+                    score = (*self._score(fx, fy, fw, fh, rw, rh), rotated)
                     if best is None or score < best[0]:
                         best = (score, fx, fy, rw, rh, rotated)
         return None if best is None else best[1:]
@@ -232,9 +244,10 @@ def pack(
     max_size: tuple[float, float],
     spacing: float = 10.0,
     allow_rotation: bool = False,
+    heuristic: Literal["bssf", "blsf", "baf", "bl"] = "bssf",
     name: str = "pack",
 ) -> list[Cell]:
-    """Bin-pack cells into as many ``max_size`` bins as needed (MaxRects, Best Short Side Fit).
+    """Bin-pack cells into as many ``max_size`` bins as needed (MaxRects, Best Short Side Fit by default).
 
     Each cell's bounding box is inflated by ``spacing`` (half on every side,
     the bin by the same amount so cells may touch its edge), the boxes are
@@ -251,6 +264,10 @@ def pack(
         Minimum edge-to-edge distance between packed bounding boxes.
     allow_rotation
         Also try each cell rotated by 90 degrees. This rotates its ports too.
+    heuristic
+        MaxRects placement rule (Jylänki 2010): ``"bssf"`` Best Short Side
+        Fit (default, usually the best), ``"blsf"`` Best Long Side Fit,
+        ``"baf"`` Best Area Fit or ``"bl"`` Bottom-Left.
 
     Returns
     -------
@@ -272,6 +289,8 @@ def pack(
         raise ValueError("max_size must be positive and finite")
     if not math.isfinite(spacing) or spacing < 0:
         raise ValueError("spacing must be non-negative and finite")
+    if heuristic not in ("bssf", "blsf", "baf", "bl"):
+        raise ValueError(f"heuristic must be 'bssf', 'blsf', 'baf' or 'bl', got {heuristic!r}")
     s = float(spacing)
     eps = 1e-9 * max(width, height, 1.0)
     boxes = [c.bbox() for c in cells]
@@ -288,7 +307,7 @@ def pack(
                 b_idx = i
                 break
         if spot is None:
-            fresh = _MaxRects(width + s, height + s, eps)
+            fresh = _MaxRects(width + s, height + s, eps, heuristic)
             spot = fresh.find(w, h, allow_rotation)
             if spot is None:
                 raise ValueError(f"cell {cells[k].name!r} ({sizes[k][0]:g} x {sizes[k][1]:g} um) does not fit in "

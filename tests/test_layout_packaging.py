@@ -102,10 +102,11 @@ def test_label_transforms_with_references():
 # --------------------------------------------------------------------------- #
 # Packing
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("heuristic", ["bssf", "blsf", "baf", "bl"])
 @pytest.mark.parametrize("n", [3, 4, 5])
-def test_equal_squares_fill_the_bin_completely(n):
+def test_equal_squares_fill_the_bin_completely(n, heuristic):
     side = 7.0
-    bins = lay.pack([_square(side)] * (n * n), max_size=(n * side, n * side), spacing=0.0)
+    bins = lay.pack([_square(side)] * (n * n), max_size=(n * side, n * side), spacing=0.0, heuristic=heuristic)
     assert len(bins) == 1 and len(bins[0].references) == n * n
     corners = sorted(lay.reference_bbox(r)[0] for r in bins[0].references)
     assert corners == sorted((i * side, j * side) for i in range(n) for j in range(n))
@@ -131,19 +132,26 @@ def _check_packing(bins, cells, max_size, spacing):
                 assert max(gap_x, gap_y) >= spacing - 1e-9, (i, j, boxes[i], boxes[j])
 
 
-def test_random_rectangles_pack_without_overlap_and_deterministically():
+@pytest.mark.parametrize("heuristic", ["bssf", "blsf", "baf", "bl"])
+def test_random_rectangles_pack_without_overlap_and_deterministically(heuristic):
     rng = np.random.default_rng(7)
     cells = [_rect(float(w), float(h), name=f"c{k}", x0=float(x), y0=float(y))
              for k, (w, h, x, y) in enumerate(zip(rng.uniform(5, 60, 40), rng.uniform(5, 60, 40),
                                                   rng.uniform(-50, 50, 40), rng.uniform(-50, 50, 40), strict=True))]
     size, spacing = (150.0, 120.0), 3.0
-    bins = lay.pack(cells, max_size=size, spacing=spacing)
+    bins = lay.pack(cells, max_size=size, spacing=spacing, heuristic=heuristic)
     _check_packing(bins, cells, size, spacing)
-    again = lay.pack(cells, max_size=size, spacing=spacing)
+    again = lay.pack(cells, max_size=size, spacing=spacing, heuristic=heuristic)
     assert [[(r.name, r.origin) for r in b.references] for b in bins] == \
         [[(r.name, r.origin) for r in b.references] for b in again]
-    used = sum(c.bbox()[1][0] - c.bbox()[0][0] for c in cells)
-    assert len(bins) >= 1 and used > 0
+    # quality: every bin but the last is at least 70 % full (inflated boxes), in line with the
+    # 80-90 % occupancy Jylanki reports for MaxRects on random boxes
+    def fill(b):
+        boxes = [lay.reference_bbox(r) for r in b.references]
+        return sum((hi[0] - lo[0] + spacing) * (hi[1] - lo[1] + spacing) for lo, hi in boxes) / (
+            (size[0] + spacing) * (size[1] + spacing))
+
+    assert all(fill(b) >= 0.7 for b in bins[:-1])
 
 
 def test_rotation_is_opt_in_and_quarter_turn_only():
