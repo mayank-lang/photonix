@@ -321,7 +321,10 @@ def route_length_matched(
     reasons: list[str] = []
     for n, alloc in plans:
         h = 0.5 * (dL / n + shrink) if mode == "rect" else 0.0
-        if mode == "rect" and (h < 2 * d - 1e-9 or (max_height is not None and h > float(max_height) + 1e-9)):
+        if mode == "rect" and h < 2 * d - 1e-9:
+            reasons.append(f"{n} trombones would be {h:.4g} um tall, below the {2 * d:.4g} um minimum")
+            continue
+        if mode == "rect" and max_height is not None and h > float(max_height) + 1e-9:
             continue
         for sd in (side, -side):
             vs: list[np.ndarray] = [verts[0]]
