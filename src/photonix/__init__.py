@@ -25,7 +25,7 @@ The public API is intentionally small and re-exports the most-used names from
 each subpackage. Subpackages (:mod:`photonix.core`, :mod:`photonix.circuit`,
 :mod:`photonix.components`, :mod:`photonix.modes`, :mod:`photonix.layout`,
 :mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`,
-:mod:`photonix.multiphysics`, :mod:`photonix.interop`,
+:mod:`photonix.multiphysics`, :mod:`photonix.materials`, :mod:`photonix.interop`,
 :mod:`photonix.diagnostics`) can also be imported directly.
 """
 from __future__ import annotations
@@ -89,10 +89,11 @@ __all__ = [
 # subpackages themselves therefore import on a minimal NumPy/SciPy installation.
 # Import every namespace eagerly so an internal ImportError is never mistaken
 # for a missing optional dependency and silently hidden.
-from . import circuit, components, em, interop, layout, modes, multiphysics, optim, pdk, viz  # noqa: E402
+from . import circuit, components, em, interop, layout, materials, modes, multiphysics, optim, pdk, viz  # noqa: E402
 
 __all__ += [
     "components", "circuit", "modes", "em", "interop", "layout", "pdk", "viz", "optim", "multiphysics",
+    "materials",
 ]
 
 # Kept for compatibility with 0.1.x callers. Optional *features* now raise their
