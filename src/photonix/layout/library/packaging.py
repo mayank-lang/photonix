@@ -85,14 +85,17 @@ def _rotate_placements(cell: Cell, angle: float) -> None:
     cell.ports = {k: p.moved(0.0, 0.0, angle) for k, p in cell.ports.items()}
 
 
+_ROUTE_NPTS = 48  # route_manhattan's default bend sampling; the Euler corner offset depends on it
+
+
 def _bend_geometry(radius: float, bend: str, p: float) -> tuple[float, float]:
-    """(corner offset d, arc length) of a 90-degree bend used by ``route_manhattan``."""
+    """(corner offset d, arc length) of the 90-degree bend ``route_manhattan`` draws."""
     if bend == "circular":
         return radius, 0.5 * math.pi * radius
     if bend == "euler":
         from .._geometry import corner_offset, euler_curve
 
-        return corner_offset(euler_curve(radius, 90.0, p)), 0.5 * math.pi * radius * (1.0 + p)
+        return corner_offset(euler_curve(radius, 90.0, p, _ROUTE_NPTS)), 0.5 * math.pi * radius * (1.0 + p)
     raise ValueError("bend must be 'circular' or 'euler'")
 
 
@@ -205,7 +208,7 @@ def fiber_array(
         x_right = max(pn.center[0] + 2.0 * d, boxes[-1][1][0] + clearance + w / 2.0 + d)
         corners = [(p0.center[0], y_top), (x_left, y_top), (x_left, y_bot), (x_right, y_bot),
                    (x_right, y_top), (pn.center[0], y_top)]
-        loop = route_manhattan(p0, pn, radius=radius, bend=bend, width=w, waypoints=corners)
+        loop = route_manhattan(p0, pn, radius=radius, bend=bend, width=w, waypoints=corners, npts=_ROUTE_NPTS)
         loop.name = "loopback"
         cell.add_ref(loop, name="loopback")
 
