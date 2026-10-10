@@ -123,6 +123,7 @@ def crow(
     neff: float = 2.4,
     ng: float = 4.2,
     loss_db_cm: float = 2.0,
+    wl0: float = 1.55,
 ) -> Model:
     """Series-coupled ring filter between two buses (``len(couplings) - 1`` rings).
 
@@ -132,7 +133,8 @@ def crow(
     on the drop bus. Adjacent rings counter-rotate, so the drop port is on the
     input side of the drop bus for an odd ring count and on the far side for an
     even count; the builder wires ``o3``/``o4`` accordingly. One ring reproduces
-    :func:`photonix.components.add_drop_ring`.
+    :func:`photonix.components.add_drop_ring`. ``neff`` is the effective index
+    at ``wl0``.
 
     Examples
     --------
@@ -148,7 +150,7 @@ def crow(
     if n_rings < 1:
         raise ValueError("crow needs at least two couplings (one ring)")
     half = math.pi * radius
-    wg = {"length": half, "neff": neff, "ng": ng, "loss_db_cm": loss_db_cm}
+    wg = {"length": half, "neff": neff, "ng": ng, "loss_db_cm": loss_db_cm, "wl0": wl0}
     nl = Netlist(name="crow")
     # Coupler k: o1/o4 is its upper guide (left/right), o2/o3 its lower guide.
     for k, kappa in enumerate(couplings):

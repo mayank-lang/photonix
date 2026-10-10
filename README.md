@@ -161,7 +161,8 @@ Every layout cell records the compact model and geometry-derived settings it
 represents, so the extracted circuit uses the drawn lengths, radii and gaps
 instead of model defaults. A PDK adds its waveguide properties on top:
 `px.pdk.demo_pdk().simulate(top, wl=wl)`. The full flow -- placement, routing,
-DRC pre-check, GDSII, simulation, analysis and yield -- is in
+DRC pre-check, GDSII, simulation, analysis, yield, sensitivity/worst-case
+analysis and filter synthesis -- is in
 [`docs/tutorial_design_flow.md`](docs/tutorial_design_flow.md).
 
 ## Accuracy is a workflow
@@ -190,7 +191,8 @@ capture without claiming foundry qualification.
 | `photonix.modes` | Compatibility facade re-exporting `photonix.em`'s scalar solver, geometry and materials — *deprecated*, prefer `photonix.em` |
 | `photonix.layout` | Cells, port-based placement, bend-aware routing, GDSII/OASIS I/O, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs |
 | `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
-| `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra |
+| `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra; sensitivities, FOSM moments, process corners, worst-case distance and importance-sampled yield |
+| `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |

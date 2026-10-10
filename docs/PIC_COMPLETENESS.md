@@ -43,6 +43,12 @@ calibrated multiphysics.
     corners and Monte Carlo samples with confidence intervals.
 16. Program arbitrary unitaries onto MZI meshes and simulate them at component
     level with splitter and phase-shifter imperfections.
+17. Rank parameter sensitivities (AD or finite differences), propagate process
+    covariances to first and second order, generate factorial or
+    Plackett-Burman corners, find the worst-case distance to a spec, and
+    estimate rare-failure yield by importance sampling.
+18. Synthesize Butterworth/Chebyshev coupled-resonator filters exactly and map
+    the designed couplings to physical coupler gaps.
 
 ## Interchange and external-solver handoff
 
