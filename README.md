@@ -14,7 +14,7 @@ verification handoffs through one consistent port and data model.
 | Physicality QA | Quantitative passivity, reciprocity, and losslessness checks plus pointwise passive projection |
 | Design | JAX gradients, inverse-design objectives, fabrication filters, and process variation studies |
 | Analysis | Resonance Q/ER/FSR and Q-splitting, pass-band and crosstalk metrics, link budgets, spec-based Monte Carlo yield, impulse/pulse response |
-| Layout & exchange | Hierarchical cells with port-based placement, Euler/S-bends, bend-aware Manhattan routing, geometry-carrying netlist extraction, DRC pre-checks, GDSII/OASIS, netlist JSON, Touchstone, and KLayout handoff |
+| Layout & exchange | Hierarchical cells with port-based placement, Euler/S-bends, bend-aware routing (automatic, S-bend, bundle/fan-out, obstacle-avoiding A*, length-matched), geometry-carrying netlist extraction, DRC pre-checks, GDSII/OASIS, netlist JSON, Touchstone, and KLayout handoff |
 | PDK | Component registry, layer stacks (mode solver and Meep export), waveguide cross-sections bound into simulation, design rules, process corners |
 
 > Status: **v0.1.0 (beta).** MIT-licensed. Photonix is a simulation and design
@@ -189,7 +189,7 @@ capture without claiming foundry qualification.
 | `photonix.components` | Differentiable, parametric component models -- see [`docs/COMPONENT_LIBRARY.md`](docs/COMPONENT_LIBRARY.md) |
 | `photonix.circuit` | Netlist (with JSON I/O), differentiable S-parameter solver, and architecture builders (lattice, CROW, Sagnac, Clements mesh) |
 | `photonix.modes` | Compatibility facade re-exporting `photonix.em`'s scalar solver, geometry and materials — *deprecated*, prefer `photonix.em` |
-| `photonix.layout` | Cells, port-based placement, bend-aware routing, GDSII/OASIS I/O, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs |
+| `photonix.layout` | Cells, port-based placement, bend-aware routing (see [`docs/ROUTING.md`](docs/ROUTING.md)), GDSII/OASIS I/O, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs |
 | `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
 | `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra; sensitivities, FOSM moments, process corners, worst-case distance and importance-sampled yield |
 | `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |

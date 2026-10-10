@@ -30,7 +30,9 @@ calibrated multiphysics.
 11. Hand a GDSII/OASIS stream to an external KLayout executable and run a
     user-supplied DRC or LVS deck in headless batch mode.
 12. Place references by mating ports (`Reference.connect`), route with
-    circular or Euler bends (`route_manhattan`), and extract hierarchical
+    circular or Euler bends (`route_manhattan`, `route_auto`, S-bends,
+    non-crossing bundles and fan-outs, obstacle-avoiding A*, length-matched
+    meanders; see [`ROUTING.md`](ROUTING.md)), and extract hierarchical
     layouts whose cells carry their geometry-derived model settings, so the
     simulated circuit matches the drawn lengths, radii and gaps.
 13. Pre-check minimum width, spacing and area with merged-polygon morphology
