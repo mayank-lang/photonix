@@ -115,7 +115,7 @@ def sbend_arc_length(length=10.0, offset=2.0, *, kind: str = "cosine", p: float 
     >>> from scipy.special import ellipe
     >>> L, D = 30.0, 3.0
     >>> A = math.pi * D / (2 * L)
-    >>> abs(float(sbend_arc_length(L, D)) - 2 * L / math.pi * ellipe(-A * A)) < 1e-12
+    >>> bool(abs(float(sbend_arc_length(L, D)) - 2 * L / math.pi * ellipe(-A * A)) < 1e-12)
     True
     >>> th = 2 * math.atan(D / L)                     # circular: two arcs of radius (L^2 + D^2) / (4 D)
     >>> abs(float(sbend_arc_length(L, D, kind="circular")) - (L * L + D * D) / (2 * D) * th) < 1e-12
@@ -337,7 +337,7 @@ def route_sbend(
     >>> from photonix.layout import Port, route_sbend
     >>> r = route_sbend(Port("a", (0, 0), 0), Port("b", (30, 3), 180), min_radius=10.0, kind="cosine")
     >>> r.model_settings["n_bends"], round(r.model_settings["length"], 6)
-    (2, 30.146906)
+    (2, 30.184208)
     >>> r.ports["o2"].center
     (30.0, 3.0)
     """

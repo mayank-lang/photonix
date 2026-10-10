@@ -92,17 +92,17 @@ def _check_route(cell, p1, p2, *, radius=None, width=W, area_rtol=2e-3, kappa_rt
 # --------------------------------------------------------------------------- #
 # S-bends: closed forms, quadrature, curvature
 # --------------------------------------------------------------------------- #
-def test_cosine_sbend_length_matches_quadrature_and_elliptic_integral():
+@pytest.mark.parametrize("L, D", [(30.0, 3.0), (10.0, 6.0), (200.0, 0.4), (5.0, 8.0)])
+def test_cosine_sbend_length_matches_quadrature_and_elliptic_integral(L, D):
     from scipy.integrate import quad
     from scipy.special import ellipe
 
-    for L, D in ((30.0, 3.0), (10.0, 6.0), (200.0, 0.4), (5.0, 8.0)):
-        ref, _err = quad(lambda x: math.sqrt(1 + (math.pi * D / (2 * L) * math.sin(math.pi * x / L)) ** 2),
-                         0.0, L, epsabs=1e-13, epsrel=1e-13)
-        A = math.pi * D / (2 * L)
-        assert float(lay.sbend_arc_length(L, D)) == pytest.approx(ref, abs=1e-9)
-        assert float(lay.sbend_arc_length(L, D)) == pytest.approx(2 * L / math.pi * ellipe(-A * A), rel=1e-13)
-        assert float(lay.sbend_arc_length(L, -D)) == pytest.approx(ref, abs=1e-9)
+    ref, _err = quad(lambda x: math.sqrt(1 + (math.pi * D / (2 * L) * math.sin(math.pi * x / L)) ** 2),
+                     0.0, L, epsabs=1e-13, epsrel=1e-13)
+    A = math.pi * D / (2 * L)
+    assert float(lay.sbend_arc_length(L, D)) == pytest.approx(ref, abs=1e-9)
+    assert float(lay.sbend_arc_length(L, D)) == pytest.approx(2 * L / math.pi * ellipe(-A * A), rel=1e-13)
+    assert float(lay.sbend_arc_length(L, -D)) == pytest.approx(ref, abs=1e-9)
     assert float(lay.sbend_arc_length(30.0, 0.0)) == 30.0
     assert float(lay.sbend_arc_length(30.0, 0.0, kind="euler")) == 30.0
 
@@ -193,16 +193,16 @@ def test_route_sbend_any_orientation_and_cross_section():
 
 @requires_jax
 @pytest.mark.parametrize("kind", ["cosine", "circular", "euler"])
-def test_sbend_length_gradients_match_finite_differences(kind):
-    for L0, D0 in ((30.0, 3.0), (12.0, 5.0)):
-        gD = float(px.grad(lambda D: lay.sbend_arc_length(L0, D, kind=kind))(D0))
-        gL = float(px.grad(lambda L: lay.sbend_arc_length(L, D0, kind=kind))(L0))
-        fD = finite_diff(lambda D: float(lay.sbend_arc_length(L0, D, kind=kind)), D0, h=1e-5)
-        fL = finite_diff(lambda L: float(lay.sbend_arc_length(L, D0, kind=kind)), L0, h=1e-5)
-        assert gD == pytest.approx(fD, rel=1e-7) and gL == pytest.approx(fL, rel=1e-7)
-        gR = float(px.grad(lambda D: lay.sbend_min_radius(L0, D, kind=kind))(D0))
-        fR = finite_diff(lambda D: float(lay.sbend_min_radius(L0, D, kind=kind)), D0, h=1e-5)
-        assert gR == pytest.approx(fR, rel=1e-6)
+@pytest.mark.parametrize("L0, D0", [(30.0, 3.0), (12.0, 5.0)])
+def test_sbend_length_gradients_match_finite_differences(kind, L0, D0):
+    gD = float(px.grad(lambda D: lay.sbend_arc_length(L0, D, kind=kind))(D0))
+    gL = float(px.grad(lambda L: lay.sbend_arc_length(L, D0, kind=kind))(L0))
+    fD = finite_diff(lambda D: float(lay.sbend_arc_length(L0, D, kind=kind)), D0, h=1e-5)
+    fL = finite_diff(lambda L: float(lay.sbend_arc_length(L, D0, kind=kind)), L0, h=1e-5)
+    assert gD == pytest.approx(fD, rel=1e-7) and gL == pytest.approx(fL, rel=1e-7)
+    gR = float(px.grad(lambda D: lay.sbend_min_radius(L0, D, kind=kind))(D0))
+    fR = finite_diff(lambda D: float(lay.sbend_min_radius(L0, D, kind=kind)), D0, h=1e-5)
+    assert gR == pytest.approx(fR, rel=1e-6)
     # finite gradient at zero offset (safe-where), where the length is stationary
     g0 = float(px.grad(lambda D: lay.sbend_arc_length(30.0, D, kind=kind))(0.0))
     assert math.isfinite(g0)

@@ -443,7 +443,7 @@ def route_astar(
         # one that is self-clear and clears every obstacle.
         cell = _closed_form_fallback(port1, port2, R=R, bend=bend, p=p, w=w, lay=lay, npts=npts,
                                      bend_penalty=bp + 2.0 * d - _bl, self_gap=self_gap, polys=polys,
-                                     r_c=r_c, lead=lead)
+                                     r_c=r_c, lead=lead, h1=h1v, hg=hgv)
     cell.name = "route_astar"
     gap = _clearance_violation(centerline(cell), polys, r_c, s, h1v, lead, e, hgv)
     if gap is not None:
@@ -455,11 +455,9 @@ def route_astar(
 
 def _closed_form_fallback(port1: Port, port2: Port, *, R: float, bend: str, p: float, w: float, lay, npts: int,
                           bend_penalty: float, self_gap: float, polys: list[np.ndarray], r_c: float,
-                          lead: float) -> Cell:
+                          lead: float, h1: np.ndarray, hg: np.ndarray) -> Cell:
     s = np.asarray(port1.center, dtype=float)
     e = np.asarray(port2.center, dtype=float)
-    h1 = axis_direction(port1)
-    hg = -axis_direction(port2)
     for _cost, verts in plan_routes(port1, port2, radius=R, bend=bend, p=p, max_bends=6,
                                     bend_penalty=bend_penalty, npts=npts):
         try:
