@@ -1,4 +1,4 @@
-"""Layout cells, routing, GDSII/OASIS I/O, extraction, DRC pre-checks, and optional KLayout runs."""
+"""Layout cells, routing, lossless GDSII/OASIS I/O, text and labels, extraction, DRC pre-checks and KLayout runs."""
 from __future__ import annotations
 
 from . import components
@@ -6,6 +6,17 @@ from .cell import ELECTRICAL, GEOMETRY_ONLY, OPTICAL, Cell, Port, Reference
 from .drc import DrcReport, DrcViolation, check_min_area, check_min_space, check_min_width, run_drc_precheck
 from .extract import extract_netlist
 from .gds import gdstk_available, read_gds, read_oas, write_gds, write_oas
+from .gds_io import (
+    LayoutArtifact,
+    StaleSidecarWarning,
+    infer_ports,
+    layout_units,
+    list_top_cells,
+    read_layout,
+    sidecar_path_for,
+    snap_to_grid,
+    write_layout,
+)
 from .klayout import (
     KLayoutResult,
     KLayoutRunError,
@@ -16,11 +27,15 @@ from .klayout import (
     run_lvs,
 )
 from .routing import RoutingError, route, route_manhattan
+from .labels import Label, LabeledCell, text
 
 __all__ = [
     "Cell", "Port", "Reference", "OPTICAL", "ELECTRICAL", "GEOMETRY_ONLY", "components",
     "route", "route_manhattan", "RoutingError",
     "gdstk_available", "write_gds", "read_gds", "write_oas", "read_oas",
+    "read_layout", "write_layout", "LayoutArtifact", "list_top_cells", "layout_units", "infer_ports",
+    "snap_to_grid", "sidecar_path_for", "StaleSidecarWarning",
+    "Label", "LabeledCell", "text",
     "extract_netlist",
     "DrcReport", "DrcViolation", "check_min_width", "check_min_space", "check_min_area",
     "run_drc_precheck",
