@@ -81,14 +81,23 @@ def awg_design(
         raise ValueError("passband_fwhm must be positive and below channel_spacing")
 
     dl0 = wl0 ** 2 / (ng * fsr_target)
-    order = max(1, round(neff * dl0 / wl0))
+    # floor, not round: a larger order shrinks the FSR below the target and
+    # aliases the next diffraction order of the edge channels onto each other.
+    order = max(1, math.floor(neff * dl0 / wl0 + 1e-12))
     dl = order * wl0 / neff
     fsr_actual = wl0 ** 2 / (ng * dl)
+    if fsr_actual < n_channels * channel_spacing * (1 - 1e-12):  # pragma: no cover - floor guarantees this
+        raise RuntimeError("internal error: designed FSR below the channel plan")
     sigma = fsr_actual * math.sqrt(math.log(2.0)) / (math.pi * fwhm)
     if n_arms is None:
         n_arms = 2 * math.ceil(3.0 * sigma) + 1
     if not isinstance(n_arms, (int, np.integer)) or n_arms < 3 or n_arms % 2 == 0:
         raise ValueError("n_arms must be an odd integer >= 3")
+    if n_arms < n_channels:
+        raise ValueError(
+            f"n_arms={n_arms} < n_channels={n_channels}: an array of M arms cannot provide "
+            "N > M orthonormal output modes"
+        )
 
     k = np.arange(n_channels) - 0.5 * (n_channels - 1)
     wls = wl0 + k * channel_spacing

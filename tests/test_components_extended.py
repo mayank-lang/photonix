@@ -253,7 +253,7 @@ def test_apodization_suppresses_sidelobes():
 
 
 def test_bragg_loss_and_reciprocity(wl):
-    s = c.bragg_grating(wl=wl, loss_db_cm=20.0, n_sections=5, apodization="raised_cosine",
+    s = c.bragg_grating(wl=wl, loss_db_cm=20.0, n_sections=20, apodization="raised_cosine",
                         apodization_strength=1.0)
     total = np.asarray(px.power(s[("o1", "o1")]) + px.power(s[("o1", "o2")]))
     assert np.all(total < 1.0)

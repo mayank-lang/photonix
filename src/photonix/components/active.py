@@ -17,7 +17,8 @@ from photonix.core.units import db_per_cm_to_alpha_um
 
 __all__ = [
     "heater_phase_shifter", "thermo_optic_phase_shifter",
-    "plasma_dispersion", "built_in_voltage", "depletion_width", "pn_phase_shifter",
+    "plasma_dispersion", "silicon_bandgap", "intrinsic_density", "built_in_voltage", "depletion_width",
+    "pn_phase_shifter",
     "photodetector", "responsivity", "photocurrent",
     "DN_DT_SI", "EPS_R_SI", "NI_SI_300K",
 ]
@@ -145,20 +146,62 @@ def plasma_dispersion(delta_ne, delta_nh, wl=WL_DEFAULT):
     return dn, dalpha
 
 
-def built_in_voltage(na: float, nd: float, temperature: float = 300.0, ni: float = NI_SI_300K):
+def silicon_bandgap(temperature=300.0):
+    """Silicon band gap [eV] from the Varshni fit ``Eg0 - a T^2 / (T + b)``.
+
+    ``Eg0 = 1.170 eV``, ``a = 4.73e-4 eV/K``, ``b = 636 K`` (Varshni, Physica 34,
+    149, 1967; parameters as tabulated by Sze, *Physics of Semiconductor
+    Devices*).
+
+    Examples
+    --------
+    >>> round(float(silicon_bandgap(300.0)), 4)
+    1.1245
+    """
+    t = xp.asarray(temperature)
+    return 1.170 - 4.73e-4 * t * t / (t + 636.0)
+
+
+def intrinsic_density(temperature=300.0):
+    """Intrinsic carrier density of silicon [cm^-3] at ``temperature`` [K].
+
+    ``n_i(T) = n_i(300 K) (T/300)^1.5 exp(-(Eg(T)/T - Eg(300)/300) / (2 k))``,
+    anchored at :data:`NI_SI_300K` and using :func:`silicon_bandgap`.
+
+    Examples
+    --------
+    >>> float(intrinsic_density(300.0)) == NI_SI_300K
+    True
+    >>> bool(intrinsic_density(350.0) > 10 * NI_SI_300K)
+    True
+    """
+    t = xp.asarray(temperature)
+    k_ev = _K_B / Q_E
+    eg300 = silicon_bandgap(300.0)
+    return NI_SI_300K * (t / 300.0) ** 1.5 * xp.exp(-(silicon_bandgap(t) / t - eg300 / 300.0) / (2.0 * k_ev))
+
+
+def built_in_voltage(na: float, nd: float, temperature: float = 300.0, ni: float | None = None):
     """Built-in potential ``(kT/q) ln(Na Nd / ni^2)`` of an abrupt p-n junction [V].
+
+    ``ni`` defaults to :func:`intrinsic_density` at ``temperature``, so the
+    built-in voltage falls with temperature (about -1.2 mV/K for 5e17 cm^-3
+    junctions); pass ``ni`` explicitly to override.
 
     Examples
     --------
     >>> round(float(built_in_voltage(5e17, 5e17)), 3)
     0.918
+    >>> bool(built_in_voltage(5e17, 5e17, 350.0) < built_in_voltage(5e17, 5e17, 300.0))
+    True
     """
-    vt = _K_B * temperature / Q_E
-    return vt * xp.log(xp.asarray(na) * xp.asarray(nd) / ni ** 2)
+    vt = _K_B * xp.asarray(temperature) / Q_E
+    n_i = intrinsic_density(temperature) if ni is None else ni
+    return vt * xp.log(xp.asarray(na) * xp.asarray(nd) / n_i ** 2)
 
 
 def depletion_width(voltage, na: float, nd: float, *, temperature: float = 300.0,
-                    eps_r: float = EPS_R_SI, ni: float = NI_SI_300K):
+                    eps_r: float = EPS_R_SI, ni: float | None = None):
     """Depletion widths ``(x_p, x_n)`` in µm of an abrupt junction at reverse bias.
 
     ``W = sqrt(2 eps (V_bi + V) / q * (Na + Nd) / (Na Nd))`` split as
@@ -192,6 +235,7 @@ def pn_phase_shifter(
     width: float = 0.5,
     overlap: float = 0.8,
     temperature: float = 300.0,
+    ni: float | None = None,
     neff: float = 2.4,
     ng: float = N_GROUP_SI_STRIP,
     wl0: float = WL_DEFAULT,
@@ -212,7 +256,8 @@ def pn_phase_shifter(
 
     so the phase rises (index increases) and the loss falls as the depletion
     region widens. ``neff`` is the *undoped* waveguide index and
-    ``loss_db_cm`` its intrinsic loss. The defaults give ``V_pi L`` of about
+    ``loss_db_cm`` its intrinsic loss. ``temperature`` sets ``kT/q`` and, unless ``ni`` is
+    given, the intrinsic density through :func:`intrinsic_density`. The defaults give ``V_pi L`` of about
     2 V cm, typical of 5e17 cm^-3 lateral junctions.
 
     Notes
@@ -233,7 +278,7 @@ def pn_phase_shifter(
     True
     """
     wl = xp.asarray(wl)
-    x_p, x_n = depletion_width(voltage, na, nd, temperature=temperature)
+    x_p, x_n = depletion_width(voltage, na, nd, temperature=temperature, ni=ni)
     half = 0.5 * width
     undepleted_p = half - xp.minimum(x_p, half)
     undepleted_n = half - xp.minimum(x_n, half)

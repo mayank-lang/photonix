@@ -30,11 +30,13 @@ from .active import (
     built_in_voltage,
     depletion_width,
     heater_phase_shifter,
+    intrinsic_density,
     photocurrent,
     photodetector,
     plasma_dispersion,
     pn_phase_shifter,
     responsivity,
+    silicon_bandgap,
     thermo_optic_phase_shifter,
 )
 from .awg import awg, awg_design
@@ -123,6 +125,7 @@ __all__ = [
     "grating_coupler", "edge_coupler", "gaussian_overlap", "SMF28_MFD_1550",
     "phase_shifter", "heater_phase_shifter", "thermo_optic_phase_shifter",
     "pn_phase_shifter", "plasma_dispersion", "built_in_voltage", "depletion_width",
+    "silicon_bandgap", "intrinsic_density",
     "photodetector", "responsivity", "photocurrent", "DN_DT_SI", "EPS_R_SI", "NI_SI_300K",
     "attenuator", "terminator",
     "ring_coupler", "all_pass_ring", "add_drop_ring", "ring_single", "ring_double", "mzi",

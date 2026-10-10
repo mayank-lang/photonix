@@ -109,8 +109,8 @@ def edge_coupler(
     ones = xp.ones_like(xp.real(wl_arr), dtype=float)
     out: SDict = {}
     if n_chip is not None:
-        r = (n_chip - n_medium) / (n_chip + n_medium)
-        amp = amp * math.sqrt(1.0 - r * r)
+        r = (xp.asarray(n_chip) - n_medium) / (xp.asarray(n_chip) + n_medium)
+        amp = amp * xp.sqrt(1.0 - r * r)
         rr = xp.asarray(r * ones, dtype=complex)
         out[("o1", "o1")] = rr
         out[("o2", "o2")] = -rr

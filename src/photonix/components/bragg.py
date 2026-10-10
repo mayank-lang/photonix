@@ -20,6 +20,8 @@ ends; the model is reciprocal and, without loss, unitary.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from photonix.core.backend import xp
@@ -30,11 +32,21 @@ from photonix.core.units import db_per_cm_to_alpha_um
 __all__ = ["bragg_grating", "bragg_wavelength", "grating_kappa"]
 
 
-def _sinhc(z):
-    """``sinh(z)/z`` for complex ``z``, accurate and differentiable near zero."""
-    small = xp.abs(z) < 1e-4
-    zs = xp.where(small, xp.ones_like(z), z)
-    return xp.where(small, 1.0 + z * z / 6.0, xp.sinh(zs) / zs)
+def _cosh_sinhc(g2):
+    """``(cosh(g), sinh(g)/g)`` with ``g = sqrt(g2)``, as entire functions of ``g2``.
+
+    Both are analytic in ``g2``, so evaluating them through ``sqrt`` is only a
+    numerical device. Near ``g2 = 0`` (a ``kappa = 0`` section at the Bragg
+    wavelength, or an optimisation starting from ``kappa = 0``) the derivative of
+    ``sqrt`` is infinite and would turn the gradient into NaN; there the Taylor
+    series (error < 1e-16 for ``|g2| < 1e-3``) is used instead.
+    """
+    small = xp.abs(g2) < 1e-3
+    gs = xp.sqrt(xp.where(small, xp.ones_like(g2), g2))
+    cosh_series = 1.0 + g2 / 2.0 + g2 * g2 / 24.0 + g2 * g2 * g2 / 720.0
+    sinhc_series = 1.0 + g2 / 6.0 + g2 * g2 / 120.0 + g2 * g2 * g2 / 5040.0
+    return (xp.where(small, cosh_series, xp.cosh(gs)),
+            xp.where(small, sinhc_series, xp.sinh(gs) / gs))
 
 
 def grating_kappa(dn: float, wl=WL_DEFAULT):
@@ -76,8 +88,9 @@ def _apodization_profile(kind: str | None, n_sections: int, strength: float) -> 
         # ``strength`` is the Gaussian FWHM as a fraction of the grating length.
         return np.exp(-4.0 * np.log(2.0) * (z / strength) ** 2)
     if kind == "raised_cosine":
-        # ``strength`` in (0, 1]: 1 is a full raised cosine, 0 is uniform.
-        return 1.0 - strength * 0.5 * (1.0 - np.cos(2.0 * np.pi * (z + 0.5)))
+        # ``strength`` in (0, 1]: 1 is a full raised cosine (1 at the centre,
+        # 0 at the ends), 0 is uniform.
+        return 1.0 - strength * 0.5 * (1.0 - np.cos(2.0 * np.pi * z))
     raise ValueError("apodization must be None, 'gaussian' or 'raised_cosine'")
 
 
@@ -149,6 +162,12 @@ def bragg_grating(
         if n_sec != 1:
             raise ValueError("a central phase shift needs an even n_sections")
         n_sec = 2
+    if apodization is not None and n_sec < 8:
+        warnings.warn(
+            f"apodization={apodization!r} with n_sections={n_sec} samples the profile very coarsely; "
+            "use n_sections >= 20 for a meaningful apodized response",
+            stacklevel=2,
+        )
 
     wl = xp.asarray(wl)
     length = period * n_periods
@@ -180,9 +199,9 @@ def bragg_grating(
     t12 = t21 = xp.zeros_like(delta)
     for k in kappas:
         k = xp.asarray(k, dtype=complex)
-        gamma = xp.sqrt(k * xp.conj(k) - delta * delta)
-        ch = xp.cosh(gamma * dz)
-        sh = dz * _sinhc(gamma * dz)  # sinh(gamma dz) / gamma
+        # cosh(gamma dz) and sinh(gamma dz)/gamma with gamma^2 = |kappa|^2 - delta^2
+        ch, shc = _cosh_sinhc((k * xp.conj(k) - delta * delta) * dz * dz)
+        sh = dz * shc
         a11 = ch - 1j * delta * sh
         a12 = -1j * k * sh
         a21 = 1j * xp.conj(k) * sh

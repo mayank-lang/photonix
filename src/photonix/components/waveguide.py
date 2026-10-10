@@ -90,7 +90,8 @@ def straight(
     if callable(neff):
         n = _eval_index(neff, wl)
     else:
-        n = neff_linear(wl, float(neff), float(ng), float(wl0))
+        # No float(): neff/ng/wl0 may be JAX tracers (grad/jit over waveguide parameters).
+        n = neff_linear(wl, neff, ng, wl0)
     beta = 2.0 * xp.pi / wl * n
     alpha = db_per_cm_to_alpha_um(loss_db_cm)
     t = xp.exp(-alpha * length) * xp.exp(-1j * beta * length)

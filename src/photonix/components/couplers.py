@@ -143,6 +143,14 @@ def _is_concrete(value) -> bool:
     return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, bool)
 
 
+def _concrete_array(value) -> np.ndarray | None:
+    """``value`` as a NumPy array, or ``None`` for a JAX tracer (no host value)."""
+    try:
+        return np.asarray(value, dtype=float)
+    except Exception:  # noqa: BLE001 - jax.errors.TracerArrayConversionError and friends
+        return None
+
+
 def supermode_splitting(gap, wl=1.55):
     """Even/odd supermode index splitting ``n_even - n_odd`` of an SOI strip pair.
 
@@ -234,14 +242,15 @@ def evanescent_coupler(
 
     if splitting is None:
         splitting = supermode_splitting
-        if _is_concrete(gap) and not (
-            SOI_STRIP_FIT_GAP_RANGE[0] - 1e-9 <= gap <= SOI_STRIP_FIT_GAP_RANGE[1] + 1e-9
-        ):
-            warnings.warn(
-                f"gap={gap} um is outside the calibrated range {SOI_STRIP_FIT_GAP_RANGE} of the "
-                "default SOI supermode fit; pass `splitting=` for a validated cross-section.",
-                stacklevel=2,
-            )
+        for name, value, (lo, hi) in (("gap", gap, SOI_STRIP_FIT_GAP_RANGE), ("wl", wl, SOI_STRIP_FIT_WL_RANGE)):
+            arr = _concrete_array(value)
+            if arr is not None and arr.size and (arr.min() < lo - 1e-9 or arr.max() > hi + 1e-9):
+                warnings.warn(
+                    f"{name} spans {arr.min():.4g}-{arr.max():.4g} um, outside the calibrated range "
+                    f"{lo}-{hi} um of the default SOI supermode fit; pass `splitting=` for a validated "
+                    "cross-section.",
+                    stacklevel=2,
+                )
     if not isinstance(curved_arms, (int, np.integer)) or curved_arms not in (1, 2):
         raise ValueError("curved_arms must be 1 (ring/bus) or 2 (symmetric coupler)")
 
@@ -251,7 +260,11 @@ def evanescent_coupler(
     if not (_is_concrete(bend_radius) and bend_radius == 0):
         h = 1e-3
         gamma = -(xp.log(splitting(gap + h, wl)) - xp.log(splitting(gap - h, wl))) / (2 * h)
-        l_eff = l_eff + xp.sqrt(2.0 * xp.pi * bend_radius / (curved_arms * gamma))
+        # Guard R = 0 for array/traced radii: d sqrt(x)/dx is infinite at 0 and
+        # would make every gradient NaN even though the contribution is zero.
+        positive = xp.asarray(bend_radius) > 0
+        r_safe = xp.where(positive, bend_radius, 1.0)
+        l_eff = l_eff + xp.where(positive, xp.sqrt(2.0 * xp.pi * r_safe / (curved_arms * gamma)), 0.0)
     kappa_l = xp.pi / wl * dn * l_eff
     n = neff_linear(wl, neff, ng, wl0)
     alpha = db_per_cm_to_alpha_um(loss_db_cm)
@@ -288,8 +301,9 @@ def _mmi_phases(n: int) -> np.ndarray:
     """General-interference NxN MMI phases (Bachmann et al., Appl. Opt. 33, 3905, 1994).
 
     ``phi[i, j]`` couples input ``i`` to output ``j`` (1-based in the paper,
-    0-based here). The constant ``phi0 = -pi`` makes the 2x2 case coincide with
-    :func:`directional_coupler` (bar = 1/sqrt(2), cross = -j/sqrt(2)).
+    0-based here). The paper numbers inputs and outputs from *opposite* sides,
+    so :func:`mmi_nxn` reads output ``j`` (counted top to bottom) as
+    ``phi[i, n - 1 - j]``.
     """
     phi = np.zeros((n, n))
     phi0 = -math.pi
@@ -310,6 +324,14 @@ def mmi_nxn(*, wl=1.55, n: int = 4, loss_db: float = 0.0, imbalance_db: float = 
     2x2 :func:`directional_coupler`. Every input images to every output with
     power ``1/N`` and the self-imaging phases of Bachmann et al. (1994), so the
     transfer matrix is unitary; ``n=2`` reproduces :func:`mmi2x2`.
+
+    Reference planes are at the MMI facets. The per-port field references
+    alternate in sign with port position (``(-1)**p``, identically on both
+    sides) -- the convention under which ``n=2`` is the ``-j`` directional
+    coupler; it is a consistent per-port gauge of the modal self-imaging
+    matrix. Consequently ``N`` cascaded ``N x N`` MMIs (each ``3 L_pi / N``) form
+    a ``3 L_pi`` MMI and image every input onto the mirrored output, as
+    self-imaging theory requires.
 
     Parameters
     ----------
@@ -336,6 +358,9 @@ def mmi_nxn(*, wl=1.55, n: int = 4, loss_db: float = 0.0, imbalance_db: float = 
     ones = xp.ones_like(xp.real(wl), dtype=float)
     amp = 10.0 ** (-loss_db / 20.0) / math.sqrt(n)
     phases = _mmi_phases(n)
+    # Bachmann's output index runs from the opposite side; pi/2 and (-1)^(i+j)
+    # fix the global phase and the per-port sign references (n=2 == mmi2x2).
+    gauge = math.pi / 2.0
     centre = 0.5 * (n - 1)
     out: SDict = {}
     for j in range(n):  # output index, top to bottom
@@ -343,7 +368,8 @@ def mmi_nxn(*, wl=1.55, n: int = 4, loss_db: float = 0.0, imbalance_db: float = 
         taper = 10.0 ** (-(imbalance_db * rel) / 20.0)
         out_port = f"o{2 * n - j}"
         for i in range(n):
-            val = xp.asarray(amp * taper * np.exp(1j * phases[i, j]) * ones, dtype=complex)
+            phi = phases[i, n - 1 - j] + gauge + math.pi * (i + j)
+            val = xp.asarray(amp * taper * np.exp(1j * phi) * ones, dtype=complex)
             in_port = f"o{i + 1}"
             out[(in_port, out_port)] = val
             out[(out_port, in_port)] = val
@@ -378,7 +404,8 @@ def crossing(
     >>> bool(px.core.is_passive(s))
     True
     """
-    if _is_concrete(loss_db) and _is_concrete(crosstalk_db):
+    if _is_concrete(loss_db) and _is_concrete(crosstalk_db) and (
+            reflection_db is None or _is_concrete(reflection_db)):
         t2 = 10.0 ** (-loss_db / 10.0)
         x2 = 10.0 ** (crosstalk_db / 10.0)
         r = 0.0 if reflection_db is None else 10.0 ** (reflection_db / 20.0)
