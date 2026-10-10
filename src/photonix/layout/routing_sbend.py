@@ -258,10 +258,13 @@ def sbend_path(s: np.ndarray, e: np.ndarray, u: np.ndarray, *, kind: str, p: flo
         return np.array([s, e]), np.full(2, math.atan2(u[1], u[0])), axial, 0
     r_shape = float(sbend_min_radius(span, D, kind=kind, p=p))
     if r_shape < min_radius * (1.0 - 1e-12):
-        need = sbend_min_span(D, min_radius, kind=kind, p=p)
+        try:
+            advice = f"it needs a span of at least {sbend_min_span(D, min_radius, kind=kind, p=p):.6g} um"
+        except RoutingError as exc:
+            advice = f"{exc}; use route_auto for a Z route"
         raise RoutingError(
             f"a {kind} S-bend offsetting {D:.6g} um over {span:.6g} um has radius {r_shape:.6g} um "
-            f"< min_radius {min_radius:g}; it needs a span of at least {need:.6g} um"
+            f"< min_radius {min_radius:g}; {advice}"
         )
     b0 = s + start_straight * u
     heading = math.atan2(u[1], u[0])

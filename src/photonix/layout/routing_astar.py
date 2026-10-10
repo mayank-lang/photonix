@@ -55,14 +55,17 @@ from ._route_common import (
     axis_direction,
     centerline,
     check_bend,
+    clean_vertices,
     corner_offset_90,
+    fillet_path,
     resolve_style,
     route_cell,
     segment_distances,
+    self_clearance,
 )
 from .cell import Cell, Port
 from .routing import RoutingError, route_manhattan
-from .routing_auto import default_bend_penalty
+from .routing_auto import default_bend_penalty, plan_routes
 
 __all__ = ["route_astar"]
 
@@ -433,39 +436,83 @@ def route_astar(
             corners.append((xs_l[na // ny], ys_l[na % ny]))
     cell = route_manhattan(port1, port2, radius=R, bend=bend, p=p, width=w, layer=lay,
                            waypoints=corners, npts=npts)
+    self_gap = w + (keepout if keepout > 0 else w)
+    if self_clearance(centerline(cell), self_gap) is not None:
+        # The grid search cannot see its own path, so a looping route may cross itself. Fall back
+        # to the closed-form topologies of route_auto (same cost function), keeping the cheapest
+        # one that is self-clear and clears every obstacle.
+        cell = _closed_form_fallback(port1, port2, R=R, bend=bend, p=p, w=w, lay=lay, npts=npts,
+                                     bend_penalty=bp + 2.0 * d - _bl, self_gap=self_gap, polys=polys,
+                                     r_c=r_c, lead=lead)
     cell.name = "route_astar"
-    _verify_clearance(cell, polys, r_c, s, h1v, lead, e, hgv)
+    gap = _clearance_violation(centerline(cell), polys, r_c, s, h1v, lead, e, hgv)
+    if gap is not None:
+        raise RoutingError(  # pragma: no cover - guarded by the rasterisation bounds
+            f"internal error: A* route passes {gap:.4g} um from an obstacle (centre-line clearance {r_c:.4g} um)"
+        )
     return cell
 
 
-def _verify_clearance(cell: Cell, polys: list[np.ndarray], r_c: float, s: np.ndarray, h1: np.ndarray,
-                      lead: float, e: np.ndarray, hg: np.ndarray) -> None:
-    """Exact check: the drawn centre line (leads excluded) keeps ``r_c`` from every obstacle."""
-    line = centerline(cell)
+def _closed_form_fallback(port1: Port, port2: Port, *, R: float, bend: str, p: float, w: float, lay, npts: int,
+                          bend_penalty: float, self_gap: float, polys: list[np.ndarray], r_c: float,
+                          lead: float) -> Cell:
+    s = np.asarray(port1.center, dtype=float)
+    e = np.asarray(port2.center, dtype=float)
+    h1 = axis_direction(port1)
+    hg = -axis_direction(port2)
+    for _cost, verts in plan_routes(port1, port2, radius=R, bend=bend, p=p, max_bends=6,
+                                    bend_penalty=bend_penalty, npts=npts):
+        try:
+            path = fillet_path(verts, R, bend=bend, p=p, npts=npts)
+        except RoutingError:
+            continue
+        if self_clearance(path.points, self_gap) is not None:
+            continue
+        if _clearance_violation(path.points, polys, r_c, s, h1, lead, e, hg) is not None:
+            continue
+        return route_manhattan(port1, port2, radius=R, bend=bend, p=p, width=w, layer=lay,
+                               waypoints=clean_vertices(verts)[1:-1], npts=npts)
+    raise RoutingError(
+        "the cheapest grid route crosses itself and no closed-form alternative clears the obstacles; "
+        "pass intermediate ports (route in two legs) or move the ports"
+    )
 
-    def on_lead(q: np.ndarray, origin: np.ndarray, direction: np.ndarray) -> bool:
+
+def _clip_lead(line: np.ndarray, origin: np.ndarray, direction: np.ndarray, lead: float) -> np.ndarray:
+    """Drop the straight lead (``lead`` µm from ``origin`` along ``direction``) from the start of ``line``."""
+    nrm = np.array([-direction[1], direction[0]])
+
+    def axis_t(q: np.ndarray) -> float | None:
         rel = q - origin
-        t = float(rel @ direction)
-        return -1e-9 <= t <= lead + 1e-9 and abs(float(rel @ np.array([-direction[1], direction[0]]))) < 1e-7
+        return float(rel @ direction) if abs(float(rel @ nrm)) < 1e-7 else None
 
-    i0 = 0
-    while i0 + 1 < len(line) and on_lead(line[i0 + 1], s, h1):
-        i0 += 1
-    i1 = len(line) - 1
-    while i1 - 1 > i0 and on_lead(line[i1 - 1], e, -hg):
-        i1 -= 1
-    core = line[i0:i1 + 1]
+    i = 0
+    while i + 1 < len(line):
+        t = axis_t(line[i + 1])
+        if t is None or t > lead + 1e-9:
+            break
+        i += 1
+    if i + 1 < len(line) and axis_t(line[i + 1]) is not None:     # lead ends inside a straight segment
+        return np.concatenate([[origin + lead * direction], line[i + 1:]])
+    return line[i:]
+
+
+def _clearance_violation(line: np.ndarray, polys: list[np.ndarray], r_c: float, s: np.ndarray, h1: np.ndarray,
+                         lead: float, e: np.ndarray, hg: np.ndarray) -> float | None:
+    """Exact check of a drawn centre line (leads excluded): the smallest obstacle distance below ``r_c``, or None."""
+    core = _clip_lead(np.asarray(line, dtype=float), s, h1, lead)
+    core = _clip_lead(core[::-1], e, -hg, lead)[::-1]
     if len(core) < 2:
-        return
+        return None
     a0, a1 = core[:-1], core[1:]
     lo, hi = core.min(axis=0) - r_c, core.max(axis=0) + r_c
+    worst = None
     for poly in polys:
         if np.any(poly.max(axis=0) < lo) or np.any(poly.min(axis=0) > hi):
             continue
         dmin = float(np.min(segment_distances(a0, a1, poly, np.roll(poly, -1, axis=0))))
-        inside = _point_polygon_distance(core[:, 0], core[:, 1], poly).min()
-        if min(dmin, inside) < r_c - 1e-6:
-            raise RoutingError(  # pragma: no cover - guarded by the rasterisation bounds
-                f"internal error: A* route passes {min(dmin, inside):.4g} um from an obstacle "
-                f"(centre-line clearance {r_c:.4g} um)"
-            )
+        inside = float(_point_polygon_distance(core[:, 0], core[:, 1], poly).min())
+        gap = min(dmin, inside)
+        if gap < r_c - 1e-6 and (worst is None or gap < worst):
+            worst = gap
+    return worst
