@@ -124,8 +124,12 @@ def _racetrack(radius: float, length_x: float, width: float, npts: int, center) 
         np.stack([half + radius * np.cos(th_r), radius * np.sin(th_r)], axis=1),
         np.stack([-half + radius * np.cos(th_l), radius * np.sin(th_l)], axis=1),
     ])
+    # Exact tangents (counter-clockwise circulation), so the closing seam's two
+    # end caps coincide instead of forming a self-intersecting bow-tie.
+    hd = np.concatenate([th_r + np.pi / 2, th_l + np.pi / 2])
     cl = np.concatenate([cl, cl[:1]])
-    poly = path_polygon(cl, width)
+    hd = np.concatenate([hd, hd[:1] + 2 * np.pi])
+    poly = path_polygon(cl, width, hd)
     return poly + np.asarray(center)
 
 
@@ -295,20 +299,26 @@ def crossing(arm_length: float = 3.0, width: float = 0.5, layer=WG) -> Cell:
 
 
 def grating_coupler(length: float = 20.0, width: float = 12.0, period: float = 0.63, ff: float = 0.5,
-                    layer=WG) -> Cell:
-    """Schematic grating coupler footprint.
+                    layer=WG, taper_length: float = 10.0, wg_width: float = 0.5) -> Cell:
+    """Schematic grating coupler: ``floor(length / period)`` teeth plus a taper.
 
-    ``o1`` is the waveguide port; ``o2`` marks the fiber at the grating centre
-    on layer ``(203, 0)`` so it surfaces as an external circuit port.
+    The teeth fill ``[0, length]``; a linear taper of ``taper_length`` runs from
+    the full grating width at the end of the last tooth down to ``wg_width``,
+    where the waveguide port ``o1`` sits on drawn geometry. ``o2`` marks the
+    fibre at the centre of the teeth on layer ``(203, 0)`` so it surfaces as an
+    external circuit port.
     """
     c = Cell("grating_coupler", model="grating_coupler")
-    n = max(int(length / period), 1)
+    n = max(int(np.floor(length / period + 1e-9)), 1)
     for i in range(n):
         x0 = i * period
         c.add_polygon([(x0, -width / 2), (x0 + ff * period, -width / 2),
                        (x0 + ff * period, width / 2), (x0, width / 2)], layer)
-    c.add_port("o1", (length, 0.0), 0.0, 0.5, layer)
-    c.add_port("o2", (length / 2, 0.0), 90.0, 10.4, FIBER_PORT)
+    x_end = (n - 1) * period + ff * period
+    x_port = x_end + taper_length
+    c.add_polygon([(x_end, -width / 2), (x_port, -wg_width / 2), (x_port, wg_width / 2), (x_end, width / 2)], layer)
+    c.add_port("o1", (x_port, 0.0), 0.0, wg_width, layer)
+    c.add_port("o2", (0.5 * n * period, 0.0), 90.0, 10.4, FIBER_PORT)
     return c
 
 

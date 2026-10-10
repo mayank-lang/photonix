@@ -63,6 +63,23 @@ class LayerLevel:
         return self.z_min + self.thickness
 
 
+def _check_coverage(background, lo: float, hi: float) -> None:
+    """Raise unless the unpatterned levels cover ``[lo, hi]`` without gaps."""
+    spans = sorted((lev.z_min, lev.z_max) for lev in background)
+    reach = lo
+    for z0, z1 in spans:
+        if z0 > reach + 1e-12:
+            break
+        reach = max(reach, z1)
+    if reach < hi - 1e-12:
+        gap_start = reach
+        gap_end = min([z0 for z0, _ in spans if z0 > reach] + [hi])
+        raise ValueError(
+            f"no unpatterned level covers z = {gap_start:.4g}..{gap_end:.4g} um of the {lo:.4g}..{hi:.4g} um "
+            "cross-section window; add an explicit background level (e.g. air or cladding) there"
+        )
+
+
 @dataclass
 class LayerStack:
     """Ordered process levels; later levels are painted over earlier ones.
@@ -100,7 +117,10 @@ class LayerStack:
 
         ``widths`` maps patterned layers to their (centred) drawn width; other
         patterned levels are absent from this cross-section. Unpatterned levels
-        fill the whole window. The grid uses cell centres at ``1/resolution``
+        fill the whole window and, together, must cover its full height (a
+        ``ValueError`` names any gap -- add an explicit air or cladding level).
+        Where levels overlap the later one wins, and every pixel holds the exact
+        area average of ``n^2`` over its sub-regions. The grid uses cell centres at ``1/resolution``
         spacing, centred on the patterned region (the same construction as
         :func:`photonix.em.rectangular_waveguide`), and the window extends
         ``margin`` beyond the widest feature and the patterned height.
@@ -111,7 +131,6 @@ class LayerStack:
             With ``eps`` of shape ``(ny, nx)`` and coordinates ``x``, ``y``.
         """
         from photonix.em.geometry import CrossSection as _Grid
-        from photonix.em.geometry import _overlap
 
         widths = {(int(k[0]), int(k[1])): float(v) for k, v in widths.items()}
         patterned = [lev for lev in self.levels if lev.layer is not None and lev.layer in widths]
@@ -131,18 +150,38 @@ class LayerStack:
         background = [lev for lev in self.levels if lev.layer is None]
         if not background:
             raise ValueError("the stack needs at least one unpatterned background level")
-        eps = np.full((ny, nx), _index(background[0].material, wl) ** 2)
-        for lev in self.levels:
-            if lev.layer is not None and lev.layer not in widths:
-                continue
-            fy = _overlap(y, h, lev.z_min, lev.z_max)
+        active = [lev for lev in self.levels if lev.layer is None or lev.layer in widths]
+        y_lo, y_hi = float(y[0] - h / 2), float(y[-1] + h / 2)
+        x_lo, x_hi = float(x[0] - h / 2), float(x[-1] + h / 2)
+        _check_coverage(background, y_lo, y_hi)
+
+        # Exact painter's-order area averaging of n^2: split the window at every
+        # pixel edge and every level edge; each resulting sub-rectangle lies in
+        # one pixel and one material (the last level covering its centre).
+        def rect(lev):
             if lev.layer is None:
-                fx = np.ones(nx)
-            else:
-                half = 0.5 * widths[lev.layer]
-                fx = _overlap(x, h, -half, half)
-            frac = fy[:, None] * fx[None, :]
-            eps = frac * _index(lev.material, wl) ** 2 + (1.0 - frac) * eps
+                return (x_lo - 1.0, x_hi + 1.0, lev.z_min, lev.z_max)
+            half = 0.5 * widths[lev.layer]
+            return (-half, half, lev.z_min, lev.z_max)
+
+        rects = [rect(lev) for lev in active]
+        xb = np.unique(np.clip(np.concatenate([x_lo + h * np.arange(nx + 1),
+                                               [r[0] for r in rects], [r[1] for r in rects]]), x_lo, x_hi))
+        yb = np.unique(np.clip(np.concatenate([y_lo + h * np.arange(ny + 1),
+                                               [r[2] for r in rects], [r[3] for r in rects]]), y_lo, y_hi))
+        xc, yc = 0.5 * (xb[1:] + xb[:-1]), 0.5 * (yb[1:] + yb[:-1])
+        dxs, dys = np.diff(xb), np.diff(yb)
+        sub = np.full((yc.size, xc.size), np.nan)
+        for lev, (rx0, rx1, rz0, rz1) in zip(active, rects, strict=True):
+            inside = ((yc >= rz0) & (yc <= rz1))[:, None] & ((xc >= rx0) & (xc <= rx1))[None, :]
+            sub = np.where(inside, _index(lev.material, wl) ** 2, sub)
+        if np.isnan(sub).any():  # pragma: no cover - _check_coverage guarantees full coverage
+            raise RuntimeError("internal error: uncovered cross-section region")
+        ix = np.minimum(((xc - x_lo) / h).astype(int), nx - 1)
+        iy = np.minimum(((yc - y_lo) / h).astype(int), ny - 1)
+        eps = np.zeros((ny, nx))
+        np.add.at(eps, (iy[:, None], ix[None, :]), sub * dys[:, None] * dxs[None, :])
+        eps /= h * h
         return _Grid(eps=eps, x=x, y=y)
 
     def solve_modes(self, widths: Mapping[tuple[int, int], float], *, wl: float = 1.55, num_modes: int = 1,

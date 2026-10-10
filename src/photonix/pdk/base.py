@@ -187,7 +187,8 @@ class Pdk:
         """
         from photonix.components import MODELS
 
-        defaults = self.cross_section(cross_section).model_settings if self.cross_sections else {}
+        explicit = self.cross_sections or cross_section is not None
+        defaults = self.cross_section(cross_section).model_settings if explicit else {}
         registry = {name: _bind(cast(Callable, fn), defaults, declared=True) for name, fn in MODELS.items()}
         registry.update(self._model_overrides)
         return registry
@@ -224,12 +225,19 @@ def _bind(fn: Callable, defaults: Mapping, *, declared: bool) -> Callable:
     """
     if declared:
         params = set(getattr(fn, "waveguide_parameters", ()))
+        accepted = {k: v for k, v in defaults.items() if k in params}
     else:
         try:
-            params = set(inspect.signature(fn).parameters)
+            sig = inspect.signature(fn).parameters
         except (TypeError, ValueError):
-            return fn
-    accepted = {k: v for k, v in defaults.items() if k in params}
+            sig = None
+        if sig is None or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.values()):
+            accepted = dict(defaults)
+        else:
+            unknown = sorted(set(defaults) - set(sig))
+            if unknown:
+                raise TypeError(f"model {getattr(fn, '__name__', fn)!r} does not accept {unknown}")
+            accepted = dict(defaults)
     if not accepted:
         return fn
 

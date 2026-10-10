@@ -14,6 +14,12 @@ Rules
 * A composite cell (references, no ``model``) is flattened recursively; its
   instances are named ``"<ref>.<subref>"``.
 * Cells without optical ports (pads, logos, closed rings) are omitted.
+* A cell that has no references but declares optical ports (any generator
+  output) is extracted as a single instance of itself.
+* Cells marked :data:`~photonix.layout.GEOMETRY_ONLY` (flattened composites,
+  GDS read-back without sidecar) raise, and a leaf with no ``model``, no
+  settings and a parametric library name warns: it would simulate with the
+  model's *defaults*, not with its drawn geometry.
 * Unconnected optical ports become external circuit ports. If one coincides
   with a port of ``top`` itself, that port's name is used; otherwise the name
   is ``"<instance>_<port>"``.
@@ -23,10 +29,12 @@ Rules
 from __future__ import annotations
 
 import warnings
+from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 
-from .cell import OPTICAL, Cell, Port, Reference
+from .cell import GEOMETRY_ONLY, OPTICAL, Cell, Port, Reference
 
 __all__ = ["extract_netlist"]
 
@@ -41,6 +49,29 @@ def _compose(port: Port, chain: list[Reference]) -> Port:
     return port
 
 
+def _check_semantics(name: str, cell: Cell) -> None:
+    if cell.model == GEOMETRY_ONLY:
+        raise ValueError(
+            f"Instance {name!r} references geometry-only cell {cell.name!r} (a flattened composite or a GDS "
+            "read-back without circuit metadata); it has no model or settings to simulate. Extract the "
+            "hierarchical cell instead, or set cell.model and cell.model_settings explicitly."
+        )
+    if cell.model is None and not cell.model_settings:
+        from photonix.components import MODELS
+
+        model = MODELS.get(cell.name)
+        if model is not None:
+            import inspect
+
+            params = [p for p in inspect.signature(cast(Callable, model)).parameters if p != "wl"]
+            if params:
+                warnings.warn(
+                    f"Instance {name!r} (cell {cell.name!r}) has no model_settings; it will simulate with the "
+                    f"defaults of model {cell.name!r}, not its drawn geometry. Set cell.model_settings.",
+                    stacklevel=3,
+                )
+
+
 def _collect(cell: Cell, chain: list[Reference], prefix: str, out: list, seen: set[str]) -> None:
     for i, ref in enumerate(cell.references):
         tag = ref.name or f"ref{i}"
@@ -52,6 +83,7 @@ def _collect(cell: Cell, chain: list[Reference], prefix: str, out: list, seen: s
         optical = {pn: p for pn, p in sub.ports.items() if p.port_type == OPTICAL}
         if not optical:
             continue
+        _check_semantics(name, sub)
         if name in seen:
             raise ValueError(f"Duplicate reference instance name {name!r}.")
         seen.add(name)
@@ -93,7 +125,16 @@ def extract_netlist(top: Cell, *, tol: float = 1e-3, warn: bool = True):
         raise ValueError(f"tol must be non-negative and finite, got {tol!r}.")
 
     leaves: list[tuple[str, Cell, dict[str, Port]]] = []
+    if not top.references:
+        if not any(p.port_type == OPTICAL for p in top.ports.values()):
+            raise ValueError(f"Cell {top.name!r} has no references and no optical ports: nothing to extract.")
+        # A leaf component: extract it as a single instance of itself.
+        wrapper = Cell(top.name, ports=dict(top.ports))
+        wrapper.add_ref(top, name=top.name)
+        top = wrapper
     _collect(top, [], "", leaves, set())
+    if not leaves:
+        raise ValueError(f"Cell {top.name!r} contains no references with optical ports: nothing to simulate.")
 
     instances: dict[str, str] = {}
     settings: dict[str, dict] = {}

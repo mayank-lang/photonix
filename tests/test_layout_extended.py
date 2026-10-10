@@ -37,12 +37,14 @@ def test_every_generator_extracts_and_simulates(name):
     cell = getattr(lc, name)()
     top = lay.Cell("top")
     top.add_ref(cell, name="dut")
+    if not [p for p in cell.ports.values() if p.port_type == lay.OPTICAL]:
+        # portless (ring) or electrical-only (pad) cells have nothing to simulate
+        with pytest.raises(ValueError, match="nothing to simulate"):
+            lay.extract_netlist(top)
+        return
     with warnings.catch_warnings():
         warnings.simplefilter("error")   # well-formed generators raise no placement warnings
         nl = lay.extract_netlist(top)
-    if not nl.instances:      # portless (ring) or electrical-only (pad) cells
-        assert not [p for p in cell.ports.values() if p.port_type == lay.OPTICAL]
-        return
     s = px.circuit.circuit_from_netlist(nl)(wl=px.linspace(1.54, 1.56, 7))
     S, _ = px.as_sdense(s)
     assert np.all(np.linalg.svd(np.asarray(S), compute_uv=False) <= 1 + 1e-9)

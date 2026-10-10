@@ -20,14 +20,22 @@ circuit simulates the *drawn* geometry rather than a model's defaults.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 
-__all__ = ["Port", "Reference", "Cell", "OPTICAL", "ELECTRICAL"]
+__all__ = ["Port", "Reference", "Cell", "OPTICAL", "ELECTRICAL", "GEOMETRY_ONLY"]
 
 OPTICAL = "optical"
 ELECTRICAL = "electrical"
+#: ``Cell.model`` marker for geometry that has lost its circuit semantics (a
+#: flattened composite, or a cell read back from GDS without a sidecar).
+#: Extraction refuses to simulate it instead of silently using model defaults.
+GEOMETRY_ONLY = "__geometry_only__"
+
+
+def _layer_tuple(layer) -> tuple[int, int]:
+    return (int(layer[0]), int(layer[1]))
 
 
 @dataclass
@@ -188,7 +196,7 @@ class Cell:
 
     # -- builders ----------------------------------------------------------- #
     def add_polygon(self, points, layer: tuple[int, int] = (1, 0)) -> Cell:
-        self.polygons.append((np.asarray(points, dtype=float), cast(tuple[int, int], tuple(layer))))
+        self.polygons.append((np.asarray(points, dtype=float), _layer_tuple(layer)))
         return self
 
     def add_ref(self, cell: Cell, origin=(0.0, 0.0), rotation=0.0, mirror=False, name=None) -> Reference:
@@ -202,7 +210,8 @@ class Cell:
                  port_type: str = OPTICAL) -> Cell:
         if port_type not in (OPTICAL, ELECTRICAL):
             raise ValueError("port_type must be 'optical' or 'electrical'")
-        self.ports[name] = Port(name, tuple(center), float(orientation), float(width), tuple(layer), port_type)
+        self.ports[name] = Port(name, (float(center[0]), float(center[1])), float(orientation), float(width),
+                                _layer_tuple(layer), port_type)
         return self
 
     def expose_port(self, ref: Reference, port: str, name: str | None = None) -> Cell:
@@ -238,9 +247,15 @@ class Cell:
         return {layer for _pts, layer in self.get_polygons()}
 
     def flatten(self, name: str | None = None) -> Cell:
-        """A new reference-free cell with all polygons and this cell's own ports."""
+        """A new reference-free cell with all polygons and this cell's own ports.
+
+        Flattening a *composite* cell (references and no ``model``) discards
+        the sub-cells whose settings define its circuit, so the result is
+        marked :data:`GEOMETRY_ONLY` and extraction refuses to simulate it.
+        """
+        model = GEOMETRY_ONLY if (self.model is None and self.references) else self.model
         return Cell(name or self.name, [(p.copy(), lay) for p, lay in self.get_polygons()], [],
-                    dict(self.ports), self.model, dict(self.model_settings))
+                    dict(self.ports), model, dict(self.model_settings))
 
     def bbox(self) -> tuple[tuple[float, float], tuple[float, float]]:
         """Axis-aligned bounding box ``((xmin, ymin), (xmax, ymax))``."""

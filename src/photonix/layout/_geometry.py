@@ -106,8 +106,8 @@ def polyline_length(points) -> float:
 def path_polygon(points, width: float, headings=None) -> np.ndarray:
     """Constant-width polygon around a centre line.
 
-    With ``headings`` the offset normals are exact; otherwise they are taken
-    from neighbouring points (fine for straight segments).
+    With ``headings`` the offset normals are exact; otherwise every vertex is
+    mitred so each segment keeps the full width (sharp corners included).
     """
     pts = np.asarray(points, dtype=float)
     if pts.ndim != 2 or pts.shape[0] < 2 or pts.shape[1] != 2:
@@ -117,14 +117,21 @@ def path_polygon(points, width: float, headings=None) -> np.ndarray:
     if np.any(np.linalg.norm(np.diff(pts, axis=0), axis=1) == 0):
         raise ValueError("Consecutive centre-line points must be distinct.")
     if headings is None:
-        d = np.empty_like(pts)
-        d[0] = pts[1] - pts[0]
-        d[-1] = pts[-1] - pts[-2]
-        d[1:-1] = pts[2:] - pts[:-2]
-        d /= np.linalg.norm(d, axis=1, keepdims=True)
+        # Mitred offsets: at a vertex joining segments with unit normals s1, s2
+        # the offset direction (s1 + s2) / (1 + s1.s2) keeps the full width on
+        # both segments (exact for sharp corners, and for finely sampled curves).
+        seg = np.diff(pts, axis=0)
+        seg /= np.linalg.norm(seg, axis=1, keepdims=True)
+        s = np.stack([-seg[:, 1], seg[:, 0]], axis=1)
+        nrm = np.empty_like(pts)
+        nrm[0], nrm[-1] = s[0], s[-1]
+        dots = np.sum(s[:-1] * s[1:], axis=1)
+        if np.any(dots < -1 + 1e-9):
+            raise ValueError("A centre line may not fold back on itself (180-degree turn).")
+        nrm[1:-1] = (s[:-1] + s[1:]) / (1.0 + dots)[:, None]
     else:
         h = np.asarray(headings, dtype=float)
         d = np.stack([np.cos(h), np.sin(h)], axis=1)
-    nrm = np.stack([-d[:, 1], d[:, 0]], axis=1)
+        nrm = np.stack([-d[:, 1], d[:, 0]], axis=1)
     half = 0.5 * width
     return np.concatenate([pts + half * nrm, (pts - half * nrm)[::-1]], axis=0)

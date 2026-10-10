@@ -106,7 +106,9 @@ def demo_pdk() -> Pdk:
                       layout_settings={"width1": 0.5, "width2": 1.0, "length": 20.0},
                       model_settings={"width1": 0.5, "width2": 1.0, "length": 20.0,
                                       "num_sections": 30, "num_modes": 6})
+    mmi = {"length": 29.5, "mmi_width": 2.5, "gap": 1.0, "wg_width": 0.5}   # one geometry for both views
     pdk.add_component("mmi1x2", layout=_layout.mmi1x2, model=_eme.mmi1x2,
-                      model_settings={"width_mmi": 2.5, "length_mmi": 29.5, "gap": 1.0,
-                                      "num_modes": 12})
+                      layout_settings=mmi,
+                      model_settings={"width_mmi": mmi["mmi_width"], "length_mmi": mmi["length"], "gap": mmi["gap"],
+                                      "width_access": mmi["wg_width"], "num_modes": 12})
     return pdk

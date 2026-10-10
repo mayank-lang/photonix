@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from .cell import Cell
+from .cell import GEOMETRY_ONLY, Cell
 
 __all__ = ["gdstk_available", "write_gds", "read_gds", "write_oas", "read_oas"]
 
@@ -37,22 +37,33 @@ def _fingerprint(cell: Cell, memo: dict[int, str]) -> str:
     key = id(cell)
     if key in memo:
         return memo[key]
-    h = hashlib.sha1(cell.name.encode())
+    h = hashlib.sha1()
+
+    def field(tag: str, payload: bytes) -> None:
+        # Tag + length prefix makes the encoding injective across fields.
+        h.update(f"{tag}:{len(payload)}:".encode() + payload)
+
+    field("name", cell.name.encode())
     for pts, layer in cell.polygons:
-        h.update(repr(layer).encode())
-        h.update(np.round(np.asarray(pts, dtype=float), 6).tobytes())
+        arr = np.round(np.asarray(pts, dtype=float), 6)
+        field("layer", repr((int(layer[0]), int(layer[1]))).encode())
+        field("shape", repr(arr.shape).encode())
+        field("points", arr.tobytes())
     for name in sorted(cell.ports):
         prt = cell.ports[name]
-        h.update(repr((name, np.round(prt.center, 6).tolist(), round(prt.orientation, 6),
-                       round(prt.width, 6), prt.layer, prt.port_type)).encode())
+        field("port", repr((name, np.round(prt.center, 6).tolist(), round(prt.orientation, 6),
+                            round(prt.width, 6), tuple(int(v) for v in prt.layer), prt.port_type)).encode())
     for ref in cell.references:
-        h.update(_fingerprint(ref.cell, memo).encode())
-        h.update(repr((np.round(ref.origin, 6).tolist(), round(ref.rotation, 6), ref.mirror)).encode())
+        field("ref", _fingerprint(ref.cell, memo).encode())
+        field("placement", repr((np.round(ref.origin, 6).tolist(), round(ref.rotation, 6), ref.mirror)).encode())
     memo[key] = h.hexdigest()
     return memo[key]
 
 
-def _to_gdstk(cell: Cell, lib, built: dict, names: dict, memo: dict):
+_USED = object()  # key of the used-name set inside ``names`` (cannot clash with a cell name)
+
+
+def _to_gdstk(cell: Cell, lib, built: dict, names: dict, memo: dict, used: set[str] | None = None):
     """Convert ``cell`` once per distinct content, with unique structure names.
 
     Identical cells (same name and content) are written once. Distinct cells
@@ -62,10 +73,13 @@ def _to_gdstk(cell: Cell, lib, built: dict, names: dict, memo: dict):
     """
     gdstk = _gdstk()
 
+    if used is None:
+        used = names.setdefault(_USED, set())
+    if not cell.name:
+        raise ValueError("GDS cell names must be non-empty")
     fp = _fingerprint(cell, memo)
     if fp in built:
         return built[fp]
-    used: set[str] = names.setdefault("", set())
     count = names.get(cell.name, 0)
     gds_name = cell.name if count == 0 else f"{cell.name}${count}"
     while gds_name in used:
@@ -79,7 +93,7 @@ def _to_gdstk(cell: Cell, lib, built: dict, names: dict, memo: dict):
         polygon_points = cast(Sequence[tuple[float, float] | complex], np.asarray(pts))
         gcell.add(gdstk.Polygon(polygon_points, layer=layer, datatype=dt))
     for ref in cell.references:
-        child = _to_gdstk(ref.cell, lib, built, names, memo)
+        child = _to_gdstk(ref.cell, lib, built, names, memo, used)
         gref = gdstk.Reference(
             child, origin=ref.origin, rotation=np.deg2rad(ref.rotation), x_reflection=ref.mirror
         )
@@ -116,10 +130,14 @@ def write_gds(cell: Cell, path: str | os.PathLike[str]) -> str:
 
 
 def _from_gdstk(lib) -> Cell:
-    """Convert the top cell of a gdstk library to a flattened Photonix cell."""
+    """Convert the top cell of a gdstk library to a flattened Photonix cell.
+
+    GDS carries no circuit semantics, so the result is marked
+    :data:`~photonix.layout.cell.GEOMETRY_ONLY`.
+    """
     tops = lib.top_level()
     gcell = cast(Any, tops[0] if tops else lib.cells[0])
-    out = Cell(gcell.name)
+    out = Cell(gcell.name, model=GEOMETRY_ONLY)
     for poly in gcell.get_polygons():
         out.add_polygon(np.asarray(poly.points), (int(poly.layer), int(poly.datatype)))
     for lbl in getattr(gcell, "labels", []):
