@@ -189,7 +189,7 @@ capture without claiming foundry qualification.
 | `photonix.components` | Differentiable, parametric component models -- see [`docs/COMPONENT_LIBRARY.md`](docs/COMPONENT_LIBRARY.md) |
 | `photonix.circuit` | Netlist (with JSON I/O), differentiable S-parameter solver, and architecture builders (lattice, CROW, Sagnac, Clements mesh) |
 | `photonix.modes` | Compatibility facade re-exporting `photonix.em`'s scalar solver, geometry and materials — *deprecated*, prefer `photonix.em` |
-| `photonix.layout` | Cells, port-based placement, bend-aware routing, GDSII/OASIS I/O, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs |
+| `photonix.layout` | Cells, port-based placement, bend-aware routing, lossless GDSII/OASIS I/O (hierarchy, ports, sidecar semantics), text and labels, packing/floorplanning, fibre arrays and die frames, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs -- see [`docs/LAYOUT_IO_AND_ASSEMBLY.md`](docs/LAYOUT_IO_AND_ASSEMBLY.md) |
 | `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
 | `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra; sensitivities, FOSM moments, process corners, worst-case distance and importance-sampled yield |
 | `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |

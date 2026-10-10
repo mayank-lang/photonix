@@ -489,6 +489,40 @@ def test_legacy_write_gds_labels_are_understood(tmp_path):
         "o1": ((0.0, 0.0), 180.0, 0.5, (1, 0), lay.OPTICAL), "o2": ((12.0, 0.0), 0.0, 0.5, (1, 0), lay.OPTICAL)}
 
 
+def _xor_area(a, b):
+    pa = [gdstk.Polygon(p) for p in a]
+    pb = [gdstk.Polygon(p) for p in b]
+    return sum(p.area() for p in gdstk.boolean(pa, pb, "xor", precision=1e-6))
+
+
+@pytest.mark.parametrize("make", [lc.mzi, lambda: lc.ring_double(radius=12.0), _route_circuit, _rotated_circuit])
+def test_legacy_write_gds_round_trip_reproduces_tree_and_flat_geometry(tmp_path, make):
+    """The plain write_gds output (no sidecar, no pins, 199-vertex fracturing) still reads back faithfully."""
+    cell = make()
+    path = os.fspath(tmp_path / "legacy.gds")
+    lay.write_gds(cell, path)
+    back = lay.read_layout(path)
+    snapped = lay.snap_to_grid(cell)
+
+    def tree(c):
+        return (c.name.split("$")[0], [(r.cell.name.split("$")[0], tuple(np.round(r.origin, 9)), round(r.rotation, 9),
+                                        r.mirror, tree(r.cell)) for r in c.references])
+
+    assert tree(back) == tree(snapped)
+    for layer in {lay_ for _p, lay_ in snapped.get_polygons()}:
+        ours = [p for p, lay_ in back.get_polygons() if lay_ == layer]
+        want = [p for p, lay_ in snapped.get_polygons() if lay_ == layer]
+        perimeter = sum(np.linalg.norm(np.diff(np.vstack([p, p[:1]]), axis=0), axis=1).sum() for p in want)
+        # write_gds fractures polygons above 199 vertices; the cut vertices land on the 1 nm grid,
+        # so the flattened geometry agrees to well within one grid step along every edge
+        assert _xor_area(ours, want) <= 0.1 * 1e-3 * perimeter
+    for name, prt in snapped.ports.items():      # face ports of the top cell, inferred from the labels
+        got = back.ports.get(name)
+        if got is not None and prt.width == got.width:
+            assert got.center == pytest.approx(prt.center, abs=1e-9) and got.layer == prt.layer
+            assert abs((got.orientation - prt.orientation + 180) % 360 - 180) < 1e-6
+
+
 def test_port_convention_none_keeps_markers_as_geometry(tmp_path):
     path = os.fspath(tmp_path / "n.gds")
     lay.write_layout(lc.straight(), path)

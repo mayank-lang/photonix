@@ -50,7 +50,7 @@ import numpy as np
 
 from .. import components as lc
 from ..cell import ELECTRICAL, Cell, Port, Reference
-from ..labels import TEXT_LAYER, Label, LabeledCell, text
+from ..labels import TEXT_LAYER, Label, LabeledCell, _layer, text
 from ..placement import DieCell, _side, reference_bbox
 from ..routing import route_manhattan
 
@@ -237,11 +237,11 @@ def pad_array(n: int = 8, *, pitch: float = 100.0, size: float = 80.0, layer: Se
         raise ValueError("n must be at least 1")
     if not math.isfinite(pitch) or not math.isfinite(size) or size <= 0 or pitch < size:
         raise ValueError("need 0 < size <= pitch")
-    pad = lc.pad(size=size, layer=tuple(layer))
+    pad = lc.pad(size=size, layer=_layer(layer))
     cell = Cell(name)
     for k in range(n):
         cell.add_ref(pad, origin=(k * pitch, 0.0), name=f"pad{k}")
-        cell.add_port(f"e{k + 1}", (k * pitch, 0.0), orientation, size, tuple(layer), ELECTRICAL)
+        cell.add_port(f"e{k + 1}", (k * pitch, 0.0), orientation, size, _layer(layer), ELECTRICAL)
     return cell
 
 
@@ -313,12 +313,12 @@ def die_frame(
     if trench < 0 or trench > d + k:
         raise ValueError("facet_trench_width must lie within the dicing lane plus keep-out band")
     die = DieCell(name, die_size=(w, h), dicing_lane=d, keepout=k, facet_sides=sides, facet_trench_width=trench)
-    fl = tuple(frame_layer)
+    fl = _layer(frame_layer)
     if d > 0:
         for r in (_rect(0, 0, w, d), _rect(0, h - d, w, h), _rect(0, d, d, h - d), _rect(w - d, d, w, h - d)):
             die.add_polygon(r, fl)
     if keepout_layer is not None and k > 0:
-        kl = tuple(keepout_layer)
+        kl = _layer(keepout_layer)
         a, b = d, d + k
         for r in (_rect(a, a, w - a, b), _rect(a, h - b, w - a, h - a), _rect(a, b, b, h - b),
                   _rect(w - b, b, w - a, h - b)):
@@ -330,7 +330,7 @@ def die_frame(
         base = np.array([(0, 0), (arm, 0), (arm, t), (t, t), (t, arm), (0, arm)], dtype=float)
         for sx, sy, cx, cy in ((1, 1, d, d), (-1, 1, w - d, d), (1, -1, d, h - d), (-1, -1, w - d, h - d)):
             pts = base * np.array([sx, sy]) + np.array([cx, cy])
-            die.add_polygon(pts if sx * sy > 0 else pts[::-1], tuple(corner_mark_layer))
+            die.add_polygon(pts if sx * sy > 0 else pts[::-1], _layer(corner_mark_layer))
     if die_id is not None:
         size_ = 0.4 * k if text_size is None else float(text_size)
         if size_ <= 0:
@@ -339,7 +339,7 @@ def die_frame(
         label = text(die_id, size=size_, layer=text_layer, position=(d + gap, d + gap), anchor="sw")
         die.polygons.extend(label.polygons)
     if trench > 0 and facet_trench_layer is not None:
-        tl = tuple(facet_trench_layer)
+        tl = _layer(facet_trench_layer)
         spans = {"E": _rect(w - trench, 0, w, h), "W": _rect(0, 0, trench, h),
                  "N": _rect(0, h - trench, w, h), "S": _rect(0, 0, w, trench)}
         for side in sides:
@@ -442,5 +442,5 @@ def add_test_labels(
                 raise ValueError(f"grating coupler at {tuple(q)} is not on the {pitch:g} um fibre-array pitch "
                                  f"from the input at {tuple(base)}")
     out = top if isinstance(top, LabeledCell) else LabeledCell.from_cell(top)
-    out.labels.append(Label(string, (float(points[0][0]), float(points[0][1])), tuple(layer)))
+    out.labels.append(Label(string, (float(points[0][0]), float(points[0][1])), _layer(layer)))
     return out
