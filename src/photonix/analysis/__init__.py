@@ -11,6 +11,8 @@ equally to simulated responses and to measured data.
 * :mod:`~photonix.analysis.yield_analysis` -- spec-based parametric yield over
   :class:`~photonix.pdk.ProcessStudy` corners and Monte Carlo samples.
 * :mod:`~photonix.analysis.time_domain` -- impulse and pulse responses.
+* :mod:`~photonix.analysis.sensitivity` -- AD/FD sensitivities, FOSM moments,
+  corner designs, worst-case distance and importance-sampling yield.
 """
 from __future__ import annotations
 
@@ -25,6 +27,17 @@ from .resonances import (
     free_spectral_range,
     ring_q_factors,
 )
+from .sensitivity import (
+    ISYield,
+    MomentEstimate,
+    SensitivityTable,
+    WorstCase,
+    corners,
+    fosm,
+    importance_sampling_yield,
+    sensitivity,
+    worst_case_distance,
+)
 from .time_domain import PulseResponse, impulse_response, pulse_response
 from .yield_analysis import Spec, YieldResult, wilson_interval, yield_analysis
 
@@ -35,4 +48,6 @@ __all__ = [
     "LinkStage", "LinkBudget", "stage_from_sparameters",
     "Spec", "YieldResult", "yield_analysis", "wilson_interval",
     "PulseResponse", "impulse_response", "pulse_response",
+    "SensitivityTable", "sensitivity", "MomentEstimate", "fosm", "corners",
+    "WorstCase", "worst_case_distance", "ISYield", "importance_sampling_yield",
 ]
