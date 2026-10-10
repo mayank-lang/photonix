@@ -75,6 +75,13 @@ in ``.oas`` files.
 
 The default ``timestamp`` makes GDSII output byte-reproducible, so
 :attr:`LayoutArtifact.sha256` identifies a layout.
+
+Validation (``tests/test_layout_gds_io.py``): round trips of hierarchical,
+routed and rotated/mirrored circuits in both formats; flattened array and
+repetition geometry against gdstk's own ``flatten``; and the bytes on disk
+against an independent GDSII record decoder (units, structures, boundary
+areas, instance-name properties, pins, ``AREF`` lattice positions), plus
+KLayout's reader when installed. See ``docs/LAYOUT_IO_AND_ASSEMBLY.md``.
 """
 from __future__ import annotations
 
