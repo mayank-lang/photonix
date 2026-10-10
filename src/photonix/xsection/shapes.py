@@ -16,10 +16,10 @@ The constructors here are pure geometry; nothing is rasterized until
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Literal, Union
+from typing import Any, Literal
 
 import numpy as np
 
@@ -37,8 +37,8 @@ __all__ = [
 ]
 
 #: A material: index number, ``n(wl)`` callable, object with ``index(wl)``, or a
-#: 3-tuple of those (diagonal anisotropy along x, y, z).
-MaterialSpec = Union[float, complex, Callable[..., Any], Any]
+#: 3-tuple of those (diagonal anisotropy along x, y, z).  Duck-typed, hence ``Any``.
+MaterialSpec = Any
 
 #: Half-width (µm) of the polygon used for a laterally unbounded :func:`band`.
 #: Rasterization windows must lie inside ``|x| < BAND_HALF_WIDTH``.

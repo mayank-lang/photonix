@@ -401,19 +401,103 @@ def _scatter_add(xpm: Any, target: Any, index: tuple[Any, Any], values: Any) -> 
     return target.at[index].add(values)
 
 
+def _phase2(V: Any, Y: Any, X: Any, dy: Any, area: Any, fx: Any, fyb: Any, fyt: Any, e_lo: Any, e_hi: Any,
+            vin: Any, pairs: Any, bnd: Any, s: Any, e: Any, L: Any, Rt: Any, row: Any, wfirst: Any, wlast: Any,
+            *, xpm: Any) -> tuple[Any, Any, Any]:
+    """Arithmetic of the sweep for a fixed topology (traceable and jit-able under JAX)."""
+    lo_v, hi_v = V[e_lo], V[e_hi]
+    slope = (hi_v[:, 0] - lo_v[:, 0]) / (hi_v[:, 1] - lo_v[:, 1])
+    # Slab-boundary candidates (grid lines, vertices, edge crossings) in the traced arithmetic.
+    if pairs.shape[0]:
+        p, q = pairs[:, 0], pairs[:, 1]
+        ys = (lo_v[q, 0] - lo_v[p, 0] + lo_v[p, 1] * slope[p] - lo_v[q, 1] * slope[q]) / (slope[p] - slope[q])
+    else:
+        ys = xpm.zeros(0)
+    cand = xpm.concatenate([Y, V[vin, 1], ys])
+    bvals = cand[bnd]
+    lo, hi = bvals[:-1][s], bvals[1:][s]
+    h = (hi - lo)[:, None]
+    xb = (lo_v[e, 0] + (lo - lo_v[e, 1]) * slope[e])[:, None]
+    xt = (lo_v[e, 0] + (hi - lo_v[e, 1]) * slope[e])[:, None]
+    X0, X1 = X[None, :-1], X[None, 1:]
+    Wc = X1 - X0
+    D = xt - xb
+    Ds = xpm.where(D == 0, 1.0, D)
+
+    def g(x):
+        return xpm.clip(x, X0, X1) - X0
+
+    uA, uB = (X0 - xb) / Ds, (X1 - xb) / Ds
+    u1 = xpm.clip(xpm.minimum(uA, uB), 0.0, 1.0)
+    u2 = xpm.clip(xpm.maximum(uA, uB), 0.0, 1.0)
+    g0, g1, g2, g3 = g(xb), g(xb + u1 * D), g(xb + u2 * D), g(xt)
+    C = h * 0.5 * ((g0 + g1) * u1 + (g1 + g2) * (u2 - u1) + (g2 + g3) * (1.0 - u2))
+    if xpm is not np:
+        # The cell area is C1 in the vertex positions even where an edge end
+        # touches a column line, but the breakpoint formula's clip/min ties
+        # would split its derivative between neighbouring cells there.  Keep
+        # the exact value and take the gradient from the tie-free
+        # antiderivative form (G(xt) - G(xb)) / D, G' = g (straight-through).
+        import jax
+
+        def G(x):
+            c = xpm.clip(x, X0, X1)
+            return 0.5 * (c - X0) ** 2 + Wc * xpm.maximum(x - X1, 0.0)
+
+        steep = xpm.abs(D) > 1e-3 * Wc
+        Dz = xpm.where(steep, D, 1.0)
+        smooth = h * xpm.where(steep, (G(xt) - G(xb)) / Dz, g(0.5 * (xb + xt)))
+        C = smooth + jax.lax.stop_gradient(C - smooth)
+    # Fraction of the slab height over which the edge lies left of each vertical line X.
+    Xall = X[None, :]
+    u = (Xall - xb) / Ds
+    step = xpm.where(xb < Xall, 1.0, xpm.where(xb == Xall, 0.5, 0.0))
+    H = xpm.where(D > 0, xpm.clip(u, 0.0, 1.0), xpm.where(D < 0, 1.0 - xpm.clip(u, 0.0, 1.0), step))
+    area = _scatter_add(xpm, area, (L, row), C)
+    area = _scatter_add(xpm, area, (Rt, row), -C)
+    fx = _scatter_add(xpm, fx, (L, row), -H * h)
+    fx = _scatter_add(xpm, fx, (Rt, row), H * h)
+    Gb = g0 * wfirst[:, None]
+    fyb = _scatter_add(xpm, fyb, (L, row), Gb)
+    fyb = _scatter_add(xpm, fyb, (Rt, row), -Gb)
+    Gt = g3 * wlast[:, None]
+    fyt = _scatter_add(xpm, fyt, (L, row), Gt)
+    fyt = _scatter_add(xpm, fyt, (Rt, row), -Gt)
+    return _finish(xpm, area, fx, fyb, fyt, Wc[0], dy)
+
+
+def _finish(xpm: Any, area: Any, fx: Any, fyb: Any, fyt: Any, W: Any, dy: Any) -> tuple[Any, Any, Any]:
+    frac = area / (dy[:, None] * W[None, :])[None]
+    face_x = fx / dy[None, :, None]
+    Wn = W[None, None, :]
+    inner = 0.5 * (fyt[:, :-1] + fyb[:, 1:]) / Wn
+    face_y = xpm.concatenate([fyb[:, :1] / Wn, inner, fyt[:, -1:] / Wn], axis=1)
+    return frac, face_x, face_y
+
+
+_PHASE2_JIT: Any = None
+
+
+def _phase2_jax() -> Any:
+    """``_phase2`` jitted for jax.numpy (compiled once per problem shape)."""
+    global _PHASE2_JIT
+    if _PHASE2_JIT is None:
+        from functools import partial
+
+        import jax
+        import jax.numpy as jnp
+
+        _PHASE2_JIT = jax.jit(partial(_phase2, xpm=jnp))
+    return _PHASE2_JIT
+
+
 def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, Any, Any]:
     """Exact visible area fractions and face coverages, shapes (R+1, ny, nx) etc."""
     use_jax = any(_is_jax_array(p) for p in polys)
-    if use_jax:
-        import jax.numpy as xpm
-    else:
-        xpm = np  # type: ignore[assignment]
     conc = [_concrete(p) for p in polys]
     topo = _topology(conc, ranks, grid)
     R, (ny, nx) = len(polys), grid.shape
-    X = grid.x_edges
-    W = grid.dx
-    dy = grid.dy
+    W, dy = grid.dx, grid.dy
     area = np.zeros((R + 1, ny, nx))
     area[R] = dy[:, None] * W[None, :]
     fx = np.zeros((R + 1, ny, nx + 1))
@@ -421,88 +505,23 @@ def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, 
     fyb = np.zeros((R + 1, ny, nx))
     fyb[R] = W[None, :]
     fyt = fyb.copy()
-    if use_jax:
-        area, fx, fyb, fyt = (xpm.asarray(v) for v in (area, fx, fyb, fyt))
-    if topo.p_edge.size:
-        V = xpm.concatenate([xpm.asarray(p, dtype=float) for p in polys])
-        lo_v, hi_v = V[topo.e_lo], V[topo.e_hi]
-        slope = (hi_v[:, 0] - lo_v[:, 0]) / (hi_v[:, 1] - lo_v[:, 1])
-        # Slab-boundary candidates, recomputed in the traced arithmetic.
-        Y = grid.y_edges
-        vin = topo.cand_ref[topo.cand_kind == 1]
-        if topo.pairs.size:
-            p, q = topo.pairs[:, 0], topo.pairs[:, 1]
-            ys = (lo_v[q, 0] - lo_v[p, 0] + lo_v[p, 1] * slope[p] - lo_v[q, 1] * slope[q]) / (slope[p] - slope[q])
-        else:
-            ys = xpm.zeros(0)
-        cand = xpm.concatenate([xpm.asarray(Y), V[vin, 1], ys])
-        bvals = cand[topo.bnd]
-        s_lo, s_hi = bvals[:-1], bvals[1:]
-        s = topo.p_slab
-        lo, hi = s_lo[s], s_hi[s]
-        h = (hi - lo)[:, None]
-        e = topo.p_edge
-        xb = (lo_v[e, 0] + (lo - lo_v[e, 1]) * slope[e])[:, None]
-        xt = (lo_v[e, 0] + (hi - lo_v[e, 1]) * slope[e])[:, None]
-        X0, X1 = X[None, :-1], X[None, 1:]
-        D = xt - xb
-        Ds = xpm.where(D == 0, 1.0, D)
-
-        def g(x):
-            return xpm.clip(x, X0, X1) - X0
-
-        uA, uB = (X0 - xb) / Ds, (X1 - xb) / Ds
-        u1 = xpm.clip(xpm.minimum(uA, uB), 0.0, 1.0)
-        u2 = xpm.clip(xpm.maximum(uA, uB), 0.0, 1.0)
-        g0, g1, g2, g3 = g(xb), g(xb + u1 * D), g(xb + u2 * D), g(xt)
-        C = h * 0.5 * ((g0 + g1) * u1 + (g1 + g2) * (u2 - u1) + (g2 + g3) * (1.0 - u2))
+    if not topo.p_edge.size:
+        out = _finish(np, area, fx, fyb, fyt, W, dy)
         if use_jax:
-            # The cell area is C1 in the vertex positions even where an edge end
-            # touches a column line, but the breakpoint formula's clip/min ties
-            # would split its derivative between neighbouring cells there.  Keep
-            # the exact value and take the gradient from the tie-free
-            # antiderivative form (G(xt) - G(xb)) / D, G' = g (straight-through).
-            import jax
+            import jax.numpy as jnp
 
-            Wc = X1 - X0
+            return tuple(jnp.asarray(o) for o in out)  # type: ignore[return-value]
+        return out
+    s = topo.p_slab
+    args = (topo.e_lo, topo.e_hi, topo.cand_ref[topo.cand_kind == 1], topo.pairs, topo.bnd, s, topo.p_edge,
+            topo.p_left, topo.p_right, topo.slab_row[s], topo.first[s].astype(float), topo.last[s].astype(float))
+    if use_jax:
+        import jax.numpy as jnp
 
-            def G(x):
-                c = xpm.clip(x, X0, X1)
-                return 0.5 * (c - X0) ** 2 + Wc * xpm.maximum(x - X1, 0.0)
-
-            steep = xpm.abs(D) > 1e-3 * Wc
-            Dz = xpm.where(steep, D, 1.0)
-            mean = xpm.where(steep, (G(xt) - G(xb)) / Dz, g(0.5 * (xb + xt)))
-            smooth = h * mean
-            C = smooth + jax.lax.stop_gradient(C - smooth)
-        # Fraction of the slab height over which the edge lies left of each vertical line X.
-        Xall = X[None, :]
-        u = (Xall - xb) / Ds
-        step = xpm.where(xb < Xall, 1.0, xpm.where(xb == Xall, 0.5, 0.0))
-        H = xpm.where(D > 0, xpm.clip(u, 0.0, 1.0), xpm.where(D < 0, 1.0 - xpm.clip(u, 0.0, 1.0), step))
-        row = topo.slab_row[s]
-        L, Rt = topo.p_left, topo.p_right
-        area = _scatter_add(xpm, area, (L, row), C)
-        area = _scatter_add(xpm, area, (Rt, row), -C)
-        fx = _scatter_add(xpm, fx, (L, row), -H * h)
-        fx = _scatter_add(xpm, fx, (Rt, row), H * h)
-        fb = topo.first[s]
-        if fb.any():
-            Gb = g0[fb]
-            fyb = _scatter_add(xpm, fyb, (L[fb], row[fb]), Gb)
-            fyb = _scatter_add(xpm, fyb, (Rt[fb], row[fb]), -Gb)
-        ft = topo.last[s]
-        if ft.any():
-            Gt = g3[ft]
-            fyt = _scatter_add(xpm, fyt, (L[ft], row[ft]), Gt)
-            fyt = _scatter_add(xpm, fyt, (Rt[ft], row[ft]), -Gt)
-    cell = (dy[:, None] * W[None, :])[None]
-    frac = area / cell
-    face_x = fx / dy[None, :, None]
-    Wn = W[None, None, :]
-    inner = 0.5 * (fyt[:, :-1] + fyb[:, 1:]) / Wn
-    face_y = xpm.concatenate([fyb[:, :1] / Wn, inner, fyt[:, -1:] / Wn], axis=1)
-    return frac, face_x, face_y
+        V = jnp.concatenate([jnp.asarray(p, dtype=float) for p in polys])
+        return _phase2_jax()(V, grid.y_edges, grid.x_edges, dy, area, fx, fyb, fyt, *args)
+    V = np.concatenate([np.asarray(p, dtype=float) for p in polys])
+    return _phase2(V, grid.y_edges, grid.x_edges, dy, area, fx, fyb, fyt, *args, xpm=np)
 
 
 # --------------------------------------------------------------------------- #
@@ -555,7 +574,7 @@ class Coverage:
     # -- helpers ------------------------------------------------------------ #
     @property
     def regions(self) -> tuple[Region, ...]:
-        return self.xsection.regions
+        return tuple(self.xsection.regions)
 
     def _present(self) -> np.ndarray:
         f = _concrete(self.fractions.reshape(self.fractions.shape[0], -1).max(axis=1))

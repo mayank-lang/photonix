@@ -20,9 +20,8 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from .raster import XSection
-from .shapes import BAND_HALF_WIDTH, MaterialSpec, Region, band, rect, rib, trapezoid
+from .shapes import BAND_HALF_WIDTH, MaterialSpec, Region, _half_widths, band, rect, rib, trapezoid
 from .shapes import _concrete as _c
-from .shapes import _half_widths
 
 __all__ = ["strip", "rib_waveguide", "coupler", "heater_over_waveguide"]
 
@@ -184,8 +183,8 @@ def heater_over_waveguide(
     --------
     >>> xs = heater_over_waveguide(heater_offset=1.0, metal=2.0 - 4.0j)
     >>> h = xs.tagged("heater")[0]
-    >>> h.bbox
-    (0.0, 2.0, 1.22, 1.34)
+    >>> [round(v, 6) for v in h.bbox]
+    [0.0, 2.0, 1.22, 1.34]
     """
     for name, v in (("wg_width", wg_width), ("wg_thickness", wg_thickness), ("heater_width", heater_width),
                     ("heater_thickness", heater_thickness), ("box_thickness", box_thickness)):

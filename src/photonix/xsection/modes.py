@@ -319,7 +319,7 @@ def solve_modes(
     --------
     >>> from photonix.xsection import strip
     >>> m = solve_modes(strip(0.5, 0.22), resolution=20)
-    >>> 2.3 < m.neff0 < 2.5 and m.te_fraction[0] > 0.9
+    >>> bool(2.3 < m.neff0 < 2.5 and m.te_fraction[0] > 0.9)
     True
     """
     if (not isinstance(num_modes, (int, np.integer)) or isinstance(num_modes, (bool, np.bool_))
