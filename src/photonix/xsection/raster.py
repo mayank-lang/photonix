@@ -456,6 +456,25 @@ def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, 
         u2 = xpm.clip(xpm.maximum(uA, uB), 0.0, 1.0)
         g0, g1, g2, g3 = g(xb), g(xb + u1 * D), g(xb + u2 * D), g(xt)
         C = h * 0.5 * ((g0 + g1) * u1 + (g1 + g2) * (u2 - u1) + (g2 + g3) * (1.0 - u2))
+        if use_jax:
+            # The cell area is C1 in the vertex positions even where an edge end
+            # touches a column line, but the breakpoint formula's clip/min ties
+            # would split its derivative between neighbouring cells there.  Keep
+            # the exact value and take the gradient from the tie-free
+            # antiderivative form (G(xt) - G(xb)) / D, G' = g (straight-through).
+            import jax
+
+            Wc = X1 - X0
+
+            def G(x):
+                c = xpm.clip(x, X0, X1)
+                return 0.5 * (c - X0) ** 2 + Wc * xpm.maximum(x - X1, 0.0)
+
+            steep = xpm.abs(D) > 1e-3 * Wc
+            Dz = xpm.where(steep, D, 1.0)
+            mean = xpm.where(steep, (G(xt) - G(xb)) / Dz, g(0.5 * (xb + xt)))
+            smooth = h * mean
+            C = smooth + jax.lax.stop_gradient(C - smooth)
         # Fraction of the slab height over which the edge lies left of each vertical line X.
         Xall = X[None, :]
         u = (Xall - xb) / Ds
@@ -540,7 +559,10 @@ class Coverage:
 
     def _present(self) -> np.ndarray:
         f = _concrete(self.fractions.reshape(self.fractions.shape[0], -1).max(axis=1))
-        return f > 0.0
+        present = f > 0.0
+        if self.xsection.background is None:  # rasterize() verified it is covered (to rounding)
+            present[-1] = False
+        return present
 
     def _material(self, r: int) -> Any:
         return self.xsection.background if r == len(self.regions) else self.regions[r].material

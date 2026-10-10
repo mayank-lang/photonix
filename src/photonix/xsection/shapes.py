@@ -140,8 +140,9 @@ def _check_material(material: Any) -> None:
         for m in material:
             _check_material(m)
         return
-    if isinstance(material, (bool, np.bool_)):
-        raise TypeError("material must be an index, a callable n(wl), or an object with index(wl)")
+    if isinstance(material, (bool, np.bool_, str, bytes)):
+        raise TypeError("material must be an index, a callable n(wl), or an object with index(wl); "
+                        "names are not looked up")
     if isinstance(material, (int, float, complex, np.number)):
         if not np.isfinite(complex(material)):
             raise ValueError("material index must be finite")
