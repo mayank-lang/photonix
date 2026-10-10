@@ -163,11 +163,16 @@ def _layer(layer) -> tuple[int, int]:
     return (int(layer[0]), int(layer[1]))
 
 
-def _fmt(path: str, fmt: str | None) -> str:
+_Format = Literal["gds", "oas"]
+
+
+def _fmt(path: str, fmt: str | None) -> _Format:
+    if fmt == "gds":
+        return "gds"
+    if fmt == "oas":
+        return "oas"
     if fmt is not None:
-        if fmt not in ("gds", "oas"):
-            raise ValueError(f"fmt must be 'gds', 'oas' or None, got {fmt!r}")
-        return fmt
+        raise ValueError(f"fmt must be 'gds', 'oas' or None, got {fmt!r}")
     ext = os.path.splitext(path)[1].lower()
     if ext in (".gds", ".gdsii", ".gds2", ".gdsii2"):
         return "gds"
@@ -1156,7 +1161,7 @@ def read_layout(
         raise ValueError("tol must be non-negative and finite")
     target = os.fspath(path)
     kind = _fmt(target, fmt)
-    unit, precision = layout_units(target, fmt=kind)
+    _unit, precision = layout_units(target, fmt=kind)
     if precision > 1e-9 * (1 + 1e-9):
         warnings.warn(f"{target!r} uses a {precision * 1e9:g} nm database grid, coarser than 1 nm", stacklevel=2)
     grid = precision / _UNIT

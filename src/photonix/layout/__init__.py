@@ -1,7 +1,7 @@
 """Layout cells, routing, lossless GDSII/OASIS I/O, text and labels, extraction, DRC pre-checks and KLayout runs."""
 from __future__ import annotations
 
-from . import components
+from . import components, library
 from .cell import ELECTRICAL, GEOMETRY_ONLY, OPTICAL, Cell, Port, Reference
 from .drc import DrcReport, DrcViolation, check_min_area, check_min_space, check_min_width, run_drc_precheck
 from .extract import extract_netlist
@@ -26,8 +26,9 @@ from .klayout import (
     run_klayout_deck,
     run_lvs,
 )
-from .routing import RoutingError, route, route_manhattan
 from .labels import Label, LabeledCell, text
+from .placement import DieCell, FloorplanIssue, align, check_floorplan, distribute, grid, pack, reference_bbox
+from .routing import RoutingError, route, route_manhattan
 
 __all__ = [
     "Cell", "Port", "Reference", "OPTICAL", "ELECTRICAL", "GEOMETRY_ONLY", "components",
@@ -36,6 +37,8 @@ __all__ = [
     "read_layout", "write_layout", "LayoutArtifact", "list_top_cells", "layout_units", "infer_ports",
     "snap_to_grid", "sidecar_path_for", "StaleSidecarWarning",
     "Label", "LabeledCell", "text",
+    "grid", "pack", "align", "distribute", "reference_bbox", "DieCell", "FloorplanIssue", "check_floorplan",
+    "library",
     "extract_netlist",
     "DrcReport", "DrcViolation", "check_min_width", "check_min_space", "check_min_area",
     "run_drc_precheck",
