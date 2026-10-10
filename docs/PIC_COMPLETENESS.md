@@ -29,6 +29,20 @@ calibrated multiphysics.
     physical observables.
 11. Hand a GDSII/OASIS stream to an external KLayout executable and run a
     user-supplied DRC or LVS deck in headless batch mode.
+12. Place references by mating ports (`Reference.connect`), route with
+    circular or Euler bends (`route_manhattan`), and extract hierarchical
+    layouts whose cells carry their geometry-derived model settings, so the
+    simulated circuit matches the drawn lengths, radii and gaps.
+13. Pre-check minimum width, spacing and area with merged-polygon morphology
+    before an external DRC run.
+14. Describe the process with a `LayerStack` (mode-solver cross-sections and
+    Meep layer specs) and `CrossSection`s whose waveguide parameters
+    `Pdk.simulate` applies to extracted layouts.
+15. Characterize responses (resonance Q/ER/FSR, pass bands, crosstalk), build
+    link budgets, and estimate spec-based parametric yield over process
+    corners and Monte Carlo samples with confidence intervals.
+16. Program arbitrary unitaries onto MZI meshes and simulate them at component
+    level with splitter and phase-shifter imperfections.
 
 ## Interchange and external-solver handoff
 
@@ -126,6 +140,24 @@ narrow-band runs keep each requested mode locked to its wavelength.
 - Density filtering/projection encourages a length scale and binarity; it does
   not prove minimum solid and void dimensions.
 
+## Compact-model caveats
+
+[`COMPONENT_LIBRARY.md`](COMPONENT_LIBRARY.md) lists each model's evidence and
+limits. The ones most likely to matter in a design decision:
+
+- `evanescent_coupler`'s default supermode splitting is a fit to Photonix
+  full-vector solves of one cross-section (500 x 220 nm Si strips in SiO2,
+  gaps 0.10-0.40 µm, 1.50-1.60 µm). It is a solver-derived default, not
+  measurement; pass a calibrated `splitting=` callable for a real process.
+- `awg` uses paraxial star couplers and matched output modes; its crosstalk
+  floor is set by array truncation and the optional seeded phase errors, not by
+  a full propagation model.
+- `pn_phase_shifter` uses abrupt-junction depletion, the Soref-Bennett 1.55 µm
+  fits and a uniform-lateral-field overlap; forward-bias injection, RC and
+  velocity limits are absent.
+- `grating_coupler` is phenomenological (Gaussian spectrum).
+- The DRC pre-check covers width, spacing and area only; it is not a rule deck.
+
 ## Process and multiphysics adapter boundary
 
 `ProcessCorner`, `MonteCarloSpec`, and `ProcessStudy` carry parameter values,
@@ -173,7 +205,8 @@ The following are deliberately reported as open rather than hidden behind a
   density/fill sign-off, waivers, and tape-out release governance;
 - versioned mask/process metadata;
 - calibrated interpolation policy and automated compact-model extraction from
-  field simulations or measurements beyond the implemented Touchstone exchange;
+  field simulations or measurements beyond the implemented Touchstone exchange
+  (the coupler splitting fit shows the intended pattern, for one cross-section);
 - calibrated thermo-optic, carrier, electrical, stress, and fabrication-yield
   decks, coupling laws, output parsers, and solver-backed validation;
 - foundry-supplied corner distributions, Monte Carlo yield acceptance criteria,

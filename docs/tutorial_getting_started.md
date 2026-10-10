@@ -108,4 +108,10 @@ Extraction connects reference ports whose centres coincide, and names the
 remaining (unconnected) ports `"{instance}_{port}"` — so above, the composite
 runs from `"a_o1"` to `"b_o2"`.
 
-See the `examples/` directory for runnable scripts.
+Each generator cell also records the model and geometry-derived settings it
+represents (`lc.straight(25.0).model_settings == {"length": 25.0}`), so the
+extracted circuit simulates the drawn lengths, radii and gaps.
+
+Continue with [`tutorial_design_flow.md`](tutorial_design_flow.md) for routing,
+DRC pre-checks, PDK-aware simulation, spectral analysis and yield, and see the
+`examples/` directory for runnable scripts.

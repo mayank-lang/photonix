@@ -22,8 +22,10 @@ conda install -c conda-forge pymeep
 ## Running the checks
 
 ```bash
-ruff check src tests        # lint (must be clean)
-pytest -q                   # full suite (~105 tests)
+ruff check src tests benchmarks examples   # lint (must be clean)
+python -m mypy src/photonix                # type check
+python -m pytest --doctest-modules src/photonix --ignore=src/photonix/em/meep
+python -m pytest -q         # full suite (~500 tests)
 pytest tests/test_em_meep.py -v   # the MEEP backend, specifically
 ```
 

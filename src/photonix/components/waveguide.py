@@ -17,7 +17,10 @@ from photonix.core.constants import N_GROUP_SI_STRIP, WL_DEFAULT
 from photonix.core.types import SDict
 from photonix.core.units import db_per_cm_to_alpha_um
 
-__all__ = ["straight", "bend", "bend_from_solver", "neff_linear"]
+__all__ = [
+    "straight", "bend", "bend_from_solver", "neff_linear",
+    "bend_euler", "euler_bend_length", "taper", "waveguide_route",
+]
 
 IndexLike: TypeAlias = float | Callable[..., object]
 
@@ -196,3 +199,146 @@ def bend_from_solver(
         excess_loss_db=result.loss_db_per_90deg * (abs(angle) / 90.0),
         wl0=wl0,
     )
+
+
+def euler_bend_length(radius: float, angle: float, p: float = 0.5):
+    """Path length of an Euler (clothoid) bend in µm.
+
+    The bend turns ``angle`` degrees with a minimum radius of curvature
+    ``radius``. A fraction ``p`` of the turn is made in two linear-curvature
+    (clothoid) ramps, the remaining ``1 - p`` on a circular arc of ``radius``.
+    Each ramp grows the curvature from 0 to ``1/radius`` over a length
+    ``L_c = p * theta * radius``, so the closed form is
+    ``L = radius * |theta| * (1 + p)``. ``p = 0`` is a circular bend and
+    ``p = 1`` a full Euler bend twice the length of the same-radius arc.
+
+    Examples
+    --------
+    >>> import math
+    >>> abs(float(euler_bend_length(5.0, 90.0, 0.0)) - 5.0 * math.pi / 2) < 1e-12
+    True
+    >>> abs(float(euler_bend_length(5.0, 90.0, 1.0)) - 5.0 * math.pi) < 1e-12
+    True
+    """
+    return radius * xp.abs(xp.asarray(angle)) * xp.pi / 180.0 * (1.0 + p)
+
+
+def bend_euler(
+    *,
+    wl=WL_DEFAULT,
+    radius: float = 5.0,
+    angle: float = 90.0,
+    p: float = 0.5,
+    neff: IndexLike = 2.4,
+    ng: float = N_GROUP_SI_STRIP,
+    loss_db_cm: float = 0.0,
+    excess_loss_db: float = 0.0,
+    wl0: float = WL_DEFAULT,
+) -> SDict:
+    """Euler (clothoid) waveguide bend. Ports ``o1``/``o2``.
+
+    The optical path is :func:`euler_bend_length` long. ``radius`` is the
+    *minimum* radius of curvature (which sets the radiation loss); compared with
+    a circular bend of the same minimum radius, the curvature ramps suppress
+    the straight-to-bend mode-mismatch loss at the cost of a longer path. As for
+    :func:`bend`, ``excess_loss_db`` is a lumped loss that defaults to zero.
+
+    Examples
+    --------
+    >>> import photonix as px
+    >>> s = px.components.bend_euler(radius=5.0, angle=90.0, p=0.5)
+    >>> bool(abs(px.power(s[("o1", "o2")]) - 1.0) < 1e-12)
+    True
+    """
+    length = euler_bend_length(radius, angle, p)
+    base = straight(wl=wl, length=length, neff=neff, ng=ng, loss_db_cm=loss_db_cm, wl0=wl0)
+    excess = 10.0 ** (-excess_loss_db / 20.0)
+    return {k: excess * v for k, v in base.items()}
+
+
+# 5-point Gauss-Legendre nodes/weights on [0, 1]: exact for polynomials of
+# degree <= 9, i.e. far beyond the curvature of a smooth n_eff(width) fit.
+_GL_NODES = (0.04691007703066800, 0.23076534494715845, 0.5,
+             0.76923465505284155, 0.95308992296933200)
+_GL_WEIGHTS = (0.11846344252809454, 0.23931433524968324, 0.28444444444444444,
+               0.23931433524968324, 0.11846344252809454)
+
+
+def taper(
+    *,
+    wl=WL_DEFAULT,
+    length: float = 10.0,
+    width1: float = 0.5,
+    width2: float = 1.0,
+    neff: IndexLike = 2.4,
+    ng: float = N_GROUP_SI_STRIP,
+    loss_db_cm: float = 0.0,
+    excess_loss_db: float = 0.0,
+    wl0: float = WL_DEFAULT,
+) -> SDict:
+    """Compact adiabatic linear taper from ``width1`` (o1) to ``width2`` (o2).
+
+    An adiabatic taper converts the fundamental mode without reflection, so its
+    transmission is ``exp(-j * 2*pi/wl * integral(n_eff(w(z)) dz))`` times loss.
+    ``neff`` may be
+
+    * a number -- the phase uses the linear-dispersion model of :func:`straight`
+      and the widths only document the geometry; or
+    * a callable ``neff(wl, width)`` -- e.g. a fit to mode-solver results --
+      integrated along the linear width profile with 5-point Gauss-Legendre
+      quadrature.
+
+    Non-adiabatic conversion and reflection are not modelled; use the EME-backed
+    :func:`photonix.em.components.taper` to quantify them.
+
+    Examples
+    --------
+    >>> import photonix as px
+    >>> s = px.components.taper(length=10.0, neff=lambda wl, w: 2.0 + 0.4 * w)
+    >>> import cmath, math
+    >>> # mean index of 2.0 + 0.4 * w over w in [0.5, 1.0] is 2.3
+    >>> phi = -cmath.phase(complex(s[("o1", "o2")])) % (2 * math.pi)
+    >>> abs(phi - (2 * math.pi / 1.55 * 2.3 * 10.0) % (2 * math.pi)) < 1e-9
+    True
+    """
+    wl = xp.asarray(wl)
+    if callable(neff):
+        n_mean = 0.0
+        for node, weight in zip(_GL_NODES, _GL_WEIGHTS, strict=True):
+            n_mean = n_mean + weight * xp.asarray(neff(wl, width1 + node * (width2 - width1)))
+        base = straight(wl=wl, length=length, neff=lambda _wl: n_mean, loss_db_cm=loss_db_cm)
+    else:
+        base = straight(wl=wl, length=length, neff=neff, ng=ng, loss_db_cm=loss_db_cm, wl0=wl0)
+    excess = 10.0 ** (-excess_loss_db / 20.0)
+    return {k: excess * v for k, v in base.items()}
+
+
+def waveguide_route(
+    *,
+    wl=WL_DEFAULT,
+    length: float = 10.0,
+    n_bends: int = 0,
+    bend_loss_db: float = 0.0,
+    neff: IndexLike = 2.4,
+    ng: float = N_GROUP_SI_STRIP,
+    loss_db_cm: float = 0.0,
+    wl0: float = WL_DEFAULT,
+) -> SDict:
+    """A routed waveguide: total centre-line ``length`` (µm) with ``n_bends`` bends.
+
+    This is the model behind :func:`photonix.layout.route` and
+    :func:`photonix.layout.route_manhattan` cells, whose layout records the
+    drawn path length and bend count. The phase and distributed loss follow
+    :func:`straight` over the full path; each bend adds a lumped
+    ``bend_loss_db``.
+
+    Examples
+    --------
+    >>> import photonix as px
+    >>> s = px.components.waveguide_route(length=100.0, n_bends=4, bend_loss_db=0.05)
+    >>> bool(abs(float(px.power(s[("o1", "o2")])) - 10 ** (-0.02)) < 1e-12)
+    True
+    """
+    base = straight(wl=wl, length=length, neff=neff, ng=ng, loss_db_cm=loss_db_cm, wl0=wl0)
+    excess = 10.0 ** (-(n_bends * bend_loss_db) / 20.0)
+    return {k: excess * v for k, v in base.items()}

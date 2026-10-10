@@ -7,12 +7,15 @@ verification handoffs through one consistent port and data model.
 
 | Layer | Delivered capability |
 |---|---|
-| Circuit | Differentiable named-port S-matrix assembly, including feedback networks |
+| Circuit | Differentiable named-port S-matrix assembly, including feedback networks; lattice-filter, CROW, Sagnac-mirror and programmable MZI-mesh (Clements) builders |
+| Components | 30+ differentiable models: waveguides, Euler bends, tapers, ideal and gap-calibrated couplers, NxN MMIs, crossings, rings, CMT Bragg gratings, AWGs, heater/thermo-optic/p-n phase shifters, edge and grating couplers, photodetectors |
 | Electromagnetics | Scalar, semivectorial, and full-vector FDE; 2-D FDFD and EME; optional Meep/MPB FDTD |
 | Accuracy & spectra | Adaptive Richardson/GCI studies; high-order group delay and GDD on nonuniform sweeps |
 | Physicality QA | Quantitative passivity, reciprocity, and losslessness checks plus pointwise passive projection |
 | Design | JAX gradients, inverse-design objectives, fabrication filters, and process variation studies |
-| Layout & exchange | Hierarchical cells, routing, GDSII/OASIS, Touchstone, extraction, and KLayout handoff |
+| Analysis | Resonance Q/ER/FSR and Q-splitting, pass-band and crosstalk metrics, link budgets, spec-based Monte Carlo yield, impulse/pulse response |
+| Layout & exchange | Hierarchical cells with port-based placement, Euler/S-bends, bend-aware Manhattan routing, geometry-carrying netlist extraction, DRC pre-checks, GDSII/OASIS, netlist JSON, Touchstone, and KLayout handoff |
+| PDK | Component registry, layer stacks (mode solver and Meep export), waveguide cross-sections bound into simulation, design rules, process corners |
 
 > Status: **v0.1.0 (beta).** MIT-licensed. Photonix is a simulation and design
 > layer, not a substitute for a target foundry's qualified PDK, DRC/LVS decks,
@@ -146,11 +149,20 @@ from photonix.layout import components as lc
 em.n_eff_fullvector(wl=1.55, width=0.5, thickness=0.22)   # ≈2.45, SOI TE0
 
 top = lay.Cell("top")
-top.add_ref(lc.straight(10.0), origin=(0, 0), name="a")
-top.add_ref(lc.straight(10.0), origin=(10, 0), name="b")
+a = top.add_ref(lc.straight(10.0), name="a")
+r = top.add_ref(lc.ring_single(radius=12.0, gap=0.28), name="r").connect("o1", a.port("o2"))
+top.add_ref(lay.route_manhattan(r.port("o2"), lay.Port("out", (80, 40), 180), radius=5.0), name="w")
 nl = lay.extract_netlist(top)               # coincident ports → connections
-S  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # models default to px.components.MODELS
+nl.settings["r"]                            # {'radius': 12.0, 'gap': 0.28, 'length_x': 0.0}
+S  = px.circuit.circuit_from_netlist(nl)(wl=1.55)   # simulates the drawn geometry
 ```
+
+Every layout cell records the compact model and geometry-derived settings it
+represents, so the extracted circuit uses the drawn lengths, radii and gaps
+instead of model defaults. A PDK adds its waveguide properties on top:
+`px.pdk.demo_pdk().simulate(top, wl=wl)`. The full flow -- placement, routing,
+DRC pre-check, GDSII, simulation, analysis and yield -- is in
+[`docs/tutorial_design_flow.md`](docs/tutorial_design_flow.md).
 
 ## Accuracy is a workflow
 
@@ -173,11 +185,12 @@ capture without claiming foundry qualification.
 |---|---|
 | `photonix.core` | Backend, units, constants, the `SDict` type system, S-param utils |
 | `photonix.em` | All EM physics: scalar/semivector/full-vector FDE, slab, EIM, FDFD, EME, bend loss, cross-section geometry, dispersive materials, plus an optional MEEP/MPB **FDTD backend** (`photonix.em.meep`) |
-| `photonix.components` | Differentiable, parametric component models (waveguides, couplers, MZIs, rings, gratings) |
-| `photonix.circuit` | Netlist + differentiable S-parameter circuit solver |
+| `photonix.components` | Differentiable, parametric component models -- see [`docs/COMPONENT_LIBRARY.md`](docs/COMPONENT_LIBRARY.md) |
+| `photonix.circuit` | Netlist (with JSON I/O), differentiable S-parameter solver, and architecture builders (lattice, CROW, Sagnac, Clements mesh) |
 | `photonix.modes` | Compatibility facade re-exporting `photonix.em`'s scalar solver, geometry and materials — *deprecated*, prefer `photonix.em` |
-| `photonix.layout` | Cells, routing, GDSII/OASIS I/O, netlist extraction, optional external KLayout DRC/LVS runs |
-| `photonix.pdk` | PDK-agnostic interface + an open example PDK |
+| `photonix.layout` | Cells, port-based placement, bend-aware routing, GDSII/OASIS I/O, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs |
+| `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
+| `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra |
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |
@@ -187,7 +200,9 @@ capture without claiming foundry qualification.
 semantic names (`in0`/`out0`, `i1`/`t1`/`d2`) still work as lookup aliases; see
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md#port-naming).
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, and
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design,
+[`docs/COMPONENT_LIBRARY.md`](docs/COMPONENT_LIBRARY.md) for every model's physics,
+evidence level and limits, and
 [`BUILD_SPEC.md`](BUILD_SPEC.md) for the developer contract. The explicit
 production-PIC boundary and remaining sign-off gaps are in
 [`docs/PIC_COMPLETENESS.md`](docs/PIC_COMPLETENESS.md); executable open-source

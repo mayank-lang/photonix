@@ -4,8 +4,10 @@ from __future__ import annotations
 from .base import ComponentSpec, Layer, Pdk
 from .example_pdk import LAYERS, demo_pdk
 from .process import MonteCarloSpec, ProcessCorner, ProcessStudy
+from .stack import CrossSection, LayerLevel, LayerStack
 
 __all__ = [
     "Pdk", "Layer", "ComponentSpec", "demo_pdk", "LAYERS",
     "ProcessCorner", "MonteCarloSpec", "ProcessStudy",
+    "CrossSection", "LayerLevel", "LayerStack",
 ]

@@ -22,6 +22,7 @@ sensitivities of a system-level metric with respect to any physical parameter.
 
 ```
                  ┌─────────────────────────────────────────────┐
+   analysis/ ◄──  resonances · filters · link budget · yield · time domain
    optim/  ◄────  inverse design, adjoint, optimizers, objectives
                  └─────────────────────────────────────────────┘
                  ┌──────────────┐   ┌──────────────┐  ┌─────────┐
@@ -47,9 +48,12 @@ sensitivities of a system-level metric with respect to any physical parameter.
 
 Data flows **up**: `em` computes effective indices and rigorous S-parameters
 that feed `components`, which emit scattering dictionaries that `circuit`
-combines, which `optim` differentiates. `layout` produces GDS and extracts
-netlists that `circuit` can simulate. `viz` reads any of these. Everything below
-a module is a hard dependency; nothing imports from a layer above it.
+combines, which `optim` differentiates and `analysis` characterizes. `layout`
+produces GDS and extracts netlists that `circuit` can simulate. `viz` reads any
+of these. Everything below a module is a hard dependency; nothing imports from a
+layer above it. (One deliberate exception: `components.ring_double` imports the
+circuit solver lazily, at evaluation time, to assemble its two couplers and
+half rings exactly.)
 
 ### `em/` vs `modes/`
 
@@ -77,14 +81,29 @@ full-vector solver ≈2.45; the latter is the one to quote.
 
 ### Layout → simulation
 
-`layout.extract_netlist` returns a `circuit.Netlist` whose model names are the
-layout cell names, and `circuit.circuit_from_netlist` defaults its registry to
-`components.MODELS`, so the loop closes with no manual wiring:
+A layout `Cell` declares the compact model its geometry represents
+(`Cell.model`) and the settings the geometry implies (`Cell.model_settings`,
+e.g. a straight's `length`, a bend's `radius`/`angle`, a coupler's `gap`, a
+route's centre-line `length` and `n_bends`). `layout.extract_netlist` turns
+every leaf reference into an instance of that model *with those settings*,
+recurses into composite cells (references and no model), names external ports
+after coincident ports of the top cell, ignores electrical ports, and warns
+about coincident ports that do not face each other or differ in width.
+`circuit.circuit_from_netlist` defaults its registry to `components.MODELS`, so
+the loop closes with no manual wiring:
 
 ```python
 nl = photonix.layout.extract_netlist(top_cell)
 S  = photonix.circuit.circuit_from_netlist(nl)(wl=1.55)
 ```
+
+A `Pdk` closes the loop with process data: `pdk.models()` binds the default
+`CrossSection`'s `neff`/`ng`/`loss_db_cm`/`wl0` into every model that declares
+them as waveguide parameters (`components.WAVEGUIDE_PARAMETERS`; binding by
+declaration, not by name, because `wl0` is also a grating coupler's peak and an
+AWG's channel centre), and `pdk.simulate(cell)` runs extraction plus simulation
+with that registry. The GDS writer gives distinct cells that share a name unique
+structure names (`straight`, `straight$1`, ...) and writes identical cells once.
 
 ## The central abstraction: `SDict`
 

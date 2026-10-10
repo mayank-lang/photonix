@@ -29,6 +29,8 @@ Examples
 """
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -310,12 +312,106 @@ class Netlist:
                 )
             exposed[ip] = ext
 
+    # -- serialization ------------------------------------------------------ #
+    def to_dict(self) -> dict[str, Any]:
+        """A JSON-compatible description of the netlist.
+
+        Settings must be numbers, strings, booleans, ``None`` or (nested)
+        lists/arrays of those; NumPy/JAX scalars and arrays are converted.
+        Callables (e.g. a custom ``neff(wl)``) cannot be serialized and raise
+        ``TypeError`` naming the instance and setting.
+
+        Examples
+        --------
+        >>> nl = Netlist(name="pair")
+        >>> _ = nl.add("a", "straight", length=5.0).add("b", "straight")
+        >>> _ = nl.connect(("a", "o2"), ("b", "o1"))
+        >>> _ = nl.expose("in", ("a", "o1")).expose("out", ("b", "o2"))
+        >>> Netlist.from_json(nl.to_json()) == nl
+        True
+        """
+        self.validate()
+        instances: dict[str, Any] = {}
+        for inst, model in self.instances.items():
+            entry: dict[str, Any] = {"model": model}
+            if self.settings.get(inst):
+                entry["settings"] = {k: _json_value(v, inst, k) for k, v in self.settings[inst].items()}
+            instances[inst] = entry
+        return {
+            "format": "photonix.netlist",
+            "version": 1,
+            "name": self.name,
+            "instances": instances,
+            "connections": [[list(a), list(b)] for a, b in self.connections.items()],
+            "ports": {ext: list(ip) for ext, ip in self.ports.items()},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Netlist:
+        """Inverse of :meth:`to_dict`."""
+        if data.get("format", "photonix.netlist") != "photonix.netlist":
+            raise ValueError(f"not a photonix netlist: format={data.get('format')!r}")
+        if int(data.get("version", 1)) != 1:
+            raise ValueError(f"unsupported netlist version {data.get('version')!r}")
+        try:
+            connections = {tuple(a): tuple(b) for a, b in data.get("connections", [])}
+        except (TypeError, ValueError) as exc:
+            raise ValueError("connections must be [[inst, port], [inst, port]] pairs") from exc
+        nl = cls(
+            instances=dict(data.get("instances", {})),
+            connections=connections,
+            ports={ext: tuple(ip) for ext, ip in dict(data.get("ports", {})).items()},
+            name=data.get("name"),
+        )
+        nl.validate()
+        return nl
+
+    def to_json(self, path: str | os.PathLike[str] | None = None, *, indent: int = 2) -> str:
+        """Serialize to JSON text; also write it to ``path`` if given."""
+        text = json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+        if path is not None:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text + "\n")
+        return text
+
+    @classmethod
+    def from_json(cls, source: str | os.PathLike[str]) -> Netlist:
+        """Load from JSON text or from a path to a ``.json`` file."""
+        text = os.fspath(source)
+        if not text.lstrip().startswith("{"):
+            with open(text, encoding="utf-8") as fh:
+                text = fh.read()
+        return cls.from_dict(json.loads(text))
+
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         nm = f" {self.name!r}" if self.name else ""
         return (
             f"<Netlist{nm}: {len(self.instances)} instances, "
             f"{len(self.connections)} connections, {len(self.ports)} ports>"
         )
+
+
+def _json_value(value: Any, inst: str, key: str) -> Any:
+    """Convert a setting to plain JSON types or raise a precise ``TypeError``."""
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_value(v, inst, key) for v in value]
+    if isinstance(value, Mapping):
+        return {str(k): _json_value(v, inst, key) for k, v in value.items()}
+    if callable(value):
+        raise TypeError(f"setting {key!r} of instance {inst!r} is callable and cannot be serialized")
+    try:
+        import numpy as np
+
+        arr = np.asarray(value)
+    except Exception as exc:  # noqa: BLE001
+        raise TypeError(f"setting {key!r} of instance {inst!r} is not JSON-serializable") from exc
+    if arr.dtype.kind in "biuf":
+        return arr.tolist()
+    if arr.dtype.kind == "c":
+        raise TypeError(f"setting {key!r} of instance {inst!r} is complex; store real and imaginary parts")
+    raise TypeError(f"setting {key!r} of instance {inst!r} is not JSON-serializable")
 
 
 # Separator used to namespace an instance's port into a global terminal name.

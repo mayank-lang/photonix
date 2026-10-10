@@ -1,25 +1,76 @@
 """Extract a circuit netlist from a placed layout.
 
-Two instance ports are considered *connected* when their centers coincide within
-a tolerance. The result is always a :class:`photonix.circuit.Netlist`, which
+Two optical instance ports are *connected* when their centres coincide within
+a tolerance. The result is a :class:`photonix.circuit.Netlist`, which
 :func:`photonix.circuit.circuit_from_netlist` simulates directly -- closing the
 layout -> netlist -> simulation loop described in ``docs/ARCHITECTURE.md``.
+
+Rules
+-----
+* A referenced cell is a *leaf instance* if it declares a ``model`` or has no
+  references of its own; its model name is ``cell.model or cell.name`` and its
+  ``model_settings`` become the instance settings, so the circuit simulates the
+  drawn geometry.
+* A composite cell (references, no ``model``) is flattened recursively; its
+  instances are named ``"<ref>.<subref>"``.
+* Cells without optical ports (pads, logos, closed rings) are omitted.
+* Unconnected optical ports become external circuit ports. If one coincides
+  with a port of ``top`` itself, that port's name is used; otherwise the name
+  is ``"<instance>_<port>"``.
+* Coincident ports that do not face each other, or whose widths differ, are
+  reported with a warning: they usually mean a mis-placed device.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
-from .cell import Cell
+from .cell import OPTICAL, Cell, Port, Reference
 
 __all__ = ["extract_netlist"]
 
 
-def extract_netlist(top: Cell, *, tol: float = 1e-3):
-    """Build a netlist from the references placed in ``top``.
+def _is_leaf(cell: Cell) -> bool:
+    return cell.model is not None or not cell.references
 
-    Each reference becomes an instance (named ``ref.name`` or ``refN``) whose
-    model name is the referenced cell's ``name``. Coincident reference ports are
-    connected; unconnected ports become exposed circuit ports.
+
+def _compose(port: Port, chain: list[Reference]) -> Port:
+    for ref in reversed(chain):
+        port = port.moved(ref.origin[0], ref.origin[1], ref.rotation, ref.mirror)
+    return port
+
+
+def _collect(cell: Cell, chain: list[Reference], prefix: str, out: list, seen: set[str]) -> None:
+    for i, ref in enumerate(cell.references):
+        tag = ref.name or f"ref{i}"
+        name = f"{prefix}{tag}"
+        sub = ref.cell
+        if not _is_leaf(sub):
+            _collect(sub, [*chain, ref], f"{name}.", out, seen)
+            continue
+        optical = {pn: p for pn, p in sub.ports.items() if p.port_type == OPTICAL}
+        if not optical:
+            continue
+        if name in seen:
+            raise ValueError(f"Duplicate reference instance name {name!r}.")
+        seen.add(name)
+        ports = {pn: _compose(p, [*chain, ref]) for pn, p in optical.items()}
+        out.append((name, sub, ports))
+
+
+def extract_netlist(top: Cell, *, tol: float = 1e-3, warn: bool = True):
+    """Build a netlist from the references placed (recursively) in ``top``.
+
+    Parameters
+    ----------
+    top
+        The cell to extract.
+    tol
+        Coincidence tolerance for port centres, in µm.
+    warn
+        Emit a :class:`UserWarning` for coincident ports that are not
+        antiparallel or have different widths.
 
     Returns
     -------
@@ -31,42 +82,41 @@ def extract_netlist(top: Cell, *, tol: float = 1e-3):
     >>> from photonix.layout import Cell, components, extract_netlist
     >>> top = Cell("top")
     >>> _ = top.add_ref(components.straight(10.0), origin=(0, 0), name="a")
-    >>> _ = top.add_ref(components.straight(10.0), origin=(10, 0), name="b")
+    >>> _ = top.add_ref(components.straight(25.0), origin=(10, 0), name="b")
     >>> nl = extract_netlist(top)
-    >>> "a" in nl.instances
-    True
     >>> nl.connections                      # the two straights abut
     {('a', 'o2'): ('b', 'o1')}
+    >>> nl.settings["b"]                    # the drawn length reaches the model
+    {'length': 25.0}
     """
     if not np.isfinite(tol) or tol < 0:
         raise ValueError(f"tol must be non-negative and finite, got {tol!r}.")
 
-    # Collect each reference's transformed ports.
-    inst_ports: dict[str, dict[str, np.ndarray]] = {}
-    instances: dict[str, str] = {}
-    for i, ref in enumerate(top.references):
-        tag = ref.name or f"ref{i}"
-        if tag in instances:
-            raise ValueError(f"Duplicate reference instance name {tag!r}.")
-        instances[tag] = ref.cell.name
-        moved = {}
-        for pn, prt in ref.cell.ports.items():
-            mp = prt.moved(ref.origin[0], ref.origin[1], ref.rotation, ref.mirror)
-            moved[pn] = np.asarray(mp.center)
-        inst_ports[tag] = moved
+    leaves: list[tuple[str, Cell, dict[str, Port]]] = []
+    _collect(top, [], "", leaves, set())
 
-    # Pairwise coincidence -> connections.
-    terms = [(inst, pn, ctr) for inst, ps in inst_ports.items() for pn, ctr in ps.items()]
+    instances: dict[str, str] = {}
+    settings: dict[str, dict] = {}
+    terms: list[tuple[str, str, Port]] = []
+    for name, cell, leaf_ports in leaves:
+        instances[name] = cell.model or cell.name
+        if cell.model_settings:
+            settings[name] = dict(cell.model_settings)
+        terms.extend((name, pn, p) for pn, p in leaf_ports.items())
+
+    centres = np.array([p.center for _i, _p, p in terms], dtype=float).reshape(-1, 2)
     candidates: list[tuple[int, int]] = []
     incidence: dict[int, int] = {}
     for a in range(len(terms)):
-        ia, _pa, ca = terms[a]
-        for b in range(a + 1, len(terms)):
-            ib, _pb, cb = terms[b]
-            if ia != ib and np.linalg.norm(ca - cb) <= tol:
-                candidates.append((a, b))
-                incidence[a] = incidence.get(a, 0) + 1
-                incidence[b] = incidence.get(b, 0) + 1
+        if not len(centres):
+            break
+        close = np.nonzero(np.linalg.norm(centres[a + 1:] - centres[a], axis=1) <= tol)[0] + a + 1
+        for b in close:
+            if terms[a][0] == terms[b][0]:
+                continue
+            candidates.append((a, int(b)))
+            incidence[a] = incidence.get(a, 0) + 1
+            incidence[int(b)] = incidence.get(int(b), 0) + 1
     ambiguous = [terms[i][:2] for i, count in incidence.items() if count > 1]
     if ambiguous:
         raise ValueError(
@@ -77,21 +127,43 @@ def extract_netlist(top: Cell, *, tol: float = 1e-3):
     connections: dict[tuple[str, str], tuple[str, str]] = {}
     used: set[int] = set()
     for a, b in candidates:
-        ia, pa, ca = terms[a]
-        ib, pb, _cb = terms[b]
+        ia, pa, port_a = terms[a]
+        ib, pb, port_b = terms[b]
+        if warn:
+            mismatch = abs(((port_a.orientation - port_b.orientation) % 360.0) - 180.0)
+            if mismatch > 1e-3:
+                warnings.warn(
+                    f"Ports {ia}.{pa} and {ib}.{pb} coincide but are not antiparallel "
+                    f"({port_a.orientation:g} vs {port_b.orientation:g} deg).",
+                    stacklevel=2,
+                )
+            if abs(port_a.width - port_b.width) > 1e-6:
+                warnings.warn(
+                    f"Ports {ia}.{pa} and {ib}.{pb} coincide but have different widths "
+                    f"({port_a.width:g} vs {port_b.width:g} um).",
+                    stacklevel=2,
+                )
         connections[(ia, pa)] = (ib, pb)
-        used.add(a)
-        used.add(b)
+        used.update((a, b))
 
-    # Unconnected terminals -> exposed ports.
+    named = {pn: np.asarray(p.center, dtype=float) for pn, p in top.ports.items() if p.port_type == OPTICAL}
     ports: dict[str, tuple[str, str]] = {}
-    for idx, (inst, pn, _c) in enumerate(terms):
-        if idx not in used:
-            ports[f"{inst}_{pn}"] = (inst, pn)
+    for idx, (inst, pn, prt) in enumerate(terms):
+        if idx in used:
+            continue
+        external = f"{inst}_{pn}"
+        for top_name, ctr in named.items():
+            if top_name not in ports and np.linalg.norm(ctr - np.asarray(prt.center)) <= tol:
+                external = top_name
+                break
+        if external in ports:
+            raise ValueError(f"External port name {external!r} is not unique.")
+        ports[external] = (inst, pn)
 
     # Imported lazily (not at module scope) only to keep the layout -> circuit
     # dependency one-directional; photonix.circuit is pure-Python core and is
     # always importable, so there is no fallback path to take here.
     from photonix.circuit import Netlist
 
-    return Netlist(instances=instances, connections=connections, ports=ports, name=top.name)
+    return Netlist(instances=instances, connections=connections, ports=ports, settings=settings,
+                   name=top.name)

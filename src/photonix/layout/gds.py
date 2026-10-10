@@ -1,6 +1,7 @@
 """Optional GDSII and OASIS import/export via gdstk."""
 from __future__ import annotations
 
+import hashlib
 import importlib
 import os
 from collections.abc import Sequence
@@ -31,17 +32,54 @@ def _gdstk():
         ) from exc
 
 
-def _to_gdstk(cell: Cell, lib, built: dict):
+def _fingerprint(cell: Cell, memo: dict[int, str]) -> str:
+    """Content hash of a cell tree (geometry, ports, placements and name)."""
+    key = id(cell)
+    if key in memo:
+        return memo[key]
+    h = hashlib.sha1(cell.name.encode())
+    for pts, layer in cell.polygons:
+        h.update(repr(layer).encode())
+        h.update(np.round(np.asarray(pts, dtype=float), 6).tobytes())
+    for name in sorted(cell.ports):
+        prt = cell.ports[name]
+        h.update(repr((name, np.round(prt.center, 6).tolist(), round(prt.orientation, 6),
+                       round(prt.width, 6), prt.layer, prt.port_type)).encode())
+    for ref in cell.references:
+        h.update(_fingerprint(ref.cell, memo).encode())
+        h.update(repr((np.round(ref.origin, 6).tolist(), round(ref.rotation, 6), ref.mirror)).encode())
+    memo[key] = h.hexdigest()
+    return memo[key]
+
+
+def _to_gdstk(cell: Cell, lib, built: dict, names: dict, memo: dict):
+    """Convert ``cell`` once per distinct content, with unique structure names.
+
+    Identical cells (same name and content) are written once. Distinct cells
+    that share a name -- e.g. two ``straight`` cells of different lengths --
+    get KLayout-style ``name$1``, ``name$2`` suffixes instead of silently
+    collapsing onto one GDS structure.
+    """
     gdstk = _gdstk()
 
-    if cell.name in built:
-        return built[cell.name]
-    gcell = lib.new_cell(cell.name)
+    fp = _fingerprint(cell, memo)
+    if fp in built:
+        return built[fp]
+    used: set[str] = names.setdefault("", set())
+    count = names.get(cell.name, 0)
+    gds_name = cell.name if count == 0 else f"{cell.name}${count}"
+    while gds_name in used:
+        count += 1
+        gds_name = f"{cell.name}${count}"
+    names[cell.name] = count + 1
+    used.add(gds_name)
+    gcell = lib.new_cell(gds_name)
+    built[fp] = gcell
     for pts, (layer, dt) in cell.polygons:
         polygon_points = cast(Sequence[tuple[float, float] | complex], np.asarray(pts))
         gcell.add(gdstk.Polygon(polygon_points, layer=layer, datatype=dt))
     for ref in cell.references:
-        child = _to_gdstk(ref.cell, lib, built)
+        child = _to_gdstk(ref.cell, lib, built, names, memo)
         gref = gdstk.Reference(
             child, origin=ref.origin, rotation=np.deg2rad(ref.rotation), x_reflection=ref.mirror
         )
@@ -49,14 +87,16 @@ def _to_gdstk(cell: Cell, lib, built: dict):
     # store ports as labels for round-trip readability
     for prt in cell.ports.values():
         gcell.add(gdstk.Label(prt.name, prt.center, layer=prt.layer[0]))
-    built[cell.name] = gcell
     return gcell
 
 
 def write_gds(cell: Cell, path: str | os.PathLike[str]) -> str:
     """Write ``cell`` (and its reference tree) to a GDSII file.
 
-    Returns the path written.
+    Identical cells are written once; distinct cells that share a name (two
+    ``straight`` cells of different lengths, say) become ``name``, ``name$1``,
+    ... instead of collapsing onto one structure. Ports are written as text
+    labels on their layer. Returns the path written.
 
     Examples
     --------
@@ -70,7 +110,7 @@ def write_gds(cell: Cell, path: str | os.PathLike[str]) -> str:
     gdstk = _gdstk()
     target = os.fspath(path)
     lib = gdstk.Library()
-    _to_gdstk(cell, lib, {})
+    _to_gdstk(cell, lib, {}, {}, {})
     lib.write_gds(target)
     return target
 
@@ -117,7 +157,7 @@ def write_oas(
     gdstk = _gdstk()
     target = os.fspath(path)
     lib = gdstk.Library()
-    _to_gdstk(cell, lib, {})
+    _to_gdstk(cell, lib, {}, {}, {})
     lib.write_oas(target, compression_level=compression_level, validation=validation)
     return target
 
