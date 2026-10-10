@@ -67,6 +67,15 @@ def _concrete(values: Any) -> np.ndarray:
         ) from exc
 
 
+def _host(values: Any) -> np.ndarray:
+    """NumPy copy of ``values`` keeping its dtype (stop-gradient for JAX values)."""
+    if _is_jax_array(values):
+        import jax
+
+        return np.asarray(jax.lax.stop_gradient(values))
+    return np.asarray(values)
+
+
 def _is_jax_array(values: Any) -> bool:
     try:
         import jax
@@ -251,6 +260,17 @@ class Region:
         shift = np.array([0.0 if self.band else dx, dy])
         return Region(self.polygon + shift, self.material, order=self.order, tags=self.tags,
                       name=self.name, properties=self.properties, band=self.band)
+
+    def rotated(self, angle_deg: float, origin: tuple[float, float] = (0.0, 0.0)) -> Region:
+        """Copy rotated counter-clockwise by ``angle_deg`` about ``origin`` (not for bands)."""
+        if self.band:
+            raise ValueError("a laterally unbounded band cannot be rotated")
+        th = np.deg2rad(float(angle_deg))
+        rot = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
+        o = np.asarray(origin, dtype=float)
+        pts = (self.polygon - o) @ rot.T + o
+        return Region(pts, self.material, order=self.order, tags=self.tags, name=self.name,
+                      properties=self.properties)
 
     def has_tag(self, tag: str) -> bool:
         """``True`` if ``tag`` is one of the region's tags."""

@@ -605,12 +605,12 @@ class Coverage:
         dx, dy = self.grid.dx, self.grid.dy
         gx = xpm.tensordot(w, self.face_x[:, :, 1:] - self.face_x[:, :, :-1], axes=1) * dy[:, None]
         gy = xpm.tensordot(w, self.face_y[:, 1:, :] - self.face_y[:, :-1, :], axes=1) * dx[None, :]
-        mag = xpm.sqrt(gx * gx + gy * gy)
+        m2 = gx * gx + gy * gy
         wc = _concrete(w)
         span = float(np.max(wc) - np.min(wc)) if wc.size else 0.0
         floor = 1e-9 * max(span, 1e-300) * float(min(dx.min(), dy.min()))
-        ok = mag > floor
-        safe = xpm.where(ok, mag, 1.0)
+        ok = m2 > floor * floor
+        safe = xpm.sqrt(xpm.where(ok, m2, 1.0))  # double-where: finite gradients where masked
         nx_ = xpm.where(ok, gx / safe, 0.0)
         ny_ = xpm.where(ok, gy / safe, 0.0)
         return xpm.stack([nx_, ny_], axis=-1)

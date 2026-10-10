@@ -13,9 +13,16 @@ silently diverging.
 * :mod:`~photonix.xsection.raster` -- grids, the exact sweep rasterizer,
   :class:`Coverage`, :class:`XSection`.
 * :mod:`~photonix.xsection.properties` -- duck-typed material/property look-up.
+* :mod:`~photonix.xsection.library` -- strip, rib, coupler, heater-over-waveguide.
+* :mod:`~photonix.xsection.from_stack` -- adapter from :class:`photonix.pdk.LayerStack`.
+* :mod:`~photonix.xsection.modes` -- full-vector modes with staggered tensor
+  smoothing (second-order at interfaces) and a differentiable ``n_eff``.
 """
 from __future__ import annotations
 
+from .from_stack import from_layer_stack
+from .library import coupler, heater_over_waveguide, rib_waveguide, strip
+from .modes import XSectionModes, n_eff, n_eff_eps_tensor, solve_modes, yee_permittivity
 from .properties import resolve_index, resolve_property
 from .raster import Coverage, TensorGrid, XSection, graded_grid, uniform_grid
 from .shapes import BAND_HALF_WIDTH, MaterialSpec, Region, band, disk, polygon, polygon_area, rect, rib, trapezoid
@@ -38,4 +45,14 @@ __all__ = [
     "graded_grid",
     "Coverage",
     "XSection",
+    "strip",
+    "rib_waveguide",
+    "coupler",
+    "heater_over_waveguide",
+    "from_layer_stack",
+    "XSectionModes",
+    "yee_permittivity",
+    "solve_modes",
+    "n_eff",
+    "n_eff_eps_tensor",
 ]
