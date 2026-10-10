@@ -25,6 +25,7 @@ sensitivities of a system-level metric with respect to any physical parameter.
    analysis/ ◄──  resonances · filters · link budget · yield · time domain ·
                   sensitivity · FOSM · corners · worst-case distance
    synthesis/ ──► prototypes · exact CROW synthesis · coupling → gap
+   macromodel/ ◄─ vector fitting · delays · passivity · causality · state space
    optim/  ◄────  inverse design, adjoint, optimizers, objectives
                  └─────────────────────────────────────────────┘
                  ┌──────────────┐   ┌──────────────┐  ┌─────────┐
@@ -52,7 +53,9 @@ Data flows **up**: `em` computes effective indices and rigorous S-parameters
 that feed `components`, which emit scattering dictionaries that `circuit`
 combines, which `optim` differentiates and `analysis` characterizes;
 `synthesis` runs the other way, from a target response to component
-parameters that `circuit` then verifies. `layout`
+parameters that `circuit` then verifies; `macromodel` turns sampled responses
+(from `em`, measurements or Touchstone files) back into rational component
+models that `circuit` can use and time-domain tools can realize. `layout`
 produces GDS and extracts netlists that `circuit` can simulate. `viz` reads any
 of these. Everything below a module is a hard dependency; nothing imports from a
 layer above it. (One deliberate exception: `components.ring_double` imports the

@@ -215,8 +215,35 @@ class SParameterDataset:
         """Use the dataset directly as a Photonix component model."""
         return self.sdict_at(wl)
 
+    def to_rational(self, **kwargs: Any):
+        """Fit a causal, stable rational macromodel to this dataset.
+
+        Thin wrapper over :func:`photonix.macromodel.fit_dataset` (keywords as
+        :func:`photonix.macromodel.vector_fit`). Prefer the returned
+        :class:`~photonix.macromodel.RationalModel` to :meth:`__call__` when the
+        model is evaluated between samples: linear interpolation of a delayed
+        response loses amplitude between samples, a delayed rational model
+        does not.
+
+        Examples
+        --------
+        >>> import numpy as np, photonix as px
+        >>> wl = np.linspace(1.50, 1.60, 201)
+        >>> ds = px.SParameterDataset.from_sdict(wl, px.components.straight(wl=wl, length=200.0))
+        >>> ds.to_rational().n_poles          # a pure delay plus a constant
+        0
+        """
+        from photonix.macromodel import fit_dataset  # upper layer, imported at the call boundary
+
+        return fit_dataset(self, **kwargs)
+
     def interpolate(self, wavelengths, *, extrapolate: bool = False) -> SParameterDataset:
-        """Linearly interpolate real/imaginary parts onto a new wavelength grid."""
+        """Linearly interpolate real/imaginary parts onto a new wavelength grid.
+
+        Interpolating the real and imaginary parts of a response whose phase
+        turns quickly (a long delay) underestimates ``|S|`` between samples;
+        use :meth:`to_rational` for such data.
+        """
         target = np.asarray(wavelengths, dtype=float)
         if target.ndim != 1 or target.size == 0 or np.any(np.diff(target) <= 0):
             raise ValueError("target wavelengths must be non-empty and strictly increasing")
