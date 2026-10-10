@@ -271,6 +271,24 @@ def test_labels_round_trip(tmp_path):
         assert set(back.ports) == {"o1", "o2"}  # pin name labels were consumed, not left behind
 
 
+def test_label_markers_with_sidecar_leave_no_stray_labels(tmp_path):
+    cell = lc.mzi()
+    path = os.fspath(tmp_path / "lm.gds")
+    lay.write_layout(cell, path, port_markers="label")
+    back = lay.read_layout(path)
+    assert _fp(back) == _fp(lay.snap_to_grid(cell))
+    assert not back.labels and not any(r.cell.labels for r in back.references)
+
+
+def test_unserialisable_settings_need_no_sidecar(tmp_path):
+    cell = lc.straight(10.0)
+    cell.model_settings["neff"] = lambda wl: 2.4
+    path = os.fspath(tmp_path / "c.gds")
+    assert lay.write_layout(cell, path, sidecar=False).sidecar_path is None
+    with pytest.raises(TypeError, match="cannot be stored in the JSON sidecar"):
+        lay.write_layout(cell, path)
+
+
 def test_writing_without_sidecar_removes_a_stale_default_one(tmp_path):
     path = os.fspath(tmp_path / "w.gds")
     art = lay.write_layout(lc.straight(), path)

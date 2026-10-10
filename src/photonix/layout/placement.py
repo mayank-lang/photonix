@@ -444,18 +444,24 @@ class FloorplanIssue:
     bbox: BBox
 
 
-def _leaves(cell: Cell, origin=(0.0, 0.0), rotation=0.0, mirror=False, prefix=""):
-    """(path name, cell, origin, rotation, mirror) of every leaf below ``cell``, composed to its frame."""
+def _leaves(name: str, cell: Cell, origin, rotation: float, mirror: bool):
+    """(path name, cell, origin, rotation, mirror) of every leaf of a placed ``cell``.
+
+    A composite (references and no model) is descended into, as extraction
+    does; its own polygons, if any, are reported as a geometry-only leaf under
+    the composite's name.
+    """
+    origin = (float(origin[0]), float(origin[1]))
+    if not (cell.references and cell.model is None):
+        yield name, cell, origin, rotation % 360.0, mirror
+        return
+    if cell.polygons:
+        yield name, Cell(cell.name, polygons=list(cell.polygons)), origin, rotation % 360.0, mirror
     for i, ref in enumerate(cell.references):
-        name = f"{prefix}{ref.name or f'ref{i}'}"
-        # compose parent (origin, rotation, mirror) with the reference's transform
+        # compose the parent transform (mirror -> rotate -> translate) with the reference's
         o = _transform(np.array([ref.origin]), origin, rotation, mirror)[0]
         rot = (-ref.rotation if mirror else ref.rotation) + rotation
-        mir = mirror != ref.mirror
-        if ref.cell.references and ref.cell.model is None:
-            yield from _leaves(ref.cell, o, rot, mir, f"{name}.")
-        else:
-            yield name, ref.cell, (float(o[0]), float(o[1])), rot % 360.0, mir
+        yield from _leaves(f"{name}.{ref.name or f'ref{i}'}", ref.cell, o, rot, mirror != ref.mirror)
 
 
 def _overlap(a: BBox, b: BBox, tol: float) -> BBox | None:
@@ -538,12 +544,7 @@ def check_floorplan(
                                      (top.name,), own))
     facets = []
     for name, ref in blocks:
-        cell = ref.cell
-        if cell.references and cell.model is None:
-            leaves = list(_leaves(cell, ref.origin, ref.rotation, ref.mirror, f"{name}."))
-        else:
-            leaves = [(name, cell, ref.origin, ref.rotation, ref.mirror)]
-        for leaf_name, leaf, origin, rot, mir in leaves:
+        for leaf_name, leaf, origin, rot, mir in _leaves(name, ref.cell, ref.origin, ref.rotation, ref.mirror):
             if leaf.model in facet_set:
                 facets.append((leaf_name, leaf, origin, rot, mir))
                 continue

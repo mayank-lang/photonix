@@ -41,8 +41,8 @@ What a round trip preserves
      of the merged geometry on the port layer. The port faces along that
      edge's outward normal (sign from the polygon's shoelace orientation),
      its width is the length of the straight boundary run (collinear edges
-     merged) through the label, and its centre is the label projected onto
-     that run.
+     merged) through the label, and its centre is the label position
+     (projected onto the run if it lies off it by more than 1.5 grid steps).
 
 * **Circuit semantics** (``model``, ``model_settings``) only through the
   sidecar. Without it a leaf structure is marked
@@ -354,7 +354,11 @@ def _decode(value: Any) -> Any:
 
 
 def _settings_key(cell: Cell) -> str:
-    return json.dumps(_encode(cell.model_settings, f"cell {cell.name!r}"), sort_keys=True)
+    """Canonical text of ``model_settings`` for de-duplication (``repr`` for values JSON cannot hold)."""
+    try:
+        return json.dumps(_encode(cell.model_settings, f"cell {cell.name!r}"), sort_keys=True)
+    except TypeError:
+        return repr(sorted(cell.model_settings.items(), key=lambda kv: str(kv[0])))
 
 
 # --------------------------------------------------------------------------- #
@@ -811,8 +815,9 @@ def infer_ports(
     Notes
     -----
     Orientation is the outward normal of the edge, width the length of the
-    straight boundary run through the label, centre the label projected onto
-    it. See the module documentation for what this convention cannot recover.
+    straight boundary run through the label, centre the label's position
+    (projected onto the run unless it already lies on it). See the module
+    documentation for what this convention cannot recover.
 
     Examples
     --------
@@ -870,10 +875,13 @@ class _Reader:
             return None
         if len(_offsets(path)) != 1:
             return None
-        spine = np.asarray(path.spine(), dtype=float)
+        try:
+            spine = np.asarray(path.spine(), dtype=float)
+            widths = np.asarray(path.widths(), dtype=float).reshape(-1)
+        except (AttributeError, TypeError, RuntimeError):
+            return None
         if spine.shape != (2, 2) or np.array_equal(spine[0], spine[1]):
             return None
-        widths = np.asarray(path.widths(), dtype=float).reshape(-1)
         if widths.size == 0 or not np.allclose(widths, widths[0]) or widths[0] <= 0:
             return None
         spine = _norm(spine, self.grid)
@@ -1010,6 +1018,11 @@ class _Reader:
             for p in entry.get("ports", []):
                 cell.add_port(p["name"], tuple(p["center"]), p["orientation"], p["width"], tuple(p["layer"]),
                               p["port_type"])
+            # "label" markers: a TEXT with the port's name at its centre on its layer
+            cell.labels = [lb for lb in cell.labels
+                           if not (lb.text in cell.ports and lb.layer == cell.ports[lb.text].layer
+                                   and np.linalg.norm(np.subtract(lb.position, cell.ports[lb.text].center))
+                                   <= max(self.tol, 2 * g))]
         elif pins:
             ports = self._pin_ports(cell, pins, where)
             if conv in ("auto", "pinrec"):

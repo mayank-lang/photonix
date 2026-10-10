@@ -362,6 +362,15 @@ def test_check_floorplan_clean_and_keepout():
     assert all("." in i.instances[0] for i in lay.check_floorplan(nested, die))
 
 
+def test_check_floorplan_sees_polygons_drawn_in_composites():
+    die = die_frame((1000.0, 1000.0), dicing_lane=50.0, keepout=50.0)
+    block = lay.Cell("block")
+    block.add_ref(lc.straight(10.0), name="wg")
+    block.add_polygon([(0, 0), (5, 0), (5, 5), (0, 5)], (11, 0))         # metal drawn in the composite itself
+    issues = lay.check_floorplan(_chip(die, ("blk", block, (500.0, 97.0), 0.0)), die)
+    assert [(i.kind, i.instances) for i in issues] == [("keepout", ("blk",)), ("keepout", ("blk.wg",))]
+
+
 def test_check_floorplan_outside_and_overlap():
     die = die_frame((1000.0, 1000.0), dicing_lane=50.0, keepout=0.0)
     top = _chip(die, ("a", _rect(100.0, 100.0), (200.0, 200.0), 0.0), ("b", _rect(100.0, 100.0), (250.0, 250.0), 0.0),
