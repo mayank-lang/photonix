@@ -316,8 +316,10 @@ class Netlist:
     def to_dict(self) -> dict[str, Any]:
         """A JSON-compatible description of the netlist.
 
-        Settings must be numbers, strings, booleans, ``None`` or (nested)
-        lists/arrays of those; NumPy/JAX scalars and arrays are converted.
+        Settings must be finite numbers, strings, booleans, ``None`` or
+        (nested) lists/arrays/string-keyed mappings of those; NumPy/JAX scalars
+        and arrays are converted and tuples are stored as lists (so they reload
+        as lists). The output is strict JSON (no ``NaN``/``Infinity``).
         Callables (e.g. a custom ``neff(wl)``) cannot be serialized and raise
         ``TypeError`` naming the instance and setting.
 
@@ -368,7 +370,7 @@ class Netlist:
 
     def to_json(self, path: str | os.PathLike[str] | None = None, *, indent: int = 2) -> str:
         """Serialize to JSON text; also write it to ``path`` if given."""
-        text = json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+        text = json.dumps(self.to_dict(), indent=indent, sort_keys=False, allow_nan=False)
         if path is not None:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text + "\n")
@@ -393,12 +395,18 @@ class Netlist:
 
 def _json_value(value: Any, inst: str, key: str) -> Any:
     """Convert a setting to plain JSON types or raise a precise ``TypeError``."""
+    import math
+
+    if isinstance(value, float) and not math.isfinite(value):
+        raise TypeError(f"setting {key!r} of instance {inst!r} is not finite ({value}); strict JSON cannot hold it")
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, (list, tuple)):
         return [_json_value(v, inst, key) for v in value]
     if isinstance(value, Mapping):
-        return {str(k): _json_value(v, inst, key) for k, v in value.items()}
+        if any(not isinstance(k, str) for k in value):
+            raise TypeError(f"setting {key!r} of instance {inst!r} has non-string mapping keys; JSON requires strings")
+        return {k: _json_value(v, inst, key) for k, v in value.items()}
     if callable(value):
         raise TypeError(f"setting {key!r} of instance {inst!r} is callable and cannot be serialized")
     try:
@@ -408,6 +416,8 @@ def _json_value(value: Any, inst: str, key: str) -> Any:
     except Exception as exc:  # noqa: BLE001
         raise TypeError(f"setting {key!r} of instance {inst!r} is not JSON-serializable") from exc
     if arr.dtype.kind in "biuf":
+        if arr.dtype.kind == "f" and not np.all(np.isfinite(arr)):
+            raise TypeError(f"setting {key!r} of instance {inst!r} contains non-finite values")
         return arr.tolist()
     if arr.dtype.kind == "c":
         raise TypeError(f"setting {key!r} of instance {inst!r} is complex; store real and imaginary parts")

@@ -228,7 +228,22 @@ class MeshProgram:
 
     n: int
     mzis: tuple[tuple[int, float, float], ...]
-    output_phases: np.ndarray = field(repr=False)
+    output_phases: np.ndarray = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        phases = np.array(self.output_phases, dtype=float)
+        phases.setflags(write=False)
+        object.__setattr__(self, "output_phases", phases)
+        object.__setattr__(self, "mzis", tuple((int(m), float(t), float(p)) for m, t, p in self.mzis))
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, MeshProgram):
+            return NotImplemented
+        return (self.n == other.n and self.mzis == other.mzis
+                and tuple(self.output_phases) == tuple(other.output_phases))
+
+    def __hash__(self) -> int:
+        return hash((self.n, self.mzis, tuple(self.output_phases)))
 
     @property
     def n_mzis(self) -> int:
@@ -289,7 +304,9 @@ def clements_decompose(unitary, *, atol: float = 1e-9) -> MeshProgram:
                 r, col = n - 1 - j, i - j          # null U[r, col] with columns (col, col+1)
                 a, b = u[r, col], u[r, col + 1]
                 theta = 2.0 * math.atan2(abs(b), abs(a))
-                phi = float(np.angle(-b / a)) if abs(a) > 0 else 0.0
+                # angle(-b) - angle(a), not angle(-b/a): the quotient overflows
+                # for subnormal |a| although the angle is well defined.
+                phi = float(np.angle(-b) - np.angle(a)) if abs(a) > 0 else 0.0
                 u = u @ _embed(n, col, mzi_unit_matrix(theta, phi)).conj().T
                 right.append((col, theta, phi))
         else:
@@ -373,7 +390,7 @@ def mzi_mesh(
         attach(mode, (f"ext{k}", "o1"), (f"bs{k}b", "o4"))
         attach(mode + 1, (f"bs{k}a", "o2"), (f"bs{k}b", "o3"))
     for mode in range(n):
-        nl.add(f"out{mode}", "attenuated_phase", phase0=float(program.output_phases[mode]), loss_db=0.0)
+        nl.add(f"out{mode}", "attenuated_phase", phase0=float(program.output_phases[mode]), loss_db=phase_loss_db)
         attach(mode, (f"out{mode}", "o1"), (f"out{mode}", "o2"))
         first, last = starts[mode], current[mode]
         assert first is not None and last is not None

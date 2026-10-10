@@ -51,6 +51,10 @@ def wilson_interval(passed: int, total: int, confidence: float = 0.95) -> tuple[
     """
     if total <= 0:
         raise ValueError("total must be positive")
+    if not 0 <= passed <= total:
+        raise ValueError("passed must lie between 0 and total")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be in (0, 1), e.g. 0.95")
     from scipy.stats import norm
 
     z = float(norm.ppf(0.5 + confidence / 2.0))
@@ -174,11 +178,17 @@ def yield_analysis(
         raise ValueError("spec names must be unique")
     if (study is None) == (cases is None):
         raise ValueError("pass exactly one of study= or cases=")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be in (0, 1), e.g. 0.95")
     if study is not None:
         all_cases = tuple(study.cases(monte_carlo_samples=samples, seed=seed))
     else:
         assert cases is not None
         all_cases = tuple(cases)
+    names = [case.name for case in all_cases]
+    if len(set(names)) != len(names):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise ValueError(f"case names must be unique (results are keyed by name); duplicated: {dupes[:5]}")
     result = YieldResult(specs=specs, confidence=confidence,
                          values={s.name: {} for s in specs}, passed={s.name: {} for s in specs})
     mc: list[str] = []

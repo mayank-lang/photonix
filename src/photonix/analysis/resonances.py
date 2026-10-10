@@ -47,16 +47,30 @@ class Resonance:
     index: int
 
 
-def _crossing(x, y, i0, level, step):
-    """Linearly interpolated position where ``y`` crosses ``level`` walking from ``i0``."""
+def _crossing(x, y, i0, level, step, stop):
+    """Position where ``y`` crosses ``level`` walking from ``i0`` towards ``stop``.
+
+    The walk never passes ``stop`` (the neighbouring resonance), so the lines of
+    a doublet are not merged into one width.
+    """
     i = i0
     n = len(y)
-    while 0 <= i + step < n:
+    while 0 <= i + step < n and (i + step - stop) * step <= 0:
         a, b = y[i], y[i + step]
         if (a - level) * (b - level) <= 0 and a != b:
             return x[i] + (level - a) * (x[i + step] - x[i]) / (b - a)
         i += step
     return None
+
+
+def _extinction_db(baseline: float, extremum: float, kind: str) -> float:
+    """Contrast in dB: inf for a perfect zero, NaN for unphysical (negative) data."""
+    num, den = (baseline, extremum) if kind == "dip" else (extremum, baseline)
+    if num > 0 and den > 0:
+        return float(10.0 * np.log10(num / den))
+    if num > 0 and den == 0:
+        return float("inf")
+    return float("nan")
 
 
 def _refine(x, y, i):
@@ -126,15 +140,15 @@ def find_resonances(
         baseline = float(segment.max() if kind == "dip" else segment.min())
         extremum = float(y[i])
         level = 0.5 * (baseline + extremum)
-        left = _crossing(x, y, i, level, -1)
-        right = _crossing(x, y, i, level, +1)
-        if left is None or right is None:
-            continue
+        left = _crossing(x, y, i, level, -1, lo)
+        right = _crossing(x, y, i, level, +1, hi)
         centre = _refine(x, y, i)
-        fwhm = float(right - left)
-        ratio = baseline / extremum if kind == "dip" else extremum / baseline
-        er = 10.0 * np.log10(ratio) if ratio > 0 and np.isfinite(ratio) else np.inf
-        out.append(Resonance(centre, fwhm, centre / fwhm, float(er), extremum, baseline, int(order[i])))
+        # NaN width when the half level is not reached before the neighbouring
+        # line or the sweep edge (unresolved doublet, edge resonance): such a
+        # line needs a multi-Lorentzian fit, and a merged width would be wrong.
+        fwhm = float(right - left) if left is not None and right is not None else float("nan")
+        er = _extinction_db(baseline, extremum, kind)
+        out.append(Resonance(centre, fwhm, centre / fwhm, er, extremum, baseline, int(order[i])))
     return out
 
 
@@ -178,9 +192,7 @@ def fit_lorentzian(wavelength, transmission, *, kind: str = "dip", center=None, 
     base, amp, w0, width = (float(v) for v in popt)
     width = abs(width)
     extremum = base + sign * amp
-    ratio = base / extremum if kind == "dip" else extremum / base
-    er = 10.0 * np.log10(ratio) if ratio > 0 else np.inf
-    return Resonance(w0, width, w0 / width, float(er), extremum, base, g.index)
+    return Resonance(w0, width, w0 / width, _extinction_db(base, extremum, kind), extremum, base, g.index)
 
 
 def free_spectral_range(resonances: Sequence[Resonance]) -> float:
@@ -192,8 +204,8 @@ def free_spectral_range(resonances: Sequence[Resonance]) -> float:
 
 
 def finesse(resonances: Sequence[Resonance]) -> float:
-    """``FSR / mean(FWHM)``."""
-    return free_spectral_range(resonances) / float(np.mean([r.fwhm for r in resonances]))
+    """``FSR / mean(FWHM)`` (unresolved widths, reported as NaN, are skipped)."""
+    return free_spectral_range(resonances) / float(np.nanmean([r.fwhm for r in resonances]))
 
 
 @dataclass(frozen=True)

@@ -52,7 +52,7 @@ class LinkBudget:
     sensitivity_dbm: float | None = None
 
     def add(self, name: str, loss_db: float, *, count: int = 1, note: str = "") -> LinkBudget:
-        self.stages.append(LinkStage(name, float(loss_db), int(count), note))
+        self.stages.append(LinkStage(name, float(loss_db), count, note))
         return self
 
     def extend(self, stages: Sequence[LinkStage]) -> LinkBudget:
@@ -100,8 +100,10 @@ def stage_from_sparameters(name: str, sdict, path: tuple[str, str], *, worst_cas
                            count: int = 1) -> LinkStage:
     """A stage whose loss is ``-10 log10 |S[path]|^2`` of a simulated component.
 
-    Over a wavelength sweep the worst (``worst_case=True``) or mean loss is
-    used and recorded in the stage note.
+    Over a wavelength sweep the worst (``worst_case=True``) loss is used, or
+    the loss of the band-averaged *power* transmission (``worst_case=False``;
+    averaging dB values would weight a deep notch far too heavily). The choice
+    is recorded in the stage note.
 
     Examples
     --------
@@ -113,6 +115,9 @@ def stage_from_sparameters(name: str, sdict, path: tuple[str, str], *, worst_cas
     """
     p = np.asarray(np.abs(np.asarray(sdict[path])) ** 2, dtype=float)
     loss = -10.0 * np.log10(np.maximum(p, 1e-30))
-    value = float(loss.max() if worst_case else loss.mean())
-    note = f"{'worst' if worst_case else 'mean'} of {loss.size} sample(s)"
+    if worst_case:
+        value = float(loss.max())
+    else:
+        value = float(-10.0 * np.log10(max(float(p.mean()), 1e-30)))
+    note = f"{'worst' if worst_case else 'band-averaged power'} of {loss.size} sample(s)"
     return LinkStage(name, value, count, note)
