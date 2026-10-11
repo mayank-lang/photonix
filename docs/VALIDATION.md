@@ -155,6 +155,11 @@ The runtime snapshot is necessary but not sufficient. Also retain:
   data, pure delays, ring resonances and library spectra, the Hamiltonian
   passivity test against dense sweeps, the causality test against causal and
   time-advanced data, and state-space time stepping against FFT propagation.
+- `tests/test_timedomain.py` and `tests/test_timedomain_si.py` validate the
+  time-domain simulator against the frequency-domain solver and the transceiver
+  models against closed forms and linear-noise theory (table in
+  [`TIMEDOMAIN.md`](TIMEDOMAIN.md#validation-evidence)); statistical checks use
+  tolerances of about four standard errors.
 - `benchmarks/cases.py`, `benchmarks/references.json`, and
   `benchmarks/RESULTS.md` contain reproducible scalar benchmark cases and their
   stated tolerances.

@@ -196,6 +196,7 @@ capture without claiming foundry qualification.
 | `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |
 | `photonix.macromodel` | Rational macromodels of sampled S-parameters: vector fitting with delay extraction, passivity (Hamiltonian) and causality (Kramers-Kronig) tests, state-space/time-domain export -- see [`docs/MACROMODEL.md`](docs/MACROMODEL.md) |
 | `photonix.xsection` | Polygonal multi-material cross-sections (sidewall angles, gaps, offsets, heaters) rasterized exactly into permittivity (tensor smoothing), thermal/electrical coefficients and masks; full-vector modes with a differentiable `n_eff` -- see [`docs/xsection.md`](docs/xsection.md) |
+| `photonix.timedomain` | Sample-mode (complex-envelope) circuit simulation of any netlist with feedback loops and modulators (`lax.scan`, differentiable); PRBS, lasers (linewidth, RIN, rate equations), MZM/EAM/ring modulators, photodiodes and filters with noise, eye diagrams, Q/BER, sensitivity, masks -- see [`docs/TIMEDOMAIN.md`](docs/TIMEDOMAIN.md) |
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |

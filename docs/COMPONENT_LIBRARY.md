@@ -79,3 +79,23 @@ and also runs under the NumPy fallback backend.
 | `crow` | Series-coupled rings between two buses, drop port wired by ring-count parity | 2 (one ring = `add_drop_ring`; lossless energy conservation) |
 | `sagnac_mirror` | Loop mirror, \|S11\|² = 4κ(1−κ) | 2 |
 | `clements_decompose` + `mzi_mesh` | Rectangular MZI mesh programmed for any unitary; component-level simulation with splitter/phase-shifter imperfections | 2 (reconstructs Haar-random unitaries to 1e-10; exact for identity/permutations) |
+
+## Time-domain transceiver models (`photonix.timedomain`)
+
+These act on sampled waveforms (`Waveform`: optical envelopes in sqrt(W),
+electrical signals in V or A) rather than returning an `SDict`; any `SDict`
+model above can be placed in a time-domain circuit with
+`TimeDomainCircuit.from_netlist`. Full description, validation table and limits:
+[`TIMEDOMAIN.md`](TIMEDOMAIN.md).
+
+| Model | Physics | Evidence | Limits |
+|---|---|---|---|
+| `prbs`, `symbols_to_levels`, `drive_waveform` | ITU-T O.150 LFSRs (PRBS7–31); NRZ / Gray PAM4; closed-form Gaussian or raised-cosine edges with 20–80 % rise time and Gaussian jitter | 2 (period, balance, run lengths, autocorrelation; rise time to 0.2 %) | Random jitter only (no DCD/PJ) |
+| `cw_laser` | Wiener phase noise (Lorentzian linewidth) and white RIN | 2 (FWHM within 5 %, RIN PSD within 0.2 dB) | No RIN spectrum shape; use the rate equations |
+| `LaserParams`, `rate_equation_laser` | Single-mode rate equations with gain compression, spontaneous emission, Henry phase coupling and Langevin forces (Coldren; Agrawal; Henry 1982); `noise_spectra` gives the linearized RIN and FM noise | 2–3 (threshold, slope, f_R, small-signal response; FM noise/RIN against linear-noise theory, Henry factor) | Illustrative parameters, not a calibrated device; single mode |
+| `mzm` + `push_pull` | Dual-drive `cos^2(pi V / 2 V_pi)` with arm imbalance (finite ER) and chirp | 2 (1e-12) | Quasi-static unless an electrode or drive filter is given |
+| `TravelingWaveElectrode` | Velocity mismatch, causal skin-effect loss (`(1 + j) alpha(f)`), load/source reflections | 2 (`sin u / u` limit; direct quadrature to 1e-6) | Frequency-independent `Z0` |
+| `eam` | `exp(-(1 + j alpha_H) kappa(V))` absorption with Henry chirp | 2 | Absorption curve is an input |
+| `RingModulator`, `ring_modulator` | Temporal CMT with photon-lifetime dynamics, `pn_phase_shifter` junction physics, RC drive | 2–3 (steady state vs `all_pass_ring`; Sacher–Poon small-signal within 1 %) | High-Q limit; carrier should be at the laser |
+| `photodiode`, `tia`, `AnalogFilter` | `I = R \|E\|^2 + I_d` with shot / thermal / RIN noise filtered exactly in band; RC, Butterworth, Bessel-Thomson filters, exact FOH/ZOH | 2 (`2qIB`, `4kTB/R`, `i_n^2 B` within 4 sigma; rise time `0.35/f3dB`) | Gaussian white noise; no APD gain |
+| `eye_diagram`, `mask_test`, `receiver_sensitivity` | Q-optimal sampling, `Q = (mu1 - mu0)/(sigma1 + sigma0)`, `BER = erfc(Q/sqrt 2)/2` (Gray PAM4 per eye), hexagonal mask, sensitivity by root finding | 2 (sensitivity `Q sigma_T / R` within 0.1 dB; counted BER within Wilson CI) | Gaussian BER; no TDECQ

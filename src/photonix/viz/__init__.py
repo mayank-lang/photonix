@@ -6,8 +6,9 @@ composes into larger figures and runs headless.
 from __future__ import annotations
 
 from .circuit import plot_netlist
+from .eye import plot_eye
 from .layout import plot_cell
 from .modes import plot_mode
 from .spectrum import plot_phase, plot_spectrum
 
-__all__ = ["plot_spectrum", "plot_phase", "plot_mode", "plot_cell", "plot_netlist"]
+__all__ = ["plot_spectrum", "plot_phase", "plot_mode", "plot_cell", "plot_netlist", "plot_eye"]

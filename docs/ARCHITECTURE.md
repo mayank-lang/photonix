@@ -26,6 +26,8 @@ sensitivities of a system-level metric with respect to any physical parameter.
                   sensitivity · FOSM · corners · worst-case distance
    synthesis/ ──► prototypes · exact CROW synthesis · coupling → gap
    macromodel/ ◄─ vector fitting · delays · passivity · causality · state space
+   timedomain/ ◄─ sample-mode circuits · lasers · modulators · receivers ·
+                  eye / Q / BER · sensitivity
    optim/  ◄────  inverse design, adjoint, optimizers, objectives
                  └─────────────────────────────────────────────┘
                  ┌──────────────┐   ┌──────────────┐  ┌─────────┐
@@ -111,6 +113,24 @@ declaration, not by name, because `wl0` is also a grating coupler's peak and an
 AWG's channel centre), and `pdk.simulate(cell)` runs extraction plus simulation
 with that registry. The GDS writer gives distinct cells that share a name unique
 structure names (`straight`, `straight$1`, ...) and writes identical cells once.
+
+### Time domain (`timedomain/`)
+
+`photonix.timedomain` reuses the same netlists and models in a fixed-step,
+complex-envelope simulation ([`TIMEDOMAIN.md`](TIMEDOMAIN.md)).
+`TimeDomainCircuit.from_netlist` converts every instance with `to_td`:
+waveguides become fractional-delay lines with their exact carrier transmission
+and group delay, frequency-flat devices memoryless matrices, rings their
+physical couplers and delays, and any other model a strictly passive FIR fitted
+to its sampled response. Each element splits into an instantaneous matrix and
+strictly causal channels; the zero-delay algebraic loop is eliminated once, and
+the stepping runs in `jax.lax.scan` (differentiable, with traced `overrides`).
+Time-varying elements (modulators) take electrical control waveforms. The
+transceiver library around it — PRBS, lasers, modulators, photodiodes, filters,
+eye/BER metrics — works on `Waveform` objects and feeds
+`analysis.LinkBudget(sensitivity_dbm=...)`. `timedomain` depends on
+`components` and `circuit` (for conversion and the reference
+`discrete_response`), never the other way round.
 
 ## The central abstraction: `SDict`
 
