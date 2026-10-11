@@ -64,9 +64,9 @@ dependency), so it slots into CI and tape-out handoff pipelines:
 ```bash
 photonix models                                   # registered compact models and their defaults
 photonix mode --width 0.5 --thickness 0.22        # full-vector FDE n_eff of a strip waveguide
-photonix sweep mzi --wl 1.5:1.6:201 -p delta_length=20 -o mzi.s4p
+photonix sweep mzi --wl 1.5:1.6:201 -p delta_length=20 -o mzi.s3p
 photonix sparams check vendor_device.s2p          # passivity / reciprocity gate (exit 1 on violation)
-photonix sparams convert mzi.s4p mzi.npz
+photonix sparams convert mzi.s3p mzi.npz
 photonix gds inspect chip.gds                     # cells, layers, bounding box (needs gdstk)
 photonix gds precheck chip.gds --pdk demo         # DRC pre-check against PDK rules
 photonix netlist simulate circuit.json --wl 1.55  # Netlist JSON -> spectrum

@@ -1,29 +1,27 @@
-"""Command-line entry point for Photonix diagnostics."""
+"""``python -m photonix`` and the ``photonix`` console script.
+
+Both delegate to :func:`photonix.cli.main`; see :mod:`photonix.cli` for the
+commands, the JSON schemas and the exit codes.
+"""
 from __future__ import annotations
 
-import argparse
 from collections.abc import Sequence
 
-from . import __version__
-from .diagnostics import show_config
+from .cli import main as _cli_main
 
-
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="photonix",
-        description="Inspect the Photonix numerical runtime and optional integrations.",
-    )
-    parser.add_argument("command", nargs="?", choices=("info",), default="info")
-    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
-    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    return parser
+__all__ = ["main"]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the Photonix command-line interface."""
-    args = _parser().parse_args(argv)
-    show_config(json_output=args.json)
-    return 0
+    """Run the ``photonix`` command line and return its exit code.
+
+    Examples
+    --------
+    >>> from photonix.__main__ import main
+    >>> main(["gds", "inspect", "no-such-file.gds"]) in (2, 3)   # 3 when gdstk is not installed
+    True
+    """
+    return _cli_main(argv)
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised through ``python -m``

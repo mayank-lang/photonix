@@ -26,8 +26,9 @@ each subpackage. Subpackages (:mod:`photonix.core`, :mod:`photonix.circuit`,
 :mod:`photonix.components`, :mod:`photonix.modes`, :mod:`photonix.layout`,
 :mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`,
 :mod:`photonix.multiphysics`, :mod:`photonix.interop`,
-:mod:`photonix.analysis`, :mod:`photonix.synthesis`, :mod:`photonix.diagnostics`) can also be imported
-directly.
+:mod:`photonix.analysis`, :mod:`photonix.synthesis`, :mod:`photonix.diagnostics`, :mod:`photonix.cli`)
+can also be imported directly. The ``photonix`` command line is documented in
+:mod:`photonix.cli`.
 """
 from __future__ import annotations
 
@@ -93,6 +94,7 @@ __all__ = [
 from . import (  # noqa: E402
     analysis,
     circuit,
+    cli,
     components,
     em,
     interop,
@@ -107,7 +109,7 @@ from . import (  # noqa: E402
 
 __all__ += [
     "components", "circuit", "modes", "em", "interop", "layout", "pdk", "viz", "optim", "multiphysics",
-    "analysis", "synthesis",
+    "analysis", "synthesis", "cli",
 ]
 
 # Kept for compatibility with 0.1.x callers. Optional *features* now raise their
