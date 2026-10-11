@@ -1,0 +1,128 @@
+name: Release
+
+# Tag-driven: pushing vX.Y.Z publishes to PyPI, vX.Y.Z(a|b|rc)N to TestPyPI.
+# Publishing uses PyPI Trusted Publishing (OIDC); no token is stored in the
+# repository or its secrets. See RELEASING.md for the one-time setup.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.meta.outputs.target }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Tag, version, changelog and citation agree
+        id: meta
+        run: |
+          python tools/release.py check --tag "$GITHUB_REF_NAME"
+          echo "target=$(python tools/release.py target --tag "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+          echo "version=$(python tools/release.py version)" >> "$GITHUB_OUTPUT"
+          python tools/release.py notes --tag "$GITHUB_REF_NAME" > release-notes.md
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install "build>=1.2" "twine>=6.1" "check-wheel-contents>=0.6"
+          python -m build
+          python -m twine check --strict dist/*
+          check-wheel-contents dist/*.whl
+          python - <<'EOF'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          assert "photonix/py.typed" in names, "py.typed missing from the wheel"
+          bad = [n for n in names if n.startswith(("tests/", "benchmarks/", "examples/", "docs/"))]
+          assert not bad, f"non-package files in the wheel: {bad[:5]}"
+          EOF
+      - name: Smoke-test the wheel in a clean virtual environment
+        run: |
+          python -m venv /tmp/wheel-test
+          /tmp/wheel-test/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/wheel-test/bin/photonix info --json
+          /tmp/wheel-test/bin/photonix validate --quick
+          test "$(/tmp/wheel-test/bin/python -c 'import photonix; print(photonix.__version__)')" = "${{ steps.meta.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: error
+
+  publish-testpypi:
+    needs: build
+    if: needs.build.outputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/photonix/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+
+  publish-pypi:
+    needs: build
+    if: needs.build.outputs.target == 'pypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/photonix/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
+
+  github-release:
+    needs: [build, publish-testpypi, publish-pypi]
+    # Exactly one publish job runs; the other is skipped.
+    if: >-
+      always() && needs.build.result == 'success' &&
+      (needs.publish-pypi.result == 'success' || needs.publish-testpypi.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+      - name: Create the GitHub Release from the changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TARGET: ${{ needs.build.outputs.target }}
+        run: |
+          flags=()
+          if [ "$TARGET" = "testpypi" ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "photonix $VERSION" \
+            --notes-file release-notes.md \
+            --verify-tag "${flags[@]}"

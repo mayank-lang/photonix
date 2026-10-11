@@ -2,72 +2,176 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Every branch, so feature branches pushed without a PR are tested too.
+    # Release tags are handled by release.yml.
+    branches: ["**"]
+    tags-ignore: ["v*"]
   pull_request:
-    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # Weekly canary: catches breakage from new JAX/SciPy/NumPy releases.
+    - cron: "23 4 * * 1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONUNBUFFERED: "1"
+  MPLBACKEND: Agg
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Lint (ruff)
-        run: ruff check src tests benchmarks examples
-
-      - name: Type check (mypy)
-        if: matrix.python-version == '3.12'
-        run: python -m mypy src/photonix
-
-      - name: Test (pytest)
-        run: pytest tests -q
-
-      # Docstring examples are part of the public API contract. They were not
-      # executed before, and five of them had silently rotted.
-      - name: Doctests
-        run: pytest --doctest-modules src/photonix -q --ignore=src/photonix/em/meep
-
-      # The examples are the package's front door; a broken one is a broken
-      # release. Run them headless and fail on any traceback.
-      - name: Examples
-        env:
-          MPLBACKEND: Agg
-        run: |
-          for f in examples/*.py; do
-            case "$(basename "$f")" in _*) continue;; esac
-            echo "--- $f"
-            python "$f"
-          done
-
-      - name: Benchmark smoke (photonix-only, no external solvers)
-        run: python benchmarks/run.py
-
-  lint-only-fallback:
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-      - run: pip install ruff
-      - run: ruff check src tests
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install linters
+        run: python -m pip install "ruff>=0.4" "mypy>=1.8"
+      - name: Lint (ruff)
+        run: ruff check src tests benchmarks examples tools docs/conf.py
+      - name: Type check (mypy)
+        run: python -m mypy src/photonix
+      - name: Lint workflows (actionlint)
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+          ./actionlint -color
+
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    # macOS/Windows are newly added and not yet confirmed green; they report
+    # but do not block until their first clean run (then drop `experimental`).
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        experimental: [false]
+        include:
+          - os: macos-latest
+            python-version: "3.12"
+            experimental: true
+          - os: windows-latest
+            python-version: "3.12"
+            experimental: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Test (pytest)
+        run: python -m pytest tests
+      # Docstring examples are part of the public API contract.
+      - name: Doctests
+        if: runner.os == 'Linux'
+        run: python -m pytest --doctest-modules src/photonix -q --ignore=src/photonix/em/meep
+      - name: CLI self-checks
+        run: photonix validate --quick
+
+  numpy-backend:
+    # The NumPy fallback the README promises: no JAX at all, full suite + doctests.
+    runs-on: ubuntu-latest
+    env:
+      PHOTONIX_BACKEND: numpy
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install without JAX
+        run: |
+          python -m pip install -e ".[test,layout,viz,rf,multiphysics]"
+          python -m pip uninstall -y jax jaxlib || true
+          python -c "import photonix as px, importlib.util as u; assert not px.HAS_JAX and u.find_spec('jax') is None; print(px.backend_name())"
+      - name: Test (pytest)
+        run: python -m pytest tests -rs
+      - name: Doctests
+        run: python -m pytest --doctest-modules src/photonix -q --ignore=src/photonix/em/meep
+
+  minimal:
+    # Proves the optional-dependency boundary: only numpy, scipy and pytest.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the minimal core
+        run: |
+          python -m pip install -e ".[test]"
+          python - <<'EOF'
+          import importlib.util as u
+          extra = [m for m in ("jax", "gdstk", "matplotlib", "meshio", "skrf", "networkx") if u.find_spec(m)]
+          assert not extra, f"optional packages leaked into the minimal install: {extra}"
+          EOF
+      - name: Test (pytest, optional features skip)
+        run: python -m pytest tests -rs
+      - name: CLI on a minimal install
+        run: |
+          photonix info --json
+          photonix validate --quick
+          # Without gdstk the GDS commands must exit 3 (missing optional dependency).
+          touch empty.gds
+          rc=0; photonix gds inspect empty.gds || rc=$?
+          test "$rc" -eq 3
+
+  oldest-deps:
+    # The declared floors in pyproject.toml must actually work.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install the oldest supported versions
+        run: |
+          python -m pip install "numpy==1.24.*" "scipy==1.10.*" "jax==0.4.20" "jaxlib==0.4.20" "pytest==7.4.*"
+          python -m pip install --no-deps -e .
+          python -c "import numpy, scipy, jax; print(numpy.__version__, scipy.__version__, jax.__version__)"
+      - name: Test (pytest)
+        run: python -m pytest tests -rs
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Test with coverage (gate from [tool.coverage.report] fail_under)
+        run: |
+          python -m pytest tests --cov=photonix --cov-branch --cov-report=xml --cov-report=term
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
 
   package:
     runs-on: ubuntu-latest
@@ -75,15 +179,50 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Build and inspect distributions
         run: |
-          python -m pip install --upgrade pip
           python -m pip install ".[release]"
           python -m build
-          python -m twine check dist/*
+          python -m twine check --strict dist/*
+          check-wheel-contents dist/*.whl
+          python - <<'EOF'
+          import glob, zipfile
+          names = zipfile.ZipFile(glob.glob("dist/*.whl")[0]).namelist()
+          assert "photonix/py.typed" in names, "py.typed missing from the wheel"
+          bad = [n for n in names if n.startswith(("tests/", "benchmarks/", "examples/", "docs/"))]
+          assert not bad, f"non-package files in the wheel: {bad[:5]}"
+          print(f"wheel OK: {len(names)} files")
+          EOF
       - name: Test the built wheel in isolation
         run: |
           python -m venv wheel-test
           wheel-test/bin/python -m pip install dist/*.whl
-          wheel-test/bin/python -m photonix info --json
+          cd /tmp
+          "$GITHUB_WORKSPACE"/wheel-test/bin/photonix info --json
+          "$GITHUB_WORKSPACE"/wheel-test/bin/photonix validate --quick
+          "$GITHUB_WORKSPACE"/wheel-test/bin/python -m photonix --version
+
+  examples:
+    # The examples are the package's front door; a broken one is a broken release.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Examples (headless)
+        run: |
+          for f in examples/*.py; do
+            case "$(basename "$f")" in _*) continue;; esac
+            echo "--- $f"
+            python "$f"
+          done
+      - name: Benchmark smoke (photonix-only, no external solvers)
+        run: python benchmarks/run.py

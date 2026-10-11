@@ -1,0 +1,28 @@
+{
+  "title": "photonix: accuracy-first, differentiable photonic integrated circuit design",
+  "upload_type": "software",
+  "description": "photonix is an accuracy-first Python toolkit for photonic integrated circuit design: differentiable compact models, S-parameter circuit simulation, finite-difference eigenmode, EME and FDFD electromagnetic solvers, layout and GDSII exchange, process-variation and yield analysis, on a JAX backend with a NumPy fallback.",
+  "creators": [
+    {"name": "photonix contributors"}
+  ],
+  "license": "MIT",
+  "access_right": "open",
+  "keywords": [
+    "photonics",
+    "silicon photonics",
+    "photonic integrated circuits",
+    "S-parameters",
+    "circuit simulation",
+    "mode solver",
+    "inverse design",
+    "differentiable programming",
+    "JAX"
+  ],
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/mayank-lang/photonix",
+      "relation": "isSupplementTo",
+      "scheme": "url"
+    }
+  ]
+}

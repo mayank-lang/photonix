@@ -1,0 +1,39 @@
+# Install once with `pre-commit install`; run everything with `pre-commit run --all-files`.
+# pre-commit.ci (https://pre-commit.ci) can run the same hooks on pull requests.
+ci:
+  autoupdate_schedule: monthly
+  skip: [mypy]  # needs the project environment; CI's lint job runs it
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.8
+    hooks:
+      # Lint only. The code base is not `ruff format`-ed, so the formatter hook
+      # is deliberately not enabled (it would rewrite most files).
+      - id: ruff
+        args: [--exit-non-zero-on-fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files  # guards against stray GDS/PNG/NPZ dumps
+        args: [--maxkb=600]
+      - id: end-of-file-fixer
+        # TODO: drop once the trailing blank line in these two files is removed.
+        exclude: ^src/photonix/(components/active|layout/components)\.py$
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (src/photonix)
+        entry: python -m mypy src/photonix
+        language: system
+        types: [python]
+        pass_filenames: false

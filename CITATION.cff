@@ -1,0 +1,33 @@
+# Citation File Format 1.2.0 -- https://citation-file-format.github.io/
+# Keep "version" equal to photonix.__version__ (tests/test_metadata.py checks it)
+# and set "date-released" when the release is tagged (see RELEASING.md).
+cff-version: 1.2.0
+message: >-
+  If you use photonix in published work, please cite it using the metadata
+  below, together with the specific version (and, once available, the Zenodo
+  DOI of that version) you used.
+type: software
+title: "photonix: accuracy-first, differentiable photonic integrated circuit design"
+abstract: >-
+  photonix is an accuracy-first Python toolkit for photonic integrated circuit
+  design. It connects differentiable compact models, S-parameter circuit
+  simulation, finite-difference eigenmode, EME and FDFD electromagnetic
+  solvers, layout and GDSII exchange, process-variation and yield analysis, and
+  external verification hand-offs through one port and data model, on a JAX
+  backend with a NumPy fallback.
+authors:
+  - name: "photonix contributors"
+version: 0.2.0
+license: MIT
+repository-code: "https://github.com/mayank-lang/photonix"
+url: "https://github.com/mayank-lang/photonix"
+keywords:
+  - photonics
+  - silicon photonics
+  - photonic integrated circuits
+  - S-parameters
+  - circuit simulation
+  - mode solver
+  - inverse design
+  - differentiable programming
+  - JAX

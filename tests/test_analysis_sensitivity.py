@@ -46,7 +46,10 @@ def test_fosm_exact_for_linear_and_second_order_for_quadratic():
     assert m.std == pytest.approx(math.sqrt(a @ cov @ a), rel=1e-10)
     q = an.fosm(lambda p: p["x"] ** 2 + 3 * p["x"] * p["y"], nominal, cov, second_order=True)
     hess = np.array([[2.0, 3.0, 0.0], [3.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
-    assert q.mean_shift_2nd == pytest.approx(0.5 * np.trace(hess @ cov), rel=1e-6)
+    # JAX gives the exact Hessian; the NumPy backend falls back to a central
+    # second difference (step 1e-5), whose round-off is ~eps/h^2 ~ 2e-6.
+    rel = 1e-6 if px.HAS_JAX else 1e-4
+    assert q.mean_shift_2nd == pytest.approx(0.5 * np.trace(hess @ cov), rel=rel)
 
 
 def test_fosm_accepts_monte_carlo_spec():

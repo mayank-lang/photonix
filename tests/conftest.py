@@ -1,15 +1,40 @@
-"""Shared pytest fixtures and markers for the photonix test suite."""
+"""Shared pytest fixtures and markers for the photonix test suite.
+
+The suite must collect and pass (with skips) on a minimal NumPy/SciPy + pytest
+installation, which CI checks in its ``minimal`` job. Optional dependencies are
+therefore never imported at module level here or in test modules: use the
+``requires_*`` markers below or ``pytest.importorskip`` inside a test.
+"""
 from __future__ import annotations
 
-import matplotlib
+import importlib.util
+
 import numpy as np
 import pytest
 
-matplotlib.use("Agg")  # headless plotting for viz tests
+try:  # headless plotting for the viz tests, when matplotlib is installed
+    import matplotlib
+except ImportError:  # pragma: no cover - exercised by the minimal-install CI job
+    matplotlib = None
+else:
+    matplotlib.use("Agg")
 
 import photonix as px  # noqa: E402
 
+
+def _installed(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+HAS_GDSTK = _installed("gdstk")
+HAS_MATPLOTLIB = matplotlib is not None
+
 requires_jax = pytest.mark.skipif(not px.HAS_JAX, reason="requires the JAX backend")
+requires_gdstk = pytest.mark.skipif(not HAS_GDSTK, reason="requires the optional gdstk layout extra")
+requires_matplotlib = pytest.mark.skipif(not HAS_MATPLOTLIB, reason="requires the optional matplotlib extra")
 
 
 @pytest.fixture

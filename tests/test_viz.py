@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import numpy as np
+from conftest import requires_matplotlib
 
 import photonix as px
+
+pytestmark = requires_matplotlib
 
 
 def test_plot_spectrum_returns_axes(wl):

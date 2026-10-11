@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-from importlib import metadata
 from pathlib import Path
 
 import pytest
@@ -83,7 +82,9 @@ def test_cli_emits_machine_readable_runtime_info(capsys):
     assert payload["backend"] == px.backend_name()
 
 
-def test_distribution_is_marked_typed_and_version_is_synchronized():
+def test_distribution_is_marked_typed():
     package_dir = Path(px.__file__).parent
     assert (package_dir / "py.typed").is_file()
-    assert metadata.version("photonix") == px.__version__
+    # The installed-metadata version check lives in tests/test_metadata.py, which
+    # skips (rather than fails) when the importable package is not the installed
+    # distribution, e.g. a PYTHONPATH checkout or a minimal no-install CI job.

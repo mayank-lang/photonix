@@ -5,6 +5,7 @@ import math
 
 import numpy as np
 import pytest
+from conftest import requires_gdstk
 
 import photonix as px
 import photonix.layout as lay
@@ -100,11 +101,16 @@ def test_add_model_override_reaches_simulation():
     assert float(px.power(s[("m_o1", "m_o2")])) == pytest.approx(0.5 * 10 ** -0.05)
 
 
-def test_pdk_route_and_drc_precheck():
+def test_pdk_route_uses_the_cross_section():
     pdk = px.pdk.demo_pdk()
     r = pdk.route(lay.Port("a", (0, 0), 0), lay.Port("b", (40, 30), 180))
     assert r.polygons[0][1] == (1, 0)
     assert r.model_settings["n_bends"] == 2
+
+
+@requires_gdstk  # the DRC pre-check merges polygons with gdstk
+def test_pdk_drc_precheck():
+    pdk = px.pdk.demo_pdk()
     assert pdk.drc_precheck(pdk.get_layout("ring_single", gap=0.2)).clean
     report = pdk.drc_precheck(pdk.get_layout("ring_single", gap=0.1))
     assert report.summary() == {("min_space", (1, 0)): 1}
