@@ -30,8 +30,9 @@ ROOT = DOCS.parent
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(DOCS / "_ext"))
 
-import photonix  # noqa: E402
 import photonix_apigen  # noqa: E402
+
+import photonix  # noqa: E402
 
 REPOSITORY = "https://github.com/mayank-lang/photonix"
 
@@ -169,8 +170,59 @@ def _include_read(app, relative_path, parent_docname: str, content: list[str]) -
 # --------------------------------------------------------------------------- #
 # API pages and docstring hygiene
 # --------------------------------------------------------------------------- #
+# Fully qualified name each documented photonix object is described under,
+# keyed by id(object). Filled when the pages are written.
+_DOCUMENTED: dict[int, str] = {}
+_PRIMITIVE = (int, float, complex, str, bytes, bool, type(None))
+
+
 def _write_api_pages(app) -> None:
-    photonix_apigen.write_pages(DOCS / "api" / "generated")
+    pages = photonix_apigen.write_pages(DOCS / "api" / "generated")
+    _DOCUMENTED.clear()
+    for page in pages.values():
+        for entry in page.documented:
+            obj = _resolve_name(entry.target)
+            if obj is not None and not isinstance(obj, _PRIMITIVE):
+                _DOCUMENTED.setdefault(id(obj), entry.target)
+
+
+def _resolve_name(name: str) -> object | None:
+    """The object a dotted photonix name refers to, or None."""
+    parts = name.split(".")
+    for split in range(len(parts), 0, -1):
+        modname = ".".join(parts[:split])
+        if not modname.startswith("photonix"):
+            return None
+        try:
+            obj: object = importlib.import_module(modname)
+        except ImportError:
+            continue
+        try:
+            for attr in parts[split:]:
+                obj = getattr(obj, attr)
+        except AttributeError:
+            return None
+        return obj
+    return None
+
+
+def _missing_reference(app, env, node, contnode):
+    """Resolve a reference to a re-exported name (``photonix.layout.Cell``, or
+    ``SDict`` inside a module that imports it) to the page that documents it."""
+    if node.get("refdomain") != "py":
+        return None
+    target = node.get("reftarget", "")
+    module = node.get("py:module") or ""
+    candidates = [target] if target.startswith("photonix") else []
+    if module:
+        candidates.append(f"{module}.{target}")
+    for name in candidates:
+        obj = _resolve_name(name)
+        home = _DOCUMENTED.get(id(obj)) if obj is not None and not isinstance(obj, _PRIMITIVE) else None
+        if home is not None and home != target:
+            domain = env.domains["py"] if hasattr(env, "domains") else env.get_domain("py")
+            return domain.resolve_xref(env, node["refdoc"], app.builder, "obj", home, node, contnode)
+    return None
 
 
 # ":class:`Cell`s" is not valid reStructuredText (a role must end at a word
@@ -186,6 +238,12 @@ def _process_docstring(app, what, name, obj, options, lines) -> None:
         lines[:] = [f"Re-export of ``{module}.{qualname}`` from the active backend (JAX or NumPy); "
                     "see that project's documentation.", ""]
         return
+    if what in ("data", "attribute") and not callable(obj) and type(obj).__module__ == "builtins" \
+            and getattr(obj, "__doc__", None) == type(obj).__doc__:
+        # A constant such as a dict or tuple has no docstring of its own; autodoc
+        # would show the builtin type's documentation instead.
+        lines[:] = [f"Module constant of type :class:`{type(obj).__name__}`.", ""]
+        return
     lines[:] = [_ROLE_SUFFIX.sub(r"\1\\ ", line) for line in lines]
 
 
@@ -193,6 +251,7 @@ def setup(app):
     app.connect("builder-inited", _write_api_pages)
     app.connect("source-read", _source_read)
     app.connect("include-read", _include_read)
+    app.connect("missing-reference", _missing_reference)
     # Before napoleon (priority 500), so third-party docstrings are never parsed.
     app.connect("autodoc-process-docstring", _process_docstring, priority=400)
     return {"parallel_read_safe": True}

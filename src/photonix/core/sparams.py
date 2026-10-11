@@ -1,7 +1,7 @@
 """Utilities for manipulating scattering objects (SDict / SDense / SCoo).
 
 These helpers are the lingua franca between modules: component models emit
-``SDict``s, the circuit solver consumes/produces them, and visualization reads
+``SDict`` objects, the circuit solver consumes/produces them, and visualization reads
 them. Everything here is differentiable (pure backend arithmetic) and works under
 both the JAX and NumPy backends.
 """

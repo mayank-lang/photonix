@@ -139,21 +139,24 @@ def plan() -> dict[str, Page]:
                 queue.append(value.__name__)
 
     # 2. Homes of exported objects.
-    def defining_module(value, export: str) -> str | None:
+    def defining_module(value, export: str) -> tuple[str, str] | None:
+        """``(module, name)`` an exported object is defined under, or None.
+
+        The name differs from ``export`` for an alias such as
+        ``from photonix.em.fde import ModeData as ModeResult``.
+        """
         if inspect.isclass(value) or inspect.isroutine(value) or hasattr(value, "__wrapped__"):
             modname = getattr(value, "__module__", None)
             if isinstance(modname, str) and modname in mods and getattr(mods[modname], export, None) is value:
-                return modname
+                return modname, export
             if isinstance(modname, str) and modname in mods:
                 qual = getattr(value, "__qualname__", "")
-                if getattr(mods[modname], qual, None) is value:
-                    return modname
-            if isinstance(modname, str) and modname.startswith(ROOT_PACKAGE):
-                return modname if modname in mods else None
+                if qual and getattr(mods[modname], qual, None) is value:
+                    return modname, qual
             return None
         for modname in sorted(mods, key=len, reverse=True):
             if export in assigned[modname] and getattr(mods[modname], export, object()) is value:
-                return modname
+                return modname, export
         return None
 
     exporters: dict[int, list[str]] = {}
@@ -171,9 +174,10 @@ def plan() -> dict[str, Page]:
             if isinstance(value, types.ModuleType):
                 continue
             exporters.setdefault(id(value), []).append(page_name)
-            home = defining_module(value, export)
-            if home is not None and not _private(home) and home != page_name:
-                homes[(page_name, export)] = (home, export, value)
+            found = defining_module(value, export)
+            home, home_name = found if found is not None else (None, export)
+            if home is not None and not _private(home) and (home != page_name or home_name != export):
+                homes[(page_name, export)] = (home, home_name, value)
                 if home not in pages:
                     pages[home] = Page(home)
                     parent = home.rsplit(".", 1)[0]
@@ -187,7 +191,7 @@ def plan() -> dict[str, Page]:
     # 3. Objects with no public photonix home live on the most specific page exporting them.
     final: dict[tuple[str, str], str] = {}
     for (page_name, export), (home, home_name, value) in homes.items():
-        if home == page_name:
+        if home == page_name and home_name == export:
             candidates = [p for p in exporters.get(id(value), [page_name]) if (p, export) in homes]
             # Prefer a page where it has no other home: the longest (most specific) module name.
             local = [p for p in candidates if homes[(p, export)][0] == p]
@@ -200,7 +204,11 @@ def plan() -> dict[str, Page]:
         mod = mods[page_name]
         names = _exports(mod)
         # A home page also documents the names others export from it, even if its own __all__ omits them.
-        names += [n for (p, n), target in final.items() if target == f"{page_name}.{n}" and n not in names]
+        prefix = f"{page_name}."
+        for target in final.values():
+            local_name = target[len(prefix):] if target.startswith(prefix) else ""
+            if local_name and "." not in local_name and local_name not in names:
+                names.append(local_name)
         for export in names:
             try:
                 value = _value(mod, export)
@@ -225,6 +233,15 @@ def plan() -> dict[str, Page]:
     return pages
 
 
+def _relative(target: str, module: str) -> str:
+    """``target`` relative to the page's module (autosummary resolves it there).
+
+    Sphinx warns when an autosummary entry repeats the current module's name.
+    """
+    prefix = f"{module}."
+    return target[len(prefix):] if target.startswith(prefix) else target
+
+
 _DIRECTIVE = {"class": "autoclass", "function": "autofunction", "data": "autodata"}
 
 
@@ -232,10 +249,10 @@ def render_page(page: Page, pages: dict[str, Page]) -> str:
     """reStructuredText of one API page."""
     title = page.module
     lines = [title, "=" * len(title), "", f".. automodule:: {page.module}", "   :no-members:", ""]
-    listed = [e for e in page.exports if e.kind not in ("module",)]
+    listed = [e for e in page.exports if e.kind not in ("module", "module-alias")]
     if listed:
         lines += [".. rubric:: Public names", "", ".. autosummary::", "   :nosignatures:", ""]
-        lines += [f"   ~{e.target}" for e in listed if e.kind != "module-alias"]
+        lines += [f"   ~{_relative(e.target, page.module)}" for e in listed]
         lines.append("")
     alias = [e for e in page.documented if e.kind == "module-alias"]
     for e in alias:
@@ -254,7 +271,7 @@ def render_page(page: Page, pages: dict[str, Page]) -> str:
             lines.append("")
     if page.submodules:
         lines += [".. rubric:: Modules", "", ".. autosummary::", "   :nosignatures:", ""]
-        lines += [f"   {m}" for m in page.submodules]
+        lines += [f"   ~{_relative(m, page.module)}" for m in page.submodules]
         lines += ["", ".. toctree::", "   :hidden:", ""]
         lines += [f"   {m}" for m in page.submodules]
         lines.append("")
