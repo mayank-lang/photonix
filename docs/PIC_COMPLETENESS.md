@@ -9,7 +9,8 @@ calibrated multiphysics.
 ## Implemented workflow
 
 1. Build hierarchical `Cell` geometry with named, oriented ports.
-2. Route and flatten geometry; read/write GDSII or OASIS when `gdstk` is installed.
+2. Route and flatten geometry; read/write GDSII or OASIS when `gdstk` is installed
+   (losslessly, hierarchy and ports included, with `read_layout`/`write_layout`).
 3. Extract a netlist and solve interconnected component S-parameters.
 4. Use analytic compact models, EME, FDFD, scalar/semivector/full-vector FDE,
    or the optional Meep/MPB backend at the appropriate fidelity.
@@ -60,6 +61,19 @@ calibrated multiphysics.
     Kramers-Kronig causality test of the raw data, state-space export and
     exact time-domain simulation (`photonix.macromodel`, see
     [`MACROMODEL.md`](MACROMODEL.md)).
+20. Round-trip whole layouts through GDSII/OASIS without loss (`write_layout`
+    / `read_layout`): units, hierarchy, references, arrays, instance names,
+    labels, and ports (SiEPIC-style PinRec pins, labels on edges, or a JSON
+    sidecar that also carries `model`/`model_settings` and detects edited
+    structures), with byte-reproducible output. Foreign files (foundry
+    black boxes, KLayout/gdsfactory/SiEPIC output) import with their
+    hierarchy and pins. See [`LAYOUT_IO_AND_ASSEMBLY.md`](LAYOUT_IO_AND_ASSEMBLY.md).
+21. Assemble dies: polygon text with a minimum-stroke guarantee, GDS text
+    labels, grid / MaxRects packing / align / distribute, 127 µm fibre-array
+    grating rows with an alignment loopback, pad arrays, die frames with
+    dicing lane, keep-out and facet markers, SiEPIC-style `opt_in` test
+    labels, and floorplan checks (outside-die, keep-out, overlaps,
+    edge-coupler facet alignment).
 
 ## Interchange and external-solver handoff
 
@@ -217,7 +231,9 @@ The following are deliberately reported as open rather than hidden behind a
 "complete" label:
 
 - foundry-qualified layer stacks, cross-sections, component libraries, model
-  corners, and design-rule decks;
+  corners, and design-rule decks (the die-frame, keep-out, trench and text
+  layers of `layout.library.die_frame` are placeholders to map to a foundry
+  layer map);
 - foundry-qualified DRC/LVS decks, deck-specific clean-report interpretation,
   density/fill sign-off, waivers, and tape-out release governance;
 - versioned mask/process metadata;
