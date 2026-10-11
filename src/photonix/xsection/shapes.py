@@ -277,10 +277,12 @@ class Region:
             raise ValueError("a laterally unbounded band cannot be rotated")
         xpm: Any = np
         if any(_is_jax_array(v) for v in (angle_deg, *origin, self.polygon)):
-            import jax.numpy as xpm
+            import jax.numpy as jnp
+
+            xpm = jnp
         th = xpm.deg2rad(xpm.asarray(angle_deg, dtype=float))
         c, s = xpm.cos(th), xpm.sin(th)
-        o = _stack_points([tuple(origin)])[0]
+        o = _stack_points([(origin[0], origin[1])])[0]
         d = self.polygon - o
         pts = xpm.stack([c * d[:, 0] - s * d[:, 1], s * d[:, 0] + c * d[:, 1]], axis=1) + o
         return Region(pts, self.material, order=self.order, tags=self.tags, name=self.name,
