@@ -16,10 +16,17 @@ from .klayout import (
     run_lvs,
 )
 from .routing import RoutingError, route, route_manhattan
+from .routing_astar import route_astar
+from .routing_auto import default_bend_penalty, route_auto
+from .routing_bundle import fanout, route_bundle
+from .routing_length import route_length_matched
+from .routing_sbend import route_sbend, sbend_arc_length, sbend_min_radius, sbend_min_span
 
 __all__ = [
     "Cell", "Port", "Reference", "OPTICAL", "ELECTRICAL", "GEOMETRY_ONLY", "components",
     "route", "route_manhattan", "RoutingError",
+    "route_auto", "route_sbend", "route_bundle", "fanout", "route_astar", "route_length_matched",
+    "sbend_arc_length", "sbend_min_radius", "sbend_min_span", "default_bend_penalty",
     "gdstk_available", "write_gds", "read_gds", "write_oas", "read_oas",
     "extract_netlist",
     "DrcReport", "DrcViolation", "check_min_width", "check_min_space", "check_min_area",
