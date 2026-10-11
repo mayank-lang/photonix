@@ -60,7 +60,12 @@ level. Use `requires_gdstk` / `requires_matplotlib` / `requires_jax` from
   [`docs/VALIDATION.md`](docs/VALIDATION.md) for the evidence levels.
 - **Docs:** public functions get a NumPy-style docstring with a runnable
   `Examples` block, and every public name is listed in its module's `__all__`.
-  The API reference is generated from `__all__`.
+  The API reference is generated from `__all__`. Build the site with
+  `python -m pip install -e ".[docs]"` and
+  `python -m sphinx -W --keep-going -b html docs docs/_build/html` (warnings are
+  errors, as in CI; set `PHOTONIX_DOCS_OFFLINE=1` without network access), then
+  `python -m pytest tests/test_docs_coverage.py` checks the built site covers
+  every public name.
 - **Changelog:** add a line under `## [Unreleased]` in
   [`CHANGELOG.md`](CHANGELOG.md) for any user-visible change.
 
