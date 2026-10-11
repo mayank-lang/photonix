@@ -66,8 +66,12 @@ the second derivative, ``(u(y+h) - 2u(y) + u(y-h)) / h**2 = <u''>_K``.  If
 Helmholtz operator at an interface has no ``O(1)`` term and its ``O(h)`` term
 (the first moment of ``eps`` inside ``K``) sums to zero over neighbouring
 samples, because ``K`` reproduces linear functions.  What remains is the
-smooth ``O(h**2)`` error of the stencil itself, independent of where the
-interface cuts its cell.  With the box kernel an ``O(h**2)`` term that
+smooth ``O(h**2)`` error of the stencil itself, independent -- at leading
+order -- of where the interface cuts its cell.  (The argument is exact for a
+field component tangential to the interface, as in the 1-D TE slab; for the
+normal component it is heuristic, and the tests measure the outcome: the
+residual position dependence falls quickly with resolution but is not zero
+on coarse grids.)  With the box kernel an ``O(h**2)`` term that
 oscillates with that position survives (zero-sum but not zero-first-moment
 weights); averaged over positions it happens to cancel part of the stencil
 error, so the box is usually *more* accurate at a single resolution and the

@@ -65,11 +65,13 @@ first order).
 `kernel="tent"` uses the bilinear hat centred on the sample and reaching its
 neighbours, computed exactly from per-cell moments `int (1, xi, eta, xi*eta) dA`
 of the same sweep. The three-point second difference equals the tent average
-of the second derivative, so a tent-averaged `eps` leaves no interface error
-that depends on where a face cuts its cell; only the smooth `O(h^2)` stencil
-error remains. The box kernel keeps an `O(h^2)` term that oscillates with that
-position. This is our analysis of the standard scheme, checked numerically
-below, not a published recipe.
+of the second derivative, so a tent-averaged `eps` removes, at leading order,
+the part of the interface error that depends on where a face cuts its cell;
+the smooth `O(h^2)` stencil error remains. The box kernel keeps an `O(h^2)`
+term that oscillates with that position. The argument is exact for field
+components tangential to an interface and heuristic for normal ones. This is
+our analysis of the standard scheme, checked numerically below, not a
+published recipe.
 
 ## Choosing smoothing and kernel
 

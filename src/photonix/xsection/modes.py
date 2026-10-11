@@ -54,11 +54,13 @@ depends on where a horizontal or vertical face cuts its cell (as for the 1-D
 TE slab with cell-averaged ``eps``): ``n_eff`` of a 220 nm core moves by
 ~5e-3 at 40 px/um under sub-cell vertical shifts, and refinement sequences on
 ordinary grids are often not monotone, so a Richardson estimate built from
-them is unreliable.  The tent kernel removes that dependence but has a
-larger, systematic error at one resolution (about -6e-3 at 40 px/um for the
-220 nm strip, about 2x-3x the typical box error): use it with
-:func:`n_eff_convergence`.  These are convergence (level 1) and
-exact-symmetry checks, not measurements.
+them is unreliable (the vertical-shift sensitivity is still 3e-3 at
+60 px/um).  With the tent kernel that sensitivity falls quickly with
+resolution (3.4e-4 at 40, 1.5e-4 at 60 px/um; below ~20 px/um both kernels
+move by several 1e-3), at the price of a larger, systematic error at one
+resolution (about -6e-3 at 40 px/um for the 220 nm strip, about 2x-3x the
+typical box error): use it with :func:`n_eff_convergence`.  These are
+convergence (level 1) and exact-symmetry checks, not measurements.
 """
 from __future__ import annotations
 
