@@ -59,7 +59,7 @@ import numpy as np
 
 from photonix.core.backend import HAS_JAX, xp
 
-from .elements import CompiledTD, CompositeTD, DelayLineTD, TDElement
+from .elements import FIRTD, CompiledTD, CompositeTD, DelayLineTD, TDElement
 from .signal import Waveform
 
 __all__ = ["TimeDomainCircuit", "flatten_elements"]
@@ -843,6 +843,7 @@ class TimeDomainCircuit:
             u_cols.append(d)
         u_seq = xp.stack(u_cols, axis=1) if u_cols else xp.zeros((n_steps, 0), dtype=complex)
         t0 = 0.0 if t0 is None else float(t0)
+        self._check_input_band(cols)
 
         w_seq = None
         if st.n_tv:
@@ -852,6 +853,42 @@ class TimeDomainCircuit:
         else:
             outs = _run_numpy(st, arrays, u_seq, w_seq)
         return {nm: Waveform(outs[:, j], self.dt, t0, self.carrier_wl, "sqrt(W)") for j, nm in enumerate(names)}
+
+    def fir_band(self) -> float | None:
+        """Smallest exact band (fraction of the Nyquist band) of the sampled-FIR elements, or ``None``.
+
+        Generic models converted by :func:`~photonix.timedomain.fir_from_model`
+        reproduce the model for ``|nu| <= band / (2 dt)`` and roll off smoothly
+        (passively) to zero at Nyquist.
+        """
+        bands = [el.design.band for el in self._flat.values()
+                 if isinstance(el, FIRTD) and el.design is not None and el.design.band < 1.0]
+        return min(bands) if bands else None
+
+    def _check_input_band(self, cols: Mapping[str, Any], threshold: float = 1e-3) -> None:
+        """Warn when an input has more than ``threshold`` of its energy outside the FIR elements' exact band."""
+        band = self.fir_band()
+        if band is None:
+            return
+        for port, data in cols.items():
+            if not _is_concrete(data):
+                continue
+            x = np.asarray(data)
+            if x.size < 8:
+                continue
+            spec = np.abs(np.fft.fft(x)) ** 2
+            nu = np.fft.fftfreq(x.size, self.dt)
+            total = float(spec.sum())
+            if total <= 0:
+                continue
+            frac = float(spec[np.abs(nu) > band * 0.5 / self.dt].sum()) / total
+            if frac > threshold:
+                warnings.warn(
+                    f"input {port!r} has {frac:.1%} of its energy beyond |nu| = {band * 0.5 / self.dt:.3g} Hz, "
+                    "outside the exact band of the sampled-FIR element(s), which roll off there; reduce dt "
+                    "(or band-limit the input) for an accurate response",
+                    stacklevel=3,
+                )
 
     def _tv_matrices(self, info, arrays, n_steps: int, t0: float, controls):
         controls = dict(controls or {})

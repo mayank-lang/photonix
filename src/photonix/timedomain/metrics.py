@@ -26,7 +26,7 @@ from .signal import Waveform
 
 __all__ = [
     "ber_from_q", "q_from_ber", "EyeDiagram", "eye_diagram", "ber_count", "receiver_sensitivity",
-    "KP4_BER_THRESHOLD",
+    "KP4_BER_THRESHOLD", "power_penalty_db", "extinction_ratio_penalty_db", "EyeMask", "MaskResult", "mask_test",
 ]
 
 #: Pre-FEC BER threshold of the IEEE 802.3 RS(544, 514) "KP4" FEC.
@@ -478,3 +478,176 @@ def receiver_sensitivity(
     if f(lo) < 0 or f(hi) > 0:
         raise ValueError("the target BER is not bracketed by bounds_dbm")
     return float(brentq(f, lo, hi, xtol=xtol_db))
+
+
+def power_penalty_db(
+    link: Callable[[float], EyeDiagram],
+    reference: Callable[[float], EyeDiagram],
+    *,
+    target_ber: float = 1e-12,
+    bounds_dbm: tuple[float, float] = (-40.0, 10.0),
+    xtol_db: float = 1e-3,
+) -> float:
+    """Power penalty (dB): sensitivity of ``link`` minus that of ``reference`` at ``target_ber``.
+
+    Both are callables as in :func:`receiver_sensitivity` (e.g. the same
+    receiver with and without an impairment such as finite extinction,
+    dispersion or ISI).
+    """
+    kw: dict[str, Any] = {"target_ber": target_ber, "bounds_dbm": bounds_dbm, "xtol_db": xtol_db}
+    return receiver_sensitivity(link, **kw) - receiver_sensitivity(reference, **kw)
+
+
+def extinction_ratio_penalty_db(extinction_ratio_db: float) -> float:
+    """Closed-form extinction-ratio power penalty of a thermal-noise-limited NRZ receiver.
+
+    ``delta = 10 log10((1 + r) / (1 - r))`` with ``r = P0 / P1 = 10^(-ER/10)``
+    (Agrawal, *Fiber-Optic Communication Systems*, 4th ed., Sec. 5.4.1): at
+    fixed average power the eye opening shrinks by ``(1 - r) / (1 + r)``
+    while the (signal-independent) noise stays the same.
+
+    Examples
+    --------
+    >>> round(extinction_ratio_penalty_db(10.0), 4)
+    0.8715
+    """
+    r = 10.0 ** (-float(extinction_ratio_db) / 10.0)
+    if r >= 1.0:
+        return math.inf
+    return float(10.0 * math.log10((1.0 + r) / (1.0 - r)))
+
+
+# --------------------------------------------------------------------------- #
+# Eye masks
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class EyeMask:
+    """A hexagonal NRZ eye mask in normalized coordinates (the IEEE 802.3 geometry).
+
+    Time is in unit intervals with the eye centre at ``0.5``; amplitude is
+    normalized so that the mean zero level is ``0`` and the mean one level
+    ``1``. The forbidden regions are the central hexagon with vertices
+    ``(x1, 0.5), (x2, y1), (1 - x2, y1), (1 - x1, 0.5), (1 - x2, 1 - y1),
+    (x2, 1 - y1)`` and everything above ``1 + y_top`` or below ``-y_bottom``.
+
+    The defaults are illustrative values of the magnitude used by IEEE 802.3
+    optical transmitter masks (e.g. 10GBASE-R); take the exact coordinates
+    from the applicable standard for compliance work.
+
+    Examples
+    --------
+    >>> EyeMask().polygon().shape
+    (6, 2)
+    """
+
+    x1: float = 0.25
+    x2: float = 0.40
+    y1: float = 0.25
+    y_top: float = 0.28
+    y_bottom: float = 0.40
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= self.x1 < self.x2 <= 0.5 and 0.0 <= self.y1 < 0.5):
+            raise ValueError("mask needs 0 <= x1 < x2 <= 0.5 and 0 <= y1 < 0.5")
+        if self.y_top < 0 or self.y_bottom < 0:
+            raise ValueError("y_top and y_bottom must be non-negative")
+
+    def polygon(self, margin: float = 0.0) -> np.ndarray:
+        """``(6, 2)`` hexagon vertices ``(t_ui, level)``, scaled by ``1 + margin`` about ``(0.5, 0.5)``."""
+        pts = np.array([(self.x1, 0.5), (self.x2, self.y1), (1 - self.x2, self.y1), (1 - self.x1, 0.5),
+                        (1 - self.x2, 1 - self.y1), (self.x2, 1 - self.y1)])
+        return 0.5 + (pts - 0.5) * (1.0 + margin)
+
+    def limits(self, margin: float = 0.0) -> tuple[float, float]:
+        """``(upper, lower)`` amplitude limits, moved toward the eye by ``margin`` of their distance."""
+        return 1.0 + self.y_top * (1.0 - margin), -self.y_bottom * (1.0 - margin)
+
+
+@dataclass(frozen=True)
+class MaskResult:
+    """Outcome of :func:`mask_test`: hit count, number of tested points and mask margin."""
+
+    hits: int
+    n_points: int
+    margin: float
+
+    @property
+    def hit_ratio(self) -> float:
+        """Fraction of tested points inside a forbidden region."""
+        return self.hits / max(self.n_points, 1)
+
+    @property
+    def passed(self) -> bool:
+        """No point of the eye falls inside the (unscaled) mask."""
+        return self.hits == 0
+
+
+def _inside_convex(points: np.ndarray, poly: np.ndarray) -> np.ndarray:
+    """Strictly-inside test for a convex polygon (either orientation)."""
+    edges = np.roll(poly, -1, axis=0) - poly
+    rel = points[:, None, :] - poly[None, :, :]
+    cross = edges[None, :, 0] * rel[..., 1] - edges[None, :, 1] * rel[..., 0]
+    return np.all(cross > 0, axis=1) | np.all(cross < 0, axis=1)
+
+
+def _mask_points(eye: EyeDiagram, upsample: int) -> np.ndarray:
+    """``(n, 2)`` normalized ``(t_ui, level)`` points: one UI per trace, centred on its sampling instant."""
+    mu = eye.levels
+    traces = (np.asarray(eye.traces) - mu[0]) / (mu[-1] - mu[0])
+    t = np.asarray(eye.t_ui)
+    if upsample > 1:
+        tf = np.linspace(t[0], t[-1], (t.size - 1) * upsample + 1)
+        traces = np.stack([np.interp(tf, t, tr) for tr in traces]) if traces.size else np.zeros((0, tf.size))
+        t = tf
+    sel = (t >= 0.0) & (t < 1.0)
+    tt = np.broadcast_to(t[sel], traces[:, sel].shape)
+    return np.column_stack([tt.ravel(), traces[:, sel].ravel()])
+
+
+def mask_test(eye: EyeDiagram, mask: EyeMask | None = None, *, upsample: int = 4,
+              margin_bounds: tuple[float, float] = (-0.99, 0.99)) -> MaskResult:
+    """Count eye-trace points violating ``mask`` and find the mask margin (NRZ).
+
+    Each trace contributes the unit interval centred on its sampling instant
+    (so every UI is tested once), linearly interpolated to ``upsample``
+    points per sample. The *margin* is the largest ``m`` in ``margin_bounds``
+    for which the mask grown by ``m`` (:meth:`EyeMask.polygon` scaled by
+    ``1 + m``, limits moved inward by ``m`` of their distance) has no hit,
+    found by bisection; ``margin_bounds[0]`` is returned if even the smallest
+    mask is hit. This is photonix's definition, analogous in spirit to (not
+    identical with) the IEEE 802.3 mask-margin procedure, and the eye centre
+    is the Q-optimal sampling instant rather than the crossing-point midpoint.
+
+    Examples
+    --------
+    >>> from photonix.timedomain import drive_waveform, prbs
+    >>> bits = prbs(7, 508)
+    >>> w = drive_waveform(bits, baud=10e9, samples_per_symbol=16, rise_time_20_80_s=20e-12)
+    >>> res = mask_test(eye_diagram(w, baud=10e9, symbols=bits))
+    >>> res.passed, res.margin > 0.3
+    (True, True)
+    """
+    if eye.fmt != "nrz":
+        raise ValueError("mask_test is defined for NRZ eyes")
+    mask = mask or EyeMask()
+    pts = _mask_points(eye, int(upsample))
+
+    def hits(m: float) -> int:
+        upper, lower = mask.limits(m)
+        bad = _inside_convex(pts, mask.polygon(m)) | (pts[:, 1] > upper) | (pts[:, 1] < lower)
+        return int(np.count_nonzero(bad))
+
+    lo, hi = margin_bounds
+    if hits(lo) > 0:
+        margin = lo
+    elif hits(hi) == 0:
+        margin = hi
+    else:
+        for _ in range(40):
+            mid = 0.5 * (lo + hi)
+            if hits(mid) == 0:
+                lo = mid
+            else:
+                hi = mid
+        margin = lo
+    return MaskResult(hits(0.0), int(pts.shape[0]), float(margin))

@@ -21,6 +21,7 @@ from photonix.core.constants import C0_UM_S, Q_E
 from photonix.timedomain import (
     K_BOLTZMANN,
     AnalogFilter,
+    EyeMask,
     LaserParams,
     RingModulator,
     TravelingWaveElectrode,
@@ -31,9 +32,12 @@ from photonix.timedomain import (
     cw_laser,
     drive_waveform,
     eam,
+    extinction_ratio_penalty_db,
     eye_diagram,
+    mask_test,
     mzm,
     photodiode,
+    power_penalty_db,
     prbs,
     push_pull,
     q_from_ber,
@@ -379,9 +383,11 @@ RX = AnalogFilter.bessel(4, 2.5 * BAUD)
 BITS = np.random.default_rng(21).integers(0, 2, 2 ** 13)
 
 
-def _thermal_link(p_dbm, bits=BITS, seed=8):
+def _thermal_link(p_dbm, bits=BITS, seed=8, er_db=math.inf):
     p_avg = 1e-3 * 10 ** (p_dbm / 10)
-    power = np.repeat(bits, SPS) * 2 * p_avg            # infinite extinction ratio NRZ
+    r = 0.0 if math.isinf(er_db) else 10 ** (-er_db / 10)        # P0 / P1
+    p1 = 2 * p_avg / (1 + r)
+    power = np.repeat(np.where(bits == 1, p1, r * p1), SPS)        # NRZ at average power p_avg
     field = Waveform(np.sqrt(power).astype(complex), DT, carrier_wl=1.55)
     i = photodiode(field, responsivity_a_w=1.0, noise=("thermal",), bandwidth=RX, seed=seed)
     return eye_diagram(i, baud=BAUD, symbols=bits, skip_symbols=4)
@@ -396,6 +402,15 @@ def test_thermal_noise_limited_sensitivity_matches_agrawal():
     lb = px.analysis.LinkBudget(source_dbm=0.0, sensitivity_dbm=sens).add("coupler", 3.0).add("modulator", 4.0)
     eye = _thermal_link(lb.received_dbm)
     assert (lb.margin_db > 0) == (eye.ber_gaussian < ber_from_q(7.0))
+
+
+def test_extinction_ratio_power_penalty_matches_the_closed_form():
+    target = float(ber_from_q(7.0))
+    pen = power_penalty_db(lambda p: _thermal_link(p, er_db=6.0), _thermal_link, target_ber=target,
+                           bounds_dbm=(-25.0, -5.0), xtol_db=0.01)
+    assert pen == pytest.approx(extinction_ratio_penalty_db(6.0), abs=0.05)          # Agrawal 5.4.1: 2.23 dB
+    assert extinction_ratio_penalty_db(6.0) == pytest.approx(10 * math.log10((1 + 10 ** -0.6) / (1 - 10 ** -0.6)))
+    assert math.isinf(extinction_ratio_penalty_db(0.0))
 
 
 def test_counted_ber_follows_the_gaussian_law_near_q3():
@@ -633,6 +648,35 @@ def test_pam4_eye_and_unaided_clustering():
     prior = np.bincount(e2.labels, minlength=4) / e2.labels.size
     ser = sum((prior[k] + prior[k + 1]) * float(ber_from_q(q)) for k, q in enumerate(e2.q_eyes))
     assert e2.ber_gaussian == pytest.approx(ser / 2, rel=1e-9)
+
+
+def test_eye_mask_margin_has_the_analytic_value():
+    rng = np.random.default_rng(4)
+    bits = rng.integers(0, 2, 2000)
+    inner = rng.integers(0, 2, bits.size).astype(bool)        # half the symbols sit 10 % inside their level
+    lev = np.where(bits == 1, np.where(inner, 0.9, 1.0), np.where(inner, 0.1, 0.0))
+    w = Waveform(np.repeat(lev, 16), 1 / (BAUD * 16), carrier_wl=None, unit="V")
+    eye = eye_diagram(w, baud=BAUD, symbols=bits)
+    mask = EyeMask(x1=0.25, x2=0.4, y1=0.25, y_top=0.28, y_bottom=0.4)
+    mu0, mu1 = eye.levels
+    a, b = (0.9 - mu0) / (mu1 - mu0), (0.1 - mu0) / (mu1 - mu0)        # normalized inner levels
+    c, d = (1.0 - mu0) / (mu1 - mu0), (0.0 - mu0) / (mu1 - mu0)        # normalized outer levels
+    expected = min((a - 0.5) / 0.25 - 1, (0.5 - b) / 0.25 - 1, 1 - (c - 1) / 0.28, 1 + d / 0.4)
+    res = mask_test(eye, mask, upsample=1)                    # rectangular eye: samples only
+    assert res.passed and res.margin == pytest.approx(expected, abs=1e-9)
+    # hit counting against an independent point-in-polygon test (matplotlib.path)
+    from matplotlib.path import Path
+
+    from photonix.timedomain.metrics import _mask_points
+
+    bumpy = AnalogFilter.first_order(0.25 * BAUD).apply(w, discretization="zoh")
+    eye_b = eye_diagram(bumpy, baud=BAUD, symbols=bits, skip_symbols=4)
+    res_b = mask_test(eye_b, mask)
+    pts = _mask_points(eye_b, 4)
+    upper, lower = mask.limits()
+    ref = Path(mask.polygon()).contains_points(pts) | (pts[:, 1] > upper) | (pts[:, 1] < lower)
+    assert res_b.hits == int(ref.sum()) > 0 and not res_b.passed and res_b.margin < 0
+    assert res_b.n_points == pts.shape[0] and 0 < res_b.hit_ratio < 1
 
 
 def test_plot_eye_never_shows(monkeypatch):

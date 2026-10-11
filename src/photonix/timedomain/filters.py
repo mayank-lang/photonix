@@ -62,12 +62,7 @@ def linear_recurrence(lam, v, y0=0.0):
     lam = xp.broadcast_to(xp.asarray(lam, dtype=dtype), v.shape)
     v = v.at[0].add(lam[0] * y0) if hasattr(v, "at") else _np_first_add(v, lam[0] * y0)
     if HAS_JAX:
-        from jax import lax
-
-        def combine(a, b):
-            return a[0] * b[0], b[0] * a[1] + b[1]
-
-        return lax.associative_scan(combine, (lam, v), axis=0)[1]
+        return _jax_recurrence()(lam, v)
     lam_n = np.asarray(lam)
     v_n = np.asarray(v)
     if lam_n.ndim == 1 and np.all(lam_n == lam_n[0]):
@@ -88,6 +83,22 @@ def linear_recurrence(lam, v, y0=0.0):
         out[start:start + chunk] = cp * (y + np.cumsum(v_n[start:start + chunk] / cp, axis=0))
         y = out[start + lam_c.shape[0] - 1]
     return out
+
+
+_JAX_RECURRENCE: list[Any] = []
+
+
+def _jax_recurrence():
+    """The jitted parallel solve of ``y_k = lam_k y_{k-1} + v_k`` (compiled once per shape; transparent to grad)."""
+    if not _JAX_RECURRENCE:
+        import jax
+        from jax import lax
+
+        def combine(a, b):
+            return a[0] * b[0], b[0] * a[1] + b[1]
+
+        _JAX_RECURRENCE.append(jax.jit(lambda lam, v: lax.associative_scan(combine, (lam, v), axis=0)[1]))
+    return _JAX_RECURRENCE[0]
 
 
 def _np_first_add(v, add):

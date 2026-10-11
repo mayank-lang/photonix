@@ -523,6 +523,25 @@ def test_delay_shorter_than_a_step_warns():
         TimeDomainCircuit.from_netlist(_one("straight", length=5.0), dt=1e-12)
 
 
+def test_broadband_input_through_a_sampled_fir_warns():
+    dt = 0.1e-12
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gc = fir_from_model(px.components.grating_coupler, {"bandwidth": 0.004}, dt=dt)
+    tdc = TimeDomainCircuit({"gc": gc}, {}, {p: ("gc", p) for p in gc.ports}, dt=dt)
+    assert tdc.fir_band() == pytest.approx(0.5)
+    imp = np.zeros(4096, dtype=complex)
+    imp[10] = 1.0                                            # flat spectrum: half its energy is out of band
+    with pytest.warns(UserWarning, match="outside the exact band"):
+        tdc.simulate({gc.ports[0]: imp})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                       # a well-resolved pulse is silent
+        tdc.simulate({gc.ports[0]: gaussian_pulse(1e-12, 4096, dt)})
+    # delay-line-only circuits have no band limit and never warn
+    assert TimeDomainCircuit({"d": DelayLineTD(5e-12)}, {}, {"a": ("d", "o1"), "b": ("d", "o2")},
+                             dt=dt).fir_band() is None
+
+
 def test_inputs_are_validated():
     tdc = TimeDomainCircuit.from_netlist(_one("straight", length=200.0), dt=0.1e-12)
     with pytest.raises(KeyError):

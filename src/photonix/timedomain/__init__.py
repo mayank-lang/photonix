@@ -27,7 +27,8 @@ Transceiver and signal-integrity library:
 * :mod:`~photonix.timedomain.receivers` -- photodiode with shot / thermal /
   RIN noise, TIA, clock recovery.
 * :mod:`~photonix.timedomain.metrics` -- eye diagrams, Q factor, Gaussian and
-  counted BER, extinction ratio, OMA, receiver sensitivity.
+  counted BER, extinction ratio, OMA, receiver sensitivity, power penalties,
+  hexagonal eye-mask tests.
 """
 from __future__ import annotations
 
@@ -57,9 +58,14 @@ from .filters import AnalogFilter, linear_recurrence, lowpass
 from .metrics import (
     KP4_BER_THRESHOLD,
     EyeDiagram,
+    EyeMask,
+    MaskResult,
     ber_count,
     ber_from_q,
+    extinction_ratio_penalty_db,
     eye_diagram,
+    mask_test,
+    power_penalty_db,
     q_from_ber,
     receiver_sensitivity,
 )
@@ -96,5 +102,5 @@ __all__ = [
     "AnalogFilter", "lowpass", "linear_recurrence",
     "photodiode", "tia", "recover_clock", "K_BOLTZMANN",
     "EyeDiagram", "eye_diagram", "ber_from_q", "q_from_ber", "ber_count", "receiver_sensitivity",
-    "KP4_BER_THRESHOLD",
+    "KP4_BER_THRESHOLD", "power_penalty_db", "extinction_ratio_penalty_db", "EyeMask", "MaskResult", "mask_test",
 ]
