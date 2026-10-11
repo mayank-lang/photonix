@@ -19,8 +19,10 @@ calibrated multiphysics.
 7. Extract a complete multimode/multiport Meep S matrix from native layout
    ports, optionally against a reference layout, at one or more wavelengths.
 8. Store sampled S matrices in a validated, versioned `SParameterDataset`,
-   interpolate within the sampled band, and round-trip pickle-free NPZ or
-   standards-compatible Touchstone 1.0 single-ended `S RI` files.
+   interpolate within the sampled band (or fit a rational model with
+   `to_rational()`, which stays exact between samples), and round-trip
+   pickle-free NPZ or standards-compatible Touchstone 1.0 single-ended `S RI`
+   files.
 9. Represent absolute process corners and reproducible correlated-Gaussian Monte
    Carlo samples without embedding undocumented foundry distributions.
 10. Probe and run prepared Elmer, DEVSIM, Ansys Lumerical/DEVICE, or other
@@ -51,6 +53,13 @@ calibrated multiphysics.
     estimate rare-failure yield by importance sampling.
 18. Synthesize Butterworth/Chebyshev coupled-resonator filters exactly and map
     the designed couplings to physical coupler gaps.
+19. Extract compact models from sampled S-parameters (field solves,
+    measurements, Touchstone): delay extraction plus complex-baseband vector
+    fitting to a stable rational model with a Hamiltonian passivity
+    certificate, minimum-energy passivity enforcement, a generalized
+    Kramers-Kronig causality test of the raw data, state-space export and
+    exact time-domain simulation (`photonix.macromodel`, see
+    [`MACROMODEL.md`](MACROMODEL.md)).
 
 ## Interchange and external-solver handoff
 
@@ -212,9 +221,11 @@ The following are deliberately reported as open rather than hidden behind a
 - foundry-qualified DRC/LVS decks, deck-specific clean-report interpretation,
   density/fill sign-off, waivers, and tape-out release governance;
 - versioned mask/process metadata;
-- calibrated interpolation policy and automated compact-model extraction from
-  field simulations or measurements beyond the implemented Touchstone exchange
-  (the coupler splitting fit shows the intended pattern, for one cross-section);
+- measurement-calibrated compact models: `photonix.macromodel` fits, certifies
+  and time-steps any sampled S-matrix, but the data's calibration (reference
+  planes, de-embedding, noise floor, repeatability) and a parametric model
+  across geometry or process remain the user's; the coupler splitting fit shows
+  the intended pattern for one cross-section;
 - calibrated thermo-optic, carrier, electrical, stress, and fabrication-yield
   decks, coupling laws, output parsers, and solver-backed validation;
 - foundry-supplied corner distributions, Monte Carlo yield acceptance criteria,

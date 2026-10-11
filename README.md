@@ -12,6 +12,7 @@ verification handoffs through one consistent port and data model.
 | Electromagnetics | Scalar, semivectorial, and full-vector FDE; 2-D FDFD and EME; optional Meep/MPB FDTD |
 | Accuracy & spectra | Adaptive Richardson/GCI studies; high-order group delay and GDD on nonuniform sweeps |
 | Physicality QA | Quantitative passivity, reciprocity, and losslessness checks plus pointwise passive projection |
+| Macromodels | Delay extraction + complex vector fitting of sampled S-parameters to stable rational models; Hamiltonian passivity certificate and enforcement; Kramers-Kronig causality test; state-space export and exact time-domain simulation |
 | Design | JAX gradients, inverse-design objectives, fabrication filters, and process variation studies |
 | Analysis | Resonance Q/ER/FSR and Q-splitting, pass-band and crosstalk metrics, link budgets, spec-based Monte Carlo yield, impulse/pulse response |
 | Layout & exchange | Hierarchical cells with port-based placement, Euler/S-bends, bend-aware routing (automatic, S-bend, bundle/fan-out, obstacle-avoiding A*, length-matched), geometry-carrying netlist extraction, DRC pre-checks, GDSII/OASIS, netlist JSON, Touchstone, and KLayout handoff |
@@ -193,6 +194,7 @@ capture without claiming foundry qualification.
 | `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
 | `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra; sensitivities, FOSM moments, process corners, worst-case distance and importance-sampled yield |
 | `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |
+| `photonix.macromodel` | Rational macromodels of sampled S-parameters: vector fitting with delay extraction, passivity (Hamiltonian) and causality (Kramers-Kronig) tests, state-space/time-domain export -- see [`docs/MACROMODEL.md`](docs/MACROMODEL.md) |
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |

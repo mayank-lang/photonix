@@ -104,6 +104,24 @@ reciprocity is not expected for every material or biased device. Passive
 projection can repair small fitting/interpolation violations, but it must not be
 used to conceal a non-converged field solve or a normalization error.
 
+For a broadband statement, fit a rational macromodel and test that instead of
+the samples ([`MACROMODEL.md`](MACROMODEL.md)):
+
+```python
+from photonix import macromodel as mm
+
+print(mm.causality_report(ds.wavelengths, ds.s).causal)   # generalized Kramers-Kronig, raw data
+model = ds.to_rational()                                   # delay extraction + vector fitting
+report = mm.passivity_report(model)                        # Hamiltonian test: every frequency
+print(report.passive, report.certified, report.violation_bands_hz)
+```
+
+The Hamiltonian test certifies passivity over the whole frequency axis, not just
+the samples. The causality test can only *disprove* causality (flagging time
+advances and reference-plane sign errors); a pass means no violation was found
+above its bounds. A model is qualified only inside its fitted band: fit guard
+bands and enforce passivity over the band of interest (`band_hz`).
+
 ## Reproducibility manifest
 
 Record enough information to rerun the calculation. Photonix provides an
@@ -133,6 +151,10 @@ The runtime snapshot is necessary but not sufficient. Also retain:
   invariant tests for individual solvers.
 - `tests/test_sparameter_quality.py` exercises coherent multiport physicality
   diagnostics and passive projection.
+- `tests/test_macromodel.py` validates rational fitting against exact rational
+  data, pure delays, ring resonances and library spectra, the Hamiltonian
+  passivity test against dense sweeps, the causality test against causal and
+  time-advanced data, and state-space time stepping against FFT propagation.
 - `benchmarks/cases.py`, `benchmarks/references.json`, and
   `benchmarks/RESULTS.md` contain reproducible scalar benchmark cases and their
   stated tolerances.
@@ -164,4 +186,9 @@ traceable reference.
   Broadband S-Parameter Macromodels”](https://doi.org/10.1109/AFRCON.2009.5308273),
   IEEE AFRICON (2009). It illustrates why globally passive broadband rational
   models require more than Photonix's deliberately pointwise sampled-matrix
-  projection.
+  projection; `photonix.macromodel` implements the Hamiltonian certificate.
+- S. Grivet-Talocia, “Passivity enforcement via perturbation of Hamiltonian
+  matrices,” *IEEE Transactions on Circuits and Systems I* 51(9), 1755 (2004).
+- P. Triverio and S. Grivet-Talocia, “Robust causality characterization via
+  generalized dispersion relations,” *IEEE Transactions on Advanced Packaging*
+  31(3), 579 (2008).
