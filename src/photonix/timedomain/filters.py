@@ -269,7 +269,7 @@ class AnalogFilter:
         >>> import numpy as np
         >>> lp = AnalogFilter.first_order(1e9)
         >>> y = lp.apply(np.ones(2000), 1e-12, discretization="zoh")
-        >>> t = 1e-12 * np.arange(1, 2001)
+        >>> t = 1e-12 * np.arange(2000)                 # a step applied (and held) from t = 0
         >>> bool(np.allclose(np.asarray(y), lp.step_response(t), atol=1e-12))
         True
         """
@@ -296,12 +296,9 @@ class AnalogFilter:
         for i in range(p.size):
             if discretization == "foh":
                 v = r[i] * dt * (phi2[i] * xc + (phi1[i] - phi2[i]) * prev)
-            else:
-                v = r[i] * dt * phi1[i] * xc
+            else:                                # x_{k-1} held over [t_{k-1}, t_k)
+                v = r[i] * dt * phi1[i] * prev
             y = y + linear_recurrence(lam[i], v)
-        if discretization == "zoh":
-            # the ZOH update above yields the state *after* holding x_k for one step
-            pass
         if real_in and self._is_real():
             y = xp.real(y)
         if wf is not None:

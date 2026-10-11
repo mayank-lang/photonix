@@ -17,7 +17,6 @@ Sign conventions follow photonix: ``exp(+j omega t)``, propagation
 """
 from __future__ import annotations
 
-import cmath
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -366,13 +365,13 @@ class RingModulator:
     def rates(self, wl: float, v):
         """``(dw0, 1/tau_i, 1/tau_e)`` in rad/s, 1/s, 1/s at carrier ``wl`` and voltage(s) ``v``."""
         t_rt = self.round_trip_s
-        ref = complex(np.asarray(self._round_trip(wl, self.bias_v)))
-        phi_ref = -cmath.phase(ref)                    # round-trip phase past the nearest resonance, (-pi, pi]
+        ref = self._round_trip(wl, self.bias_v)
+        phi_ref = -xp.angle(ref)                       # round-trip phase past the nearest resonance, (-pi, pi]
         r = self._round_trip(wl, v)
         dphi = -xp.angle(r / ref)                      # small and continuous in V
         dw0 = -(phi_ref + dphi) / t_rt
         inv_tau_i = -xp.log(xp.abs(r)) / t_rt
-        inv_tau_e = -0.5 * math.log(1.0 - self.coupling) / t_rt
+        inv_tau_e = -0.5 * xp.log(1.0 - xp.asarray(self.coupling)) / t_rt
         return dw0, inv_tau_i, inv_tau_e
 
     def steady_transmission(self, wl: float, v, offset_hz=0.0):
@@ -401,7 +400,7 @@ class RingModulator:
         vv = self.drive(_samples(v, n, "v"), dt)
         v_mid = 0.5 * (vv + xp.concatenate([vv[1:], vv[-1:]]))
         dw0, inv_i, inv_e = self.rates(fin.carrier_wl, v_mid)
-        mu = math.sqrt(2.0 * float(inv_e))
+        mu = xp.sqrt(2.0 * inv_e)
         z = (1j * dw0 - (inv_i + inv_e)) * dt
         lam = xp.exp(z)
         zs = xp.where(xp.abs(z) < 1e-3, xp.ones_like(z), z)
