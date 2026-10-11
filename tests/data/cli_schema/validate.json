@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/validate/1",
+  "title": "photonix validate --json output, version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/validate/1"
+    },
+    "quick": {
+      "type": "boolean"
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "n_checks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "n_failed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "elapsed_s": {
+      "type": "number"
+    },
+    "runtime": {
+      "type": "object",
+      "properties": {
+        "photonix_version": {
+          "type": "string"
+        },
+        "python_version": {
+          "type": "string"
+        },
+        "python_implementation": {
+          "type": "string"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "backend": {
+          "type": "string"
+        },
+        "x64_enabled": {
+          "type": "boolean"
+        },
+        "default_real_dtype": {
+          "type": "string"
+        },
+        "device_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "optional_dependencies": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "available",
+              "version"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "klayout_available": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "backend",
+        "default_real_dtype",
+        "device_count",
+        "klayout_available",
+        "optional_dependencies",
+        "photonix_version",
+        "platform",
+        "python_implementation",
+        "python_version",
+        "x64_enabled"
+      ],
+      "additionalProperties": false
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "reference": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "tolerance": {
+            "type": "number"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "expected": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "exception": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seconds": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "description",
+          "error",
+          "evidence",
+          "exception",
+          "expected",
+          "name",
+          "passed",
+          "reference",
+          "seconds",
+          "tolerance",
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "checks",
+    "elapsed_s",
+    "n_checks",
+    "n_failed",
+    "passed",
+    "quick",
+    "runtime",
+    "schema"
+  ],
+  "additionalProperties": false
+}

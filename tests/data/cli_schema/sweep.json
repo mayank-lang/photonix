@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/sweep/1",
+  "title": "photonix sweep --json output, version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/sweep/1"
+    },
+    "model": {
+      "type": "string"
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "n_wavelengths": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "wl_min_um": {
+      "type": "number"
+    },
+    "wl_max_um": {
+      "type": "number"
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "in": {
+            "type": "string"
+          },
+          "out": {
+            "type": "string"
+          },
+          "min_db": {
+            "type": "number"
+          },
+          "max_db": {
+            "type": "number"
+          },
+          "mean_power": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "in",
+          "max_db",
+          "mean_power",
+          "min_db",
+          "out"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "physicality": {
+      "type": "object",
+      "properties": {
+        "passive": {
+          "type": "boolean"
+        },
+        "reciprocal": {
+          "type": "boolean"
+        },
+        "lossless": {
+          "type": "boolean"
+        },
+        "max_singular_value": {
+          "type": "number"
+        },
+        "max_singular_value_wl_um": {
+          "type": "number"
+        },
+        "worst_passivity_violation": {
+          "type": "number"
+        },
+        "worst_reciprocity_error": {
+          "type": "number"
+        },
+        "worst_reciprocity_wl_um": {
+          "type": "number"
+        },
+        "worst_unitarity_error": {
+          "type": "number"
+        },
+        "worst_unitarity_wl_um": {
+          "type": "number"
+        },
+        "passivity_atol": {
+          "type": "number"
+        },
+        "reciprocity_atol": {
+          "type": "number"
+        },
+        "lossless_atol": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "lossless",
+        "lossless_atol",
+        "max_singular_value",
+        "max_singular_value_wl_um",
+        "passive",
+        "passivity_atol",
+        "reciprocal",
+        "reciprocity_atol",
+        "worst_passivity_violation",
+        "worst_reciprocity_error",
+        "worst_reciprocity_wl_um",
+        "worst_unitarity_error",
+        "worst_unitarity_wl_um"
+      ],
+      "additionalProperties": false
+    },
+    "warnings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "output": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "format": {
+              "enum": [
+                "touchstone",
+                "npz",
+                "json",
+                "csv"
+              ]
+            }
+          },
+          "required": [
+            "format",
+            "path"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "data": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "format": {
+              "const": "photonix.sparameters"
+            },
+            "version": {
+              "const": 1
+            },
+            "convention": {
+              "type": "string"
+            },
+            "wavelengths_um": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 1
+            },
+            "ports": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1
+            },
+            "s_real": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "s_imag": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
+            },
+            "metadata": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "convention",
+            "format",
+            "metadata",
+            "ports",
+            "s_imag",
+            "s_real",
+            "version",
+            "wavelengths_um"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "pdk": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "cross_section": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "settings": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "cross_section",
+    "data",
+    "model",
+    "n_wavelengths",
+    "output",
+    "paths",
+    "pdk",
+    "physicality",
+    "ports",
+    "schema",
+    "settings",
+    "warnings",
+    "wl_max_um",
+    "wl_min_um"
+  ],
+  "additionalProperties": false
+}

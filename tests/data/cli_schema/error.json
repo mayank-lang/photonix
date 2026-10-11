@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/error/1",
+  "title": "photonix error document (--json), version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/error/1"
+    },
+    "command": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exit_code": {
+      "enum": [
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "hint",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "command",
+    "error",
+    "exit_code",
+    "schema"
+  ],
+  "additionalProperties": false
+}

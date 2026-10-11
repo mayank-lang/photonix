@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/models/1",
+  "title": "photonix models --json output, version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/models/1"
+    },
+    "registry": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "function": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "default": {},
+                "required": {
+                  "type": "boolean"
+                },
+                "annotation": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "annotation",
+                "default",
+                "name",
+                "required"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "waveguide_parameters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ports": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "doc": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "function",
+          "name",
+          "parameters",
+          "ports",
+          "summary",
+          "warnings",
+          "waveguide_parameters"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "count",
+    "models",
+    "registry",
+    "schema"
+  ],
+  "additionalProperties": false
+}

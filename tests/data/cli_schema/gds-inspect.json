@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/gds-inspect/1",
+  "title": "photonix gds-inspect --json output, version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/gds-inspect/1"
+    },
+    "file": {
+      "type": "string"
+    },
+    "library": {
+      "type": "string"
+    },
+    "unit_m": {
+      "type": "number"
+    },
+    "precision_m": {
+      "type": "number"
+    },
+    "top_cells": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "cells": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "polygons": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "paths": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "references": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "labels": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "bbox_um": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            ]
+          }
+        },
+        "required": [
+          "bbox_um",
+          "labels",
+          "name",
+          "paths",
+          "polygons",
+          "references"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "cell": {
+      "type": "string"
+    },
+    "bbox_um": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "minItems": 2,
+          "maxItems": 2
+        }
+      ]
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "layer": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "datatype": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "polygons": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "drawn_area_um2": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "datatype",
+          "drawn_area_um2",
+          "layer",
+          "polygons"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "bbox_um",
+    "cell",
+    "cells",
+    "file",
+    "labels",
+    "layers",
+    "library",
+    "precision_m",
+    "schema",
+    "top_cells",
+    "unit_m"
+  ],
+  "additionalProperties": false
+}
