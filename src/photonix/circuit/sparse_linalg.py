@@ -363,10 +363,18 @@ class SparseExposedSolver:
         return self._jax_fn(values)
 
     def _build_jax(self) -> Callable[[Array], Array]:
+        import inspect
+
         import jax
         import jax.numpy as jnp
 
         m, nnz = self.m, self.nnz
+        # ``vmap_method`` replaced ``vectorized`` in JAX 0.4.34; both mean
+        # "call once with every batch axis present" here.
+        batching: dict[str, Any] = (
+            {"vmap_method": "broadcast_all"} if "vmap_method" in inspect.signature(jax.pure_callback).parameters
+            else {"vectorized": True}
+        )
 
         def forward_cb(v):
             return self.solve_numpy(v, on_singular="nan")
@@ -377,7 +385,7 @@ class SparseExposedSolver:
         @jax.custom_vjp
         def solve(values):
             shape = jax.ShapeDtypeStruct((*values.shape[:-1], m, m), values.dtype)
-            return jax.pure_callback(forward_cb, shape, values, vmap_method="broadcast_all")
+            return jax.pure_callback(forward_cb, shape, values, **batching)
 
         def solve_fwd(values):
             return solve(values), values
@@ -385,7 +393,7 @@ class SparseExposedSolver:
         def solve_bwd(values, y_bar):
             shape = jax.ShapeDtypeStruct(values.shape, values.dtype)
             y_bar = jnp.asarray(y_bar, dtype=values.dtype)
-            return (jax.pure_callback(backward_cb, shape, values, y_bar, vmap_method="broadcast_all"),)
+            return (jax.pure_callback(backward_cb, shape, values, y_bar, **batching),)
 
         solve.defvjp(solve_fwd, solve_bwd)
 

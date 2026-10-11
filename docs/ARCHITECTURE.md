@@ -24,7 +24,6 @@ sensitivities of a system-level metric with respect to any physical parameter.
                  ┌─────────────────────────────────────────────┐
    analysis/ ◄──  resonances · filters · link budget · yield · time domain ·
                   sensitivity · FOSM · corners · worst-case distance
-   synthesis/ ──► prototypes · exact CROW synthesis · coupling → gap
    macromodel/ ◄─ vector fitting · delays · passivity · causality · state space
    timedomain/ ◄─ sample-mode circuits · lasers · modulators · receivers ·
                   eye / Q / BER · sensitivity
@@ -41,6 +40,8 @@ sensitivities of a system-level metric with respect to any physical parameter.
                         slab · EIM · EME · FDFD · bend loss ·
                         geometry · materials · [meep] FDTD backend
                         modes/  → compatibility facade over em/
+                        xsection/ · materials/ → polygonal cross-sections and
+                        cited n-k / thermal / electrical material data
                  └───────────────────────┬──────────────────────┘
                  ┌─────────────────────────────────────────────┐
    adapters      multiphysics/ prepared Elmer · DEVSIM · external

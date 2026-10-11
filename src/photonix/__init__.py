@@ -25,9 +25,10 @@ The public API is intentionally small and re-exports the most-used names from
 each subpackage. Subpackages (:mod:`photonix.core`, :mod:`photonix.circuit`,
 :mod:`photonix.components`, :mod:`photonix.modes`, :mod:`photonix.layout`,
 :mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`,
-:mod:`photonix.multiphysics`, :mod:`photonix.interop`,
-:mod:`photonix.analysis`, :mod:`photonix.synthesis`, :mod:`photonix.macromodel`,
-:mod:`photonix.diagnostics`) can also be imported directly.
+:mod:`photonix.multiphysics`, :mod:`photonix.interop`, :mod:`photonix.analysis`,
+:mod:`photonix.synthesis`, :mod:`photonix.macromodel`, :mod:`photonix.materials`,
+:mod:`photonix.xsection`, :mod:`photonix.timedomain`, :mod:`photonix.diagnostics`)
+can also be imported directly.
 """
 from __future__ import annotations
 
@@ -98,17 +99,20 @@ from . import (  # noqa: E402
     interop,
     layout,
     macromodel,
+    materials,
     modes,
     multiphysics,
     optim,
     pdk,
     synthesis,
+    timedomain,
     viz,
+    xsection,
 )
 
 __all__ += [
     "components", "circuit", "modes", "em", "interop", "layout", "pdk", "viz", "optim", "multiphysics",
-    "analysis", "synthesis", "macromodel",
+    "analysis", "synthesis", "macromodel", "materials", "timedomain", "xsection",
 ]
 
 # Kept for compatibility with 0.1.x callers. Optional *features* now raise their

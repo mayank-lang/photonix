@@ -77,6 +77,21 @@ calibrated multiphysics.
     the designed couplings to physical coupler gaps; synthesize FIR lattice
     (cascaded-MZI) filters exactly from any power-complementary target, with
     maximally flat interleavers and equiripple band splitters built in.
+22. Solve large circuits (thousands of terminals, e.g. 32x32 MZI meshes) with
+    a sparse-LU engine whose analytic adjoint keeps them differentiable, or by
+    subnetwork reduction; compile once and reuse the topology
+    ([`CIRCUIT_ENGINE.md`](CIRCUIT_ENGINE.md)).
+23. Draw material properties from a cited, range-checked database (n-k,
+    temperature, anisotropy, thermal/electrical data) and import
+    refractiveindex.info files ([`MATERIALS.md`](MATERIALS.md)).
+24. Build polygonal multi-material cross-sections (sidewall angles, slabs,
+    gaps, heaters) that rasterize exactly into tensor-smoothed permittivity and
+    thermal/electrical coefficients, with differentiable full-vector `n_eff`
+    and Richardson convergence studies ([`xsection.md`](xsection.md)).
+25. Simulate links in the time domain: sample-mode circuits with feedback and
+    modulators, PRBS, lasers with linewidth/RIN, MZM/EAM/ring modulators,
+    photodiodes and TIAs with noise, eye diagrams, Q/BER, sensitivity and
+    mask tests ([`TIMEDOMAIN.md`](TIMEDOMAIN.md)).
 
 ## Interchange and external-solver handoff
 
