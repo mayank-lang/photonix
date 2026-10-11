@@ -19,6 +19,10 @@ from input waves, block-diagonal ``S``) and the interconnection relation
 
 so the composite transfer matrix is ``M = (I - S Gamma)^{-1} S`` and the
 exposed-port block of ``M`` is the circuit's scattering matrix.
+
+The numerical work is done by :mod:`photonix.circuit.engine`, which compiles
+the topology once, gathers all entry values in one stack, solves only for the
+exposed columns and picks a dense, sparse-LU or network-reduction backend.
 """
 from __future__ import annotations
 
@@ -26,9 +30,10 @@ import math
 from collections.abc import Callable, Mapping
 from typing import cast
 
-from photonix.core.backend import xp
-from photonix.core.types import AliasedSDict, Model, SDict, ports_of
+from photonix.core.types import Model, SDict
 
+from . import engine as _engine
+from .engine import Backend
 from .netlist import Netlist
 
 __all__ = ["evaluate_circuit", "circuit_from_netlist", "mzi", "ring"]
@@ -38,18 +43,12 @@ MZI_PORT_ALIASES = {"in0": "o1", "in1": "o2", "out0": "o4", "out1": "o3"}
 RING_PORT_ALIASES = {"in0": "o1", "out0": "o2"}
 
 
-def _broadcast_batch(sdicts: Mapping[str, SDict]) -> tuple[int, ...]:
-    batch: tuple[int, ...] = ()
-    for sd in sdicts.values():
-        for v in sd.values():
-            batch = xp.broadcast_shapes(batch, xp.asarray(v).shape)
-    return batch
-
-
 def evaluate_circuit(
     instances: Mapping[str, SDict],
     connections: Mapping[tuple[str, str], tuple[str, str]],
     ports: Mapping[str, tuple[str, str]],
+    *,
+    backend: Backend | str = "auto",
 ) -> SDict:
     """Combine instance ``SDict``s into the composite circuit ``SDict``.
 
@@ -61,18 +60,35 @@ def evaluate_circuit(
         Internal links ``(inst_a, port_a) -> (inst_b, port_b)``.
     ports
         Exposed ports ``external_name -> (instance, port)``.
+    backend
+        Linear-solver backend of :mod:`photonix.circuit.engine`: ``"auto"``
+        (dense for small circuits, sparse LU otherwise), ``"dense"``,
+        ``"sparse"`` or ``"reduce"``. All solve the same equations; see the
+        engine docs for their transformation support and cost.
 
     Returns
     -------
     SDict
         Keyed by ``(external_in, external_out)`` over the exposed ports.
 
+    Raises
+    ------
+    CircuitSingularError
+        If ``I - S Gamma`` is singular (a lossless resonance no exposed port
+        excites) for concrete inputs.
+
     Notes
     -----
     An instance terminal that is neither connected nor exposed is terminated
     in a matched load (its incident wave is zero). This is useful for unused
     coupler ports, but is not equivalent to an open or reflective termination;
-    model those explicitly when required.
+    model those explicitly when required. Instances with no path to any
+    exposed port cannot affect the result and are skipped with a
+    :class:`~photonix.circuit.engine.FloatingSubcircuitWarning`.
+
+    The value-free structure is compiled once per distinct topology and
+    cached (:data:`photonix.circuit.engine.TOPOLOGY_CACHE`), so repeated calls
+    on one circuit only gather values and solve.
 
     Examples
     --------
@@ -88,88 +104,10 @@ def evaluate_circuit(
     >>> abs(float(px.power(s[("in0", "out0")])) - 1.0) < 1e-9
     True
     """
-    # 1. Namespaced terminal list and index map.
-    terminals: list[tuple[str, str]] = []
-    for inst, sd in instances.items():
-        for p in ports_of(sd):
-            terminals.append((inst, p))
-    index = {t: i for i, t in enumerate(terminals)}
-    n = len(terminals)
-
-    # Validate the direct functional API as rigorously as Netlist.validate().
-    # Otherwise repeated terminals create multi-way rows in Gamma and silently
-    # inject energy into a topology that the solver cannot represent.
-    connected: set[tuple[str, str]] = set()
-    for a, b in connections.items():
-        if a not in index or b not in index:
-            raise KeyError(f"Connection {a} <-> {b} references an unknown instance port.")
-        if a == b:
-            raise ValueError(f"A terminal cannot be connected to itself: {a!r}.")
-        for terminal in (a, b):
-            if terminal in connected:
-                raise ValueError(
-                    f"Terminal {terminal!r} appears in multiple connections. "
-                    "Each terminal may be connected at most once."
-                )
-            connected.add(terminal)
-
-    exposed: set[tuple[str, str]] = set()
-    for external, terminal in ports.items():
-        if terminal not in index:
-            raise KeyError(
-                f"External port {external!r} references unknown instance port {terminal!r}."
-            )
-        if terminal in connected:
-            raise ValueError(
-                f"External port {external!r} references internally connected terminal {terminal!r}."
-            )
-        if terminal in exposed:
-            raise ValueError(f"Instance port {terminal!r} is exposed more than once.")
-        exposed.add(terminal)
-
-    if n == 0 or not ports:
+    topology = _engine.TOPOLOGY_CACHE.get(instances, connections, ports)
+    if topology.m == 0:
         return {}
-
-    batch = _broadcast_batch(instances)
-
-    # 2. Block-diagonal scattering matrix S with row=output, col=input.
-    S = xp.zeros((*batch, n, n), dtype=complex)
-    for inst, sd in instances.items():
-        for (p_in, p_out), val in sd.items():
-            i = index[(inst, p_out)]
-            j = index[(inst, p_in)]
-            v = xp.broadcast_to(xp.asarray(val, dtype=complex), batch) if batch else xp.asarray(val, dtype=complex)
-            S = S.at[..., i, j].set(v) if hasattr(S, "at") else _np_set(S, i, j, v)
-
-    # 3. Interconnection matrix Gamma: a_p = b_q for each connected (p, q).
-    Gamma = xp.zeros((n, n), dtype=complex)
-    for a, b in connections.items():
-        ia, ib = index[a], index[b]
-        if hasattr(Gamma, "at"):
-            Gamma = Gamma.at[ia, ib].set(1.0).at[ib, ia].set(1.0)
-        else:
-            Gamma[ia, ib] = 1.0
-            Gamma[ib, ia] = 1.0
-
-    # 4. Solve (I - S Gamma) M = S  ->  M = (I - S Gamma)^{-1} S.
-    eye = xp.eye(n, dtype=complex)
-    A = eye - S @ Gamma
-    M = xp.linalg.solve(A, S)
-
-    # 5. Extract exposed-port block. key = (external_in, external_out).
-    out: SDict = {}
-    for e_in, t_in in ports.items():
-        ji = index[t_in]
-        for e_out, t_out in ports.items():
-            io = index[t_out]
-            out[(e_in, e_out)] = M[..., io, ji]
-    return out
-
-
-def _np_set(S, i, j, v):  # NumPy fallback path
-    S = S.copy()
-    S[..., i, j] = v
-    return S
+    return _engine.solve(topology, _engine.gather_values(topology, instances), backend=backend)
 
 
 def circuit_from_netlist(
@@ -177,6 +115,7 @@ def circuit_from_netlist(
     models: Mapping[str, Callable] | None = None,
     *,
     port_aliases: Mapping[str, str] | None = None,
+    backend: Backend | str = "auto",
 ) -> Model:
     """Compile a :class:`Netlist` + model registry into a differentiable model.
 
@@ -195,6 +134,15 @@ def circuit_from_netlist(
     port_aliases
         Optional legacy port names resolved on lookup only; see
         :class:`~photonix.core.types.AliasedSDict`.
+    backend
+        Engine backend, as for :func:`evaluate_circuit`.
+
+    Notes
+    -----
+    Every instance model is evaluated on every call (no deduplication), and
+    the compiled topology is cached on the returned model. Use
+    :func:`photonix.circuit.compile_circuit` to also evaluate identical
+    instances once per call.
 
     Examples
     --------
@@ -214,29 +162,13 @@ def circuit_from_netlist(
     >>> abs(float(px.power(s[("a_o1", "b_o2")])) - 1.0) < 1e-9
     True
     """
-    netlist.validate()
-    if models is None:
-        from photonix.components import MODELS
-
-        registry = cast(Mapping[str, Callable[..., SDict]], MODELS)
-    else:
-        registry = models
-
-    def model(*, wl=1.55, **overrides) -> SDict:
-        inst_sdicts: dict[str, SDict] = {}
-        for inst, model_name in netlist.instances.items():
-            if model_name not in registry:
-                raise KeyError(
-                    f"Model {model_name!r} for instance {inst!r} not in registry. "
-                    f"Known models: {sorted(registry)}"
-                )
-            settings = netlist.merged_settings(inst, overrides.get(inst))
-            inst_sdicts[inst] = registry[model_name](wl=wl, **settings)
-        out = evaluate_circuit(inst_sdicts, netlist.connections, netlist.ports)
-        return AliasedSDict(out, aliases=port_aliases) if port_aliases else out
-
-    model.__name__ = netlist.name or "circuit"
-    return model
+    return _engine.compile_circuit(
+        netlist,
+        cast("Mapping[str, Callable[..., SDict]] | None", models),
+        backend=backend,
+        dedupe=False,
+        port_aliases=port_aliases,
+    )
 
 
 # --------------------------------------------------------------------------- #
