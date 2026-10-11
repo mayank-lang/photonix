@@ -213,32 +213,36 @@ class EyeDiagram:
     def width(self) -> float:
         """Horizontal opening (s) of the (worst) eye: the span of sampling phases with an open eye.
 
-        The worst-case inner opening is evaluated at every sample offset within
-        half a unit interval of the sampling instant and the open span is
-        refined by linear interpolation of the opening at its two ends.
+        The worst-case inner opening (smallest level of the upper symbol minus
+        largest of the lower, for the symbols' own labels) is evaluated at every
+        sample offset within one unit interval of the sampling instant; the open
+        span around the sampling instant is refined by linear interpolation of
+        the opening where it changes sign at each end. An ideal rectangular eye
+        has a width of exactly one UI.
         """
         sps = self.samples_per_symbol
         lab = self.labels
         if lab.size < 3:
             return 0.0
-        offsets = np.arange(-(sps // 2), sps - sps // 2)
+        offsets = np.arange(-sps, sps + 1)
         v = self._around(offsets, 1, lab.size - 1)
         lk = lab[1:-1]
         op = np.array([min(np.min(row[lk == e + 1]) - np.max(row[lk == e]) for e in range(self.n_levels - 1))
                        for row in v])
-        c = sps // 2
+        c = sps                                      # offset 0: the sampling instant
         if op[c] <= 0:
             return 0.0
+        last = op.size - 1
         right = c
-        while right + 1 < sps and op[right + 1] > 0:
+        while right < last and op[right + 1] > 0:
             right += 1
         left = c
-        while left - 1 >= 0 and op[left - 1] > 0:
+        while left > 0 and op[left - 1] > 0:
             left -= 1
         span = float(right - left)
-        if right + 1 < sps:
+        if right < last:
             span += op[right] / (op[right] - op[right + 1])
-        if left - 1 >= 0:
+        if left > 0:
             span += op[left] / (op[left] - op[left - 1])
         return span * self.dt
 
@@ -276,6 +280,31 @@ class EyeDiagram:
         from photonix.viz.eye import plot_eye
 
         return plot_eye(self, ax=ax, **kwargs)
+
+
+def _best_phase(q: dict[int, float], sps: int) -> int:
+    """Sampling phase with the largest Q; ties (e.g. noiseless eyes, ``Q = inf``) go to the middle of the tied run.
+
+    A phase is tied when its Q is within ``1e-9`` (relative) of the best. The
+    longest circular run of tied phases is taken and its middle returned, so a
+    flat-topped noiseless eye is sampled at its centre, not at an edge.
+    """
+    q_max = max(q.values())
+    tied = {j for j, v in q.items() if v == q_max or (math.isfinite(q_max) and v >= q_max * (1 - 1e-9))}
+    if len(tied) == 1:
+        return next(iter(tied))
+    if len(tied) == sps:
+        return sps // 2
+    best_start, best_len = 0, 0
+    for start in tied:
+        if (start - 1) % sps in tied:
+            continue                                   # not the start of a run
+        length = 1
+        while (start + length) % sps in tied:
+            length += 1
+        if length > best_len:
+            best_start, best_len = start, length
+    return int((best_start + best_len // 2) % sps)
 
 
 def _align(values: np.ndarray, ref_levels: np.ndarray, max_delay: int) -> tuple[int, float]:
@@ -376,7 +405,7 @@ def eye_diagram(
         return lab, d, corr
 
     candidates = range(sps) if sampling_index is None else [int(sampling_index) % sps]
-    best = None
+    scored: dict[int, tuple[float, np.ndarray, int]] = {}
     for j in candidates:
         lab, d, _ = classify(j)
         keep = lab >= 0
@@ -385,12 +414,11 @@ def eye_diagram(
         mu, sd = _stats(phase_vals[j][keep], lab[keep], m)
         if np.any(np.diff(mu) <= 0):
             continue
-        q = float(np.min(_q_eyes(mu, sd)))
-        if best is None or q > best[0]:
-            best = (q, j, lab, d)
-    if best is None:
+        scored[j] = (float(np.min(_q_eyes(mu, sd))), lab, d)
+    if not scored:
         raise ValueError("could not resolve all levels at any sampling phase (eye fully closed?)")
-    _, j, lab, d = best
+    j = _best_phase({k: v[0] for k, v in scored.items()}, sps)
+    _, lab, d = scored[j]
     keep = lab >= 0
     pv = phase_vals[:, keep]
     # traces: n_ui UIs starting half a UI before each sampling instant

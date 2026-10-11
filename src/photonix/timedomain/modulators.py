@@ -72,7 +72,12 @@ class TravelingWaveElectrode:
     velocity-mismatch factor ``|H| = |sin u / u|``, ``u = pi f (n_m - n_g) L / c``
     (Ghione, *Semiconductor Devices for High-Speed Optoelectronics*, 2009;
     Witzens, Proc. IEEE 106, 2158, 2018). ``alpha_db_per_cm_sqrt_ghz`` is the
-    skin-effect loss ``alpha(f) = alpha0 sqrt(f / 1 GHz)`` in dB/cm.
+    skin-effect conductor loss ``alpha(f) = alpha0 sqrt(f / 1 GHz)`` in dB/cm,
+    entered *causally*: the skin-effect surface impedance
+    ``Z_s = (1 + j) R_s(f)`` adds an equal excess phase, ``gamma = alpha (1 + j
+    sgn f) + j omega n_m / c`` (``alpha0 sqrt(2 s / (2 pi 1 GHz))`` in the
+    Laplace variable), so the impulse response vanishes before the wave
+    arrives. ``z0_ohm`` is frequency independent (low-loss approximation).
 
     Examples
     --------
@@ -97,7 +102,7 @@ class TravelingWaveElectrode:
         length = self.length_mm * 1e-3
         omega = 2.0 * np.pi * f
         alpha = self.alpha_db_per_cm_sqrt_ghz * np.sqrt(np.abs(f) / 1e9) * 100.0 / (20.0 / math.log(10.0))
-        gamma = alpha + 1j * omega * self.n_m / C0
+        gamma = alpha * (1.0 + 1j * np.sign(f)) + 1j * omega * self.n_m / C0     # causal skin effect
         beta_o = omega * self.n_g_opt / C0
         rho_l = (self.z_load_ohm - self.z0_ohm) / (self.z_load_ohm + self.z0_ohm)
         e2 = np.exp(-2.0 * gamma * length)
@@ -145,16 +150,38 @@ class TravelingWaveElectrode:
         """Reference delay making the time-domain kernel causal (``max(0, L (n_g - n_m) / c)``)."""
         return max(0.0, self.length_mm * 1e-3 * (self.n_g_opt - self.n_m) / C0)
 
-    def kernel(self, dt: float) -> np.ndarray:
-        """Causal impulse response (per sample) of the response delayed by :attr:`latency_s`."""
+    def _span_s(self) -> float:
+        """Duration of the impulse response without skin-effect tail: transit plus decaying reflections."""
         length = self.length_mm * 1e-3
         rt = 2.0 * length * max(self.n_m, self.n_g_opt) / C0
         rho_l = abs((self.z_load_ohm - self.z0_ohm) / (self.z_load_ohm + self.z0_ohm))
         rho_s = abs((self.z_source_ohm - self.z0_ohm) / (self.z_source_ohm + self.z0_ohm))
         bounce = rho_l * rho_s
         n_rt = 2 if bounce < 1e-12 else int(math.ceil(math.log(1e-9) / math.log(bounce))) + 2
-        span = n_rt * rt + self.latency_s + 4 * dt
-        n = int(2 ** math.ceil(math.log2(max(256.0, 4.0 * span / dt))))
+        return n_rt * rt + self.latency_s
+
+    def skin_tail(self, t_s: float) -> float:
+        """Asymptotic fraction of the DC response arriving after ``t_s`` (the skin-effect ``t^-3/2`` tail).
+
+        At low frequency ``H ~ 1 - B sqrt(s)`` with
+        ``B = alpha0 L sqrt(2) / (2 sqrt(2 pi 1 GHz))`` (``alpha0`` in Np/m), so
+        ``h(t) ~ B t^(-3/2) / (2 sqrt(pi))`` and the mass beyond ``t`` is
+        ``B / sqrt(pi t)``. Zero for a line without conductor loss.
+        """
+        alpha0 = self.alpha_db_per_cm_sqrt_ghz * 100.0 * math.log(10.0) / 20.0
+        b = alpha0 * self.length_mm * 1e-3 * math.sqrt(2.0) / (2.0 * math.sqrt(2.0 * math.pi * 1e9))
+        return b / math.sqrt(math.pi * t_s) if t_s > 0 else math.inf
+
+    def kernel(self, dt: float, n: int | None = None) -> np.ndarray:
+        """Causal impulse response per sample (``n`` samples) of the response delayed by :attr:`latency_s`.
+
+        Computed by inverse FFT on an ``n``-point grid (default: long enough
+        for the transit and reflections), so any skin-effect tail beyond
+        ``n dt`` is folded back (aliased) into the kernel: an error of about
+        :meth:`skin_tail` ``(n dt)``.
+        """
+        if n is None:
+            n = int(2 ** math.ceil(math.log2(max(256.0, 4.0 * (self._span_s() + 4 * dt) / dt))))
         f = np.fft.rfftfreq(n, dt)
         h = self.response(f) * np.exp(-2j * np.pi * f * self.latency_s)
         return np.fft.irfft(h, n)
@@ -162,8 +189,15 @@ class TravelingWaveElectrode:
     def filter(self, v, dt: float | None = None):
         """Apply the electrode response to a drive voltage (array or electrical :class:`Waveform`).
 
-        Linear (zero-padded FFT) convolution with :meth:`kernel`; the output
-        is delayed by :attr:`latency_s` relative to the optical reference.
+        Linear convolution of the record (starting from rest) with the causal
+        kernel, by FFT on a zero-padded grid of at least four record lengths
+        plus the reflection span; the output is delayed by :attr:`latency_s`
+        relative to the optical reference. Without conductor loss the kernel
+        is finite and the result exact to round-off; with skin-effect loss the
+        slowly decaying ``t^-3/2`` tail beyond the grid length ``T`` is folded
+        into the kernel, an error of about :meth:`skin_tail` ``(T)`` (e.g.
+        ``7e-4`` of the DC level for 0.8 dB/cm/sqrt(GHz) over 4 mm and a 16 ns
+        record, ``T = 64 ns``).
         """
         wf = v if isinstance(v, Waveform) else None
         if wf is not None:
@@ -171,9 +205,9 @@ class TravelingWaveElectrode:
         if dt is None:
             raise ValueError("give dt for an array input")
         x = _samples(v).astype(float)
-        k = self.kernel(dt)
         n = int(x.shape[0])
-        m = int(2 ** math.ceil(math.log2(n + k.size)))
+        m = int(2 ** math.ceil(math.log2(max(4 * n + self._span_s() / dt + 8, 256))))
+        k = self.kernel(dt, m)
         y = xp.fft.irfft(xp.fft.rfft(x, m) * xp.asarray(np.fft.rfft(k, m)), m)[:n]
         return wf.with_samples(y) if wf is not None else y
 

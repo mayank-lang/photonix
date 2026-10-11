@@ -271,6 +271,16 @@ def test_filter_prototypes():
     assert np.max(np.abs(y - y_ref)) < 1e-9
 
 
+def test_real_prototypes_filter_real_signals_to_real_outputs():
+    x = np.random.default_rng(1).normal(size=300)
+    for order in range(1, 7):
+        for flt in (AnalogFilter.butterworth(order, 7e9), AnalogFilter.bessel(order, 7e9)):
+            y = np.asarray(flt.apply(x, 1e-12))
+            assert not np.iscomplexobj(y), flt.name
+    odd = AnalogFilter((-1e10 + 1e10j,), (1e10,))                       # an unpaired complex pole
+    assert np.iscomplexobj(np.asarray(odd.apply(x, 1e-12)))
+
+
 def _ramp_step(flt, t, dt):
     """Analytic response to x(t) = clip(t / dt, 0, 1) of a pole-residue filter."""
     p = np.asarray(flt.poles)
@@ -305,23 +315,35 @@ def test_drive_jitter_and_clock_recovery():
 # --------------------------------------------------------------------------- #
 # (3) Receiver noise
 # --------------------------------------------------------------------------- #
-def _discrete_noise_bandwidth(flt, dt, n=40000):
-    imp = np.zeros(n)
-    imp[0] = 1.0
-    g = np.asarray(flt.apply(imp, dt))
-    return 0.5 / dt * np.sum(g ** 2) / np.sum(g) ** 2
+def _filtered_variance_ok(x, sigma2, flt, dt, n_sigma=4.0):
+    """Sample variance of filtered Gaussian noise against ``sigma2``, with its exact standard error.
+
+    For a stationary Gaussian sequence ``Var(s^2) = (2 sigma^4 / n) sum_k rho_k^2`` (Bartlett), with the
+    autocorrelation ``rho`` known from the filter's band-limited impulse response.
+    """
+    x = np.asarray(x)
+    n = x.size
+    f = np.fft.fftfreq(2 ** 16, dt)
+    acf = np.real(np.fft.ifft(np.abs(flt.response(f)) ** 2))
+    rho = acf / acf[0]
+    se = math.sqrt(2.0 / n * np.sum(rho ** 2)) * sigma2
+    return abs(np.var(x) - sigma2) <= n_sigma * se, (np.var(x) / sigma2, se / sigma2)
 
 
 def test_shot_noise_variance_is_2qIB():
     dt, n = 1e-12, 2 ** 20
-    flt = AnalogFilter.bessel(4, 10e9)
     current = 1e-3
-    i = photodiode(cw(current, n, dt), responsivity_a_w=1.0, noise=("shot",), bandwidth=flt, seed=11)
-    x = np.asarray(i.samples)[1000::40]                 # decimate past the filter memory
-    b_n = flt.noise_bandwidth_hz()
-    assert _discrete_noise_bandwidth(flt, dt) == pytest.approx(b_n, rel=2e-3)    # fs = 100 f3dB
-    ok, ci = _chi2_ok(x, 2 * Q_E * current * b_n)
-    assert ok, ci
+    for flt in (AnalogFilter.bessel(4, 10e9), AnalogFilter.first_order(5e9), AnalogFilter.bessel(4, 80e9)):
+        i = photodiode(cw(current, n, dt), responsivity_a_w=1.0, noise=("shot",), bandwidth=flt, seed=11)
+        b_n = flt.noise_bandwidth_hz()
+        # noise is band-limited to f_s / 2: the part of B_n beyond Nyquist is not simulated
+        f = np.linspace(0.0, 0.5 / dt, 200001)
+        b_sim = np.trapezoid(np.abs(flt.response(f)) ** 2, f)
+        assert b_sim == pytest.approx(b_n, rel=0.02 if flt.name.startswith("RC") else 1e-5)
+        x = np.asarray(i.samples)[5000:] - current              # past the filter's start-up transient
+        assert not np.iscomplexobj(x)
+        ok, stats = _filtered_variance_ok(x, 2 * Q_E * current * b_sim, flt, dt)
+        assert ok, (flt.name, stats)
     raw = photodiode(cw(current, n, dt), responsivity_a_w=1.0, noise=("shot",), seed=12)
     ok, ci = _chi2_ok(np.asarray(raw.samples), 2 * Q_E * current * 0.5 / dt)   # white to Nyquist
     assert ok, ci
@@ -332,13 +354,20 @@ def test_thermal_and_tia_noise_variances():
     flt = AnalogFilter.butterworth(4, 8e9)
     i = photodiode(cw(0.0, n, dt), responsivity_a_w=1.0, noise=("thermal",), load_ohm=50.0, temperature_k=300.0,
                    bandwidth=flt, seed=5)
-    x = np.asarray(i.samples)[1000::40]
-    ok, ci = _chi2_ok(x, 4 * K_BOLTZMANN * 300.0 / 50.0 * flt.noise_bandwidth_hz())
-    assert ok, ci
+    ok, stats = _filtered_variance_ok(i.samples, 4 * K_BOLTZMANN * 300.0 / 50.0 * flt.noise_bandwidth_hz(), flt, dt)
+    assert ok, stats
     v = tia(Waveform(np.zeros(n), dt, carrier_wl=None, unit="A"), gain_ohm=2000.0, bandwidth=flt,
             input_noise_a_rthz=15e-12, seed=6)
-    ok, ci = _chi2_ok(np.asarray(v.samples)[1000::40], (2000.0 * 15e-12) ** 2 * flt.noise_bandwidth_hz())
-    assert ok, ci
+    ok, stats = _filtered_variance_ok(v.samples, (2000.0 * 15e-12) ** 2 * flt.noise_bandwidth_hz(), flt, dt)
+    assert ok, stats
+    # the output noise spectrum is N0 |H(f)|^2 (Welch estimate, averaged in bands)
+    from scipy.signal import welch
+
+    fw, psd = welch(np.asarray(i.samples), fs=1 / dt, nperseg=2 ** 12)
+    n0 = 4 * K_BOLTZMANN * 300.0 / 50.0
+    for lo, hi in ((0.5e9, 4e9), (6e9, 10e9)):
+        sel = (fw >= lo) & (fw <= hi)
+        assert np.mean(psd[sel]) / np.mean(n0 * np.abs(flt.response(fw[sel])) ** 2) == pytest.approx(1.0, abs=0.03)
 
 
 # --------------------------------------------------------------------------- #
@@ -400,8 +429,10 @@ def test_mzm_static_transfer_extinction_and_chirp():
     e = np.asarray(out.samples)
     pw = np.abs(e) ** 2
     dphi = np.gradient(np.unwrap(np.angle(e)), t)
-    alpha = 2 * pw * dphi / np.gradient(pw, t)
-    assert np.median(alpha[100:-100]) == pytest.approx(c, rel=0.02)
+    dpw = np.gradient(pw, t)
+    steep = np.abs(dpw) > 0.5 * np.abs(dpw).max()            # away from the drive extrema (0 / 0)
+    alpha = 2 * pw[steep] * dphi[steep] / dpw[steep]
+    assert np.median(alpha) == pytest.approx(c, rel=0.02)
 
 
 def test_traveling_wave_electrode_response():
@@ -414,14 +445,45 @@ def test_traveling_wave_electrode_response():
                                 z0_ohm=35.0, z_load_ohm=50.0, z_source_ohm=50.0)
     for f in (0.0, 7e9, 31e9):
         assert abs(complex(el.response(f)) - _electrode_quadrature(el, f)) < 1e-6
-    # applied in the time domain, a sinusoidal drive is scaled by |H|
+    # applied in the time domain, a sinusoidal drive is scaled by |H| (and delayed by its phase)
     dt, n = 0.5e-12, 2 ** 15
-    fm = 20e9
     t = dt * np.arange(n)
-    y = np.asarray(el.filter(np.sin(2 * np.pi * fm * t), dt))
-    seg = slice(n // 2, n)
-    amp = 2 * abs(np.mean(y[seg] * np.exp(-2j * np.pi * fm * t[seg])))
-    assert amp == pytest.approx(abs(complex(el.response(fm))), rel=1e-3)
+    for fm in (5e9, 20e9, 40e9):
+        y = np.asarray(el.filter(np.sin(2 * np.pi * fm * t), dt))
+        period = int(round(1 / (fm * dt)))
+        seg = slice(n // 2, n // 2 + (n // 2 // period) * period)      # whole periods in the second half
+        c = 2 * np.mean(y[seg] * np.exp(-2j * np.pi * fm * t[seg])) / -1j
+        h = complex(el.response(fm)) * np.exp(-2j * np.pi * fm * el.latency_s)
+        assert abs(c - h) < 2e-3 * abs(h), fm
+
+
+def test_skin_effect_electrode_is_causal_with_the_sqrt_t_tail():
+    el = TravelingWaveElectrode(length_mm=4.0, n_m=3.9, n_g_opt=4.1, alpha_db_per_cm_sqrt_ghz=0.8)
+    dt, m = 1e-12, 2 ** 21                                   # a 2 us grid: aliasing << the tails probed
+    k = el.kernel(dt, m)
+    assert abs(k.sum() - 1.0) < 1e-12                        # H(0) = 1
+    # causal: the negative-time part (the end of the circular kernel) holds only the alternating Gibbs
+    # ringing of the sampled box edges (net ~1 % of the tail in the same window), not the t^-3/2 tail that
+    # a loss without its skin-effect phase (non-causal) puts on both sides of t = 0 (> 30 %)
+    neg, pos = slice(m - 1000, m - 100), slice(100, 1000)
+    assert abs(np.sum(k[neg])) < 0.03 * np.sum(k[pos])
+    acausal = TravelingWaveElectrode(length_mm=4.0, n_m=3.9, n_g_opt=4.1)      # loss without its phase
+    f = np.fft.rfftfreq(m, dt)
+    alpha = 0.8 * np.sqrt(f / 1e9) * 100 / (20 / math.log(10))
+    x = (alpha + 1j * 2 * np.pi * f * (3.9 - 4.1) / 299792458.0) * 4e-3
+    h_bad = np.where(np.abs(x) > 0, (1 - np.exp(-x)) / np.where(np.abs(x) > 0, x, 1), 1.0)
+    k_bad = np.fft.irfft(h_bad * np.exp(-2j * np.pi * f * acausal.latency_s), m)
+    assert abs(np.sum(k_bad[neg])) > 0.3 * np.sum(k_bad[pos])   # the test would catch a non-causal model
+    step = np.cumsum(k)
+    for t1, t2 in ((1e-9, 4e-9), (2e-9, 20e-9)):
+        late = step[int(t2 / dt)] - step[int(t1 / dt)]      # = tail(t1) - tail(t2), aliasing-free
+        assert late == pytest.approx(el.skin_tail(t1) - el.skin_tail(t2), rel=0.03)
+    # a lossless line has a finite kernel: nothing (beyond decaying, alternating edge ringing) arrives late
+    lossless = TravelingWaveElectrode(length_mm=4.0, n_m=3.9, n_g_opt=4.1)
+    assert lossless.skin_tail(1e-9) == 0.0
+    k0 = lossless.kernel(dt, 2 ** 16)
+    assert abs(np.sum(k0[2000:-2000])) < 1e-4                              # ~ (edge jump) / (2 pi 2000)
+    assert np.sum(k[2000:2 ** 15]) > 30 * abs(np.sum(k0[2000:-2000]))      # the lossy line's tail is there
 
 
 def _electrode_quadrature(el, f):
@@ -429,7 +491,7 @@ def _electrode_quadrature(el, f):
     length = el.length_mm * 1e-3
     w = 2 * math.pi * f
     a = el.alpha_db_per_cm_sqrt_ghz * math.sqrt(f / 1e9) * 100 / (20 / math.log(10))
-    g = a + 1j * w * el.n_m / c
+    g = a * (1 + 1j) + 1j * w * el.n_m / c                 # causal skin effect, Z_s = (1 + j) R_s
     rho = (el.z_load_ohm - el.z0_ohm) / (el.z_load_ohm + el.z0_ohm)
     z = np.linspace(0, length, 20001)
     vz = np.exp(-g * z) + rho * np.exp(-2 * g * length) * np.exp(g * z)          # V(z) / A
@@ -467,11 +529,24 @@ def test_ring_modulator_cmt_matches_the_analytic_ring_in_the_high_q_limit():
     analytic = np.abs(np.asarray(ring[("o1", "o2")])) ** 2
     assert np.max(np.abs(cmt - analytic)) < 0.01
     assert t_rt == pytest.approx(4.2 * 2 * math.pi * 10.0 / C0_UM_S)
-    # the time-domain integration holds the steady state exactly at constant drive
-    out = rm.simulate(cw(1e-3, 500, 1e-12, offset_hz=offsets[60]), np.zeros(500))
+    # the time-domain integration holds the steady state exactly at constant drive (carrier at the laser)
+    wl_laser = C0_UM_S / (C0_UM_S / 1.55 + offsets[60])
+    out = rm.simulate(cw(1e-3, 500, 1e-12, carrier_wl=wl_laser), np.zeros(500))
     s = complex(np.asarray(rm.steady_transmission(1.55, 0.0, offsets[60])))
-    assert np.allclose(np.asarray(out.samples) / np.asarray(cw(1e-3, 500, 1e-12, offset_hz=offsets[60]).samples), s,
-                       atol=1e-12)
+    assert complex(np.asarray(rm.steady_transmission(wl_laser, 0.0))) == pytest.approx(s, abs=1e-9)
+    assert np.allclose(np.asarray(out.samples) / math.sqrt(1e-3), s, atol=1e-12)
+    # a step of the drive relaxes with the photon lifetime: field transient exp(-t / tau) toward the new state
+    rm = RingModulator(radius=10.0, coupling=0.01, loss_db_cm=2.0, pn_fraction=0.5, dneff_dv=1e-4)
+    v = np.r_[np.zeros(100), np.full(1900, 3.0)]
+    out = np.asarray(rm.simulate(cw(1e-3, v.size, 0.1e-12, carrier_wl=wl_laser), v).samples) / math.sqrt(1e-3)
+    s_new = complex(np.asarray(rm.steady_transmission(wl_laser, 3.0)))
+    assert abs(s_new - complex(np.asarray(rm.steady_transmission(wl_laser, 0.0)))) > 0.1
+    _, ii, ie = (float(np.asarray(x)) for x in rm.rates(wl_laser, 3.0))
+    t = 0.1e-12 * (np.arange(v.size) - 100)
+    late = t > 20e-12
+    env = np.abs(out[late] - s_new)
+    rate = -np.polyfit(t[late], np.log(env), 1)[0]
+    assert rate == pytest.approx(ii + ie, rel=1e-3)
 
 
 def test_ring_modulator_small_signal_matches_sacher_poon():
@@ -499,7 +574,11 @@ def test_ring_modulator_with_pn_junction_and_rc():
     assert inv_i_a[1] < inv_i_a[0]             # and depletes free carriers: less loss
     v = np.r_[np.zeros(200), np.full(800, 2.0)]
     vj = np.asarray(rm.drive(v, 1e-12))
-    assert vj[200 + 5] == pytest.approx(2.0 * (1 - math.exp(-1.0)), rel=0.05)   # RC charging
+    # RC charging; first-order hold reads the step as a ramp over the sample before it (exact solution)
+    tau, dt = 5e-12, 1e-12
+    t = dt * (np.arange(1000) - 200)
+    exact = np.where(t >= 0, 2.0 * (1 - tau / dt * (1 - math.exp(-dt / tau)) * np.exp(-t / tau)), 0.0)
+    assert np.max(np.abs(vj - exact)) < 1e-12
 
 
 # --------------------------------------------------------------------------- #
@@ -539,13 +618,21 @@ def test_pam4_eye_and_unaided_clustering():
     w = drive_waveform(levels, baud=25e9, samples_per_symbol=16, rise_time_20_80_s=6e-12, amplitude_v=1.5)
     eye = eye_diagram(w, baud=25e9, fmt="pam4", symbols=sym)
     assert eye.levels.size == 4 and eye.height == pytest.approx(0.5, rel=1e-3)
-    assert eye.oma == pytest.approx(1.5, rel=1e-9)
+    assert eye.oma == pytest.approx(1.5, rel=1e-6)            # Gaussian edge tails: ~1e-8 at mid-UI
     blind = eye_diagram(w, baud=25e9, fmt="pam4")                  # k-means classification
     assert np.allclose(blind.levels, eye.levels, atol=1e-9)
     noisy = Waveform(np.asarray(w.samples) + np.random.default_rng(0).normal(0, 0.04, w.n_steps), w.dt,
                      carrier_wl=None, unit="V")
-    e2 = eye_diagram(noisy, baud=25e9, fmt="pam4", symbols=sym)
-    assert e2.ber_gaussian > 0 and e2.q_factor == pytest.approx(0.25 / 0.08, rel=0.1)
+    # level spacing 0.5 V, sigma 0.04 V: Q = 0.5 / (2 * 0.04) per eye. A fixed sampling phase avoids the
+    # upward bias of picking the best of 16 phases with independent noise.
+    e2 = eye_diagram(noisy, baud=25e9, fmt="pam4", symbols=sym, sampling_index=eye.sampling_index)
+    assert e2.q_factor == pytest.approx(6.25, rel=0.08)              # ~1000 samples per level
+    assert np.allclose(e2.sigmas, 0.04, rtol=0.08)
+    # Gray-coded PAM4: at the Q-optimal threshold both tails of eye e equal Qf(q_e) = erfc(q_e / sqrt 2) / 2,
+    # so SER = sum_e (pi_e + pi_{e+1}) Qf(q_e) and BER = SER / 2 (-> (3/4) Qf(q) for equal eyes and priors)
+    prior = np.bincount(e2.labels, minlength=4) / e2.labels.size
+    ser = sum((prior[k] + prior[k + 1]) * float(ber_from_q(q)) for k, q in enumerate(e2.q_eyes))
+    assert e2.ber_gaussian == pytest.approx(ser / 2, rel=1e-9)
 
 
 def test_plot_eye_never_shows(monkeypatch):

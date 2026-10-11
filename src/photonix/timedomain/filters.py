@@ -306,9 +306,14 @@ class AnalogFilter:
         return y
 
     def _is_real(self) -> bool:
-        p = sorted(self.poles, key=lambda c: (round(c.real, 6), round(c.imag, 6)))
-        conj = sorted((c.conjugate() for c in self.poles), key=lambda c: (round(c.real, 6), round(c.imag, 6)))
-        return bool(np.allclose(p, conj, rtol=1e-9, atol=0)) and abs(np.imag(self.direct)) == 0
+        """True when poles and residues come in conjugate pairs (a real impulse response)."""
+        p = np.asarray(self.poles)
+        r = np.asarray(self.residues)
+        for pk, rk in zip(p, r, strict=True):
+            j = int(np.argmin(np.abs(p - np.conj(pk))))
+            if abs(p[j] - np.conj(pk)) > 1e-9 * abs(pk) or abs(r[j] - np.conj(rk)) > 1e-9 * max(abs(rk), 1e-300):
+                return False
+        return abs(np.imag(self.direct)) == 0
 
 
 def lowpass(signal, f3db_hz: float, *, kind: Literal["rc", "bessel", "butterworth"] = "bessel", order: int = 4,

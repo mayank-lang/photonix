@@ -1,9 +1,17 @@
 """Optical receivers: photodiode with noise, transimpedance amplifier, clock recovery.
 
-Noise is added *before* the receiver filter, as white Gaussian samples whose
-variance is the one-sided power spectral density times the simulation
-bandwidth ``f_s / 2``; the filter then sets the physical noise bandwidth. For
-a filter with noise-equivalent bandwidth ``B_n``
+Noise is generated *before* the receiver filter, as white Gaussian samples
+whose variance is the one-sided power spectral density times the simulation
+bandwidth ``f_s / 2`` (band-limited white noise), and the filter then sets the
+physical noise bandwidth. The noise sequence is filtered *exactly within the
+simulation band* (multiplication by ``H(f)`` on the DFT grid), so its output
+spectrum is ``N0 |H(f)|^2`` for ``|f| < f_s / 2``; the deterministic signal
+goes through the exactly discretized filter
+(:meth:`~photonix.timedomain.filters.AnalogFilter.apply`). (Passing white
+samples through the first-order-hold recursion instead would read them as a
+piecewise-linear signal and shape the noise by ``sinc^4(f dt)``, under-
+estimating the noise bandwidth by ``~ (2/3) (pi f_3dB dt)^2``.) For a filter
+with noise-equivalent bandwidth ``B_n``
 (:meth:`~photonix.timedomain.filters.AnalogFilter.noise_bandwidth_hz`) the
 output variances are the textbook ones (Agrawal, *Fiber-Optic Communication
 Systems*, 4th ed., Sec. 4.4):
@@ -12,7 +20,14 @@ Systems*, 4th ed., Sec. 4.4):
   sample by sample),
 * thermal noise ``sigma_T^2 = (4 k_B T / R_L) B_n``,
 * receiver-referred intensity noise ``RIN (R P)^2 B_n``,
-* TIA input-referred noise ``i_n^2 B_n``.
+* TIA input-referred noise ``i_n^2 B_n``,
+
+less the (normally negligible) part of ``B_n`` beyond ``f_s / 2``: for a
+first-order RC response that fraction is ``(2 / pi) f_3dB / (f_s / 2)``, so
+sample at least ~50x the RC bandwidth or use a steeper receiver filter.
+The DFT filtering is circular: the first ~filter-memory of noise samples is
+correlated with the last ones (statistically harmless; there is no start-up
+transient in the noise).
 """
 from __future__ import annotations
 
@@ -32,6 +47,18 @@ __all__ = ["photodiode", "tia", "recover_clock", "K_BOLTZMANN"]
 
 #: Boltzmann constant (J/K), exact (SI 2019).
 K_BOLTZMANN = 1.380649e-23
+
+
+def _band_limited_noise(std, flt: AnalogFilter | None, dt: float, rng: np.random.Generator):
+    """White Gaussian samples of standard deviation ``std`` (per sample), filtered exactly in band by ``flt``."""
+    n = int(np.shape(std)[0]) if np.ndim(std) else None
+    if n is None:
+        raise ValueError("std must be an array over time")
+    noise = std * xp.asarray(rng.standard_normal(n))
+    if flt is None:
+        return noise
+    f = np.fft.fftfreq(n, dt)
+    return xp.real(xp.fft.ifft(xp.fft.fft(noise) * xp.asarray(flt.response(f))))
 
 
 def _filter_from(spec: AnalogFilter | float | None, kind: str, order: int) -> AnalogFilter | None:
@@ -106,11 +133,11 @@ def photodiode(
         var = var + 4.0 * K_BOLTZMANN * temperature_k / load_ohm * half_fs
     if rin_db_hz is not None:
         var = var + 10.0 ** (rin_db_hz / 10.0) * i_sig ** 2 * half_fs
-    if noise or rin_db_hz is not None:
-        current = current + xp.sqrt(var) * xp.asarray(rng.standard_normal(n))
     flt = _filter_from(bandwidth, kind, order)
     if flt is not None:
         current = flt.apply(current, dt)
+    if noise or rin_db_hz is not None:
+        current = current + _band_limited_noise(xp.sqrt(var), flt, dt, rng)
     return Waveform(current, dt, field_in.t0, None, "A")
 
 
@@ -141,13 +168,13 @@ def tia(
     if not isinstance(current, Waveform) or current.is_optical:
         raise TypeError("tia expects an electrical (current) Waveform")
     x = current.samples
-    if input_noise_a_rthz > 0:
-        rng = np.random.default_rng(seed)
-        sigma = input_noise_a_rthz * math.sqrt(0.5 / current.dt)
-        x = x + sigma * xp.asarray(rng.standard_normal(current.n_steps))
     flt = _filter_from(bandwidth, kind, order)
     if flt is not None:
         x = flt.apply(x, current.dt)
+    if input_noise_a_rthz > 0:
+        rng = np.random.default_rng(seed)
+        sigma = input_noise_a_rthz * math.sqrt(0.5 / current.dt)
+        x = x + _band_limited_noise(xp.full(current.n_steps, sigma), flt, current.dt, rng)
     return Waveform(gain_ohm * x, current.dt, current.t0, None, "V")
 
 
