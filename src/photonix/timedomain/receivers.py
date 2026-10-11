@@ -94,7 +94,10 @@ def photodiode(
     ``"thermal"``; ``rin_db_hz`` adds receiver-referred RIN), followed by the
     receiver filter ``bandwidth`` (an :class:`AnalogFilter`, or a -3 dB
     frequency for a ``kind``/``order`` prototype; first-order RC by default).
-    ``responsivity_a_w`` defaults to
+    The signal is filtered with the exact (first-order-hold) discretization
+    and the white noise exactly within the simulation band, so the output
+    noise variance is the textbook one for the filter's noise bandwidth (see
+    the module notes). ``responsivity_a_w`` defaults to
     :func:`photonix.components.responsivity` at the carrier (80 % quantum
     efficiency).
 

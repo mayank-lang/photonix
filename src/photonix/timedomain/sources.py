@@ -453,7 +453,9 @@ class LaserParams:
         ``dnu = [(alpha_H / 2) Gamma v_g g'(N0) dN + F_phi] / (2 pi)``.
         Below the relaxation resonance the carrier term adds ``alpha_H^2``
         times the Schawlow-Townes level, so ``frequency_noise(0)`` equals
-        ``(1 + alpha_H^2) Delta nu_ST / pi = linewidth_hz / pi`` (Henry 1982).
+        ``(1 + alpha_H^2) Delta nu_ST / pi = linewidth_hz / pi`` (Henry 1982;
+        to 1e-3 without gain compression; with the default ``epsilon_cm3`` the
+        exact linear theory differs from that simple formula by about 1 %).
 
         Returns
         -------

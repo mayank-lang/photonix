@@ -356,7 +356,11 @@ def eye_diagram(
         Without it, the levels are found by 1-D k-means clustering.
     sampling_index
         Force the sampling instant (sample offset within the UI); by default
-        the one with the largest Q factor.
+        the one with the largest Q factor (ties, as in a noiseless eye, go to
+        the middle of the tied phases). Picking the best of ``sps`` phases
+        biases Q upward when the noise is independent from phase to phase
+        (white noise without a receiver filter); fix the index for an unbiased
+        estimate.
 
     Examples
     --------
