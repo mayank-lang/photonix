@@ -768,6 +768,37 @@ def test_tent_n_eff_gradient_through_geometry_matches_finite_difference():
     assert 0.5 < g < 2.0
 
 
+@requires_jax
+def test_traced_translation_and_rotation_are_differentiable():
+    """Region.translated / rotated accept JAX values: d n_eff / d(position) of a dielectric rail
+    0.15 um beside a strip matches central differences (moving the rail away lowers the index), and
+    the rasterized area of a rotated core has zero derivative with respect to the angle (both
+    kernels).  The rail is moved rather than the strip: at 18 px/um the strip's own lattice
+    artefact under lateral shifts (~4e-3 per cell) would swamp the physical coupling."""
+    import jax
+
+    grid = uniform_grid((-0.8, 1.2, 0.0, 0.22), 18, 1.0)
+
+    def f(dx):
+        rail = rect(0.4, 0.8, 0.0, 0.22, 2.0).translated(dx, 0.0)
+        return n_eff(XSection([strip(0.5, 0.22).regions[0], rail], background=N_OX), grid=grid, kernel="tent")
+
+    g = float(jax.grad(f)(0.013))
+    h = 1e-6
+    assert g == pytest.approx((f(0.013 + h) - f(0.013 - h)) / (2 * h), rel=1e-5)
+    assert g < 0
+
+    g2 = uniform_grid((-0.6, 0.6, -0.6, 0.6), 17, 0.2)
+    for kernel in ("box", "tent"):
+        def area(theta, kernel=kernel):
+            reg = rect(-0.25, 0.25, -0.11, 0.11, N_SI).rotated(theta, (0.02, -0.01))
+            cov = XSection([reg], background=N_OX).rasterize(g2, kernel=kernel)
+            return (cov.fractions[0] * cov.sample_areas).sum()
+
+        assert float(area(31.0)) == pytest.approx(0.11, abs=1e-13)
+        assert abs(float(jax.grad(area)(31.0))) < 1e-12
+
+
 def test_n_eff_convergence_validates_resolutions():
     with pytest.raises(ValueError, match="integers"):
         xsec.n_eff_convergence(strip(), (10.5, 20, 30))

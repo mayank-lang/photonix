@@ -1127,9 +1127,10 @@ class XSection:
             bg = _concrete(frac[-1])
             if bg.max() > 1e-9:
                 j, i = np.unravel_index(int(np.argmax(bg)), bg.shape)
+                extra = " (the tent kernel also samples half a cell beyond it)" if kernel == "tent" else ""
                 raise ValueError(
-                    f"no region covers the window near (x, y) = ({grid.xc[i]:.4g}, {grid.yc[j]:.4g}) um and "
-                    "background=None; add a background material or a covering band"
+                    f"no region covers the window{extra} near (x, y) = ({grid.xc[i]:.4g}, {grid.yc[j]:.4g}) um "
+                    "and background=None; add a background material or a covering band"
                 )
         return cov
 

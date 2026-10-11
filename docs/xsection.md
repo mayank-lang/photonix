@@ -80,6 +80,23 @@ below, not a published recipe.
 | A converged `n_eff` with an error bar | `n_eff_convergence(..., kernel="tent")` (default) |
 | Thermal / electrical coefficients | `coefficient(grid, "k_th", T, average="tensor")` (laminate: series across, parallel along) or `"harmonic"` / `"arithmetic"` |
 
+Measured sensitivity to where the faces sit in the cells -- peak-to-peak
+`n_eff` change of the TE0 mode of a 500 x 220 nm Si/SiO2 strip (vertical
+sidewalls, tensor smoothing) over five sub-cell translations, and the mean over
+those translations (the continuum value is about 2.4447):
+
+| px/µm | box: vertical shift | box: lateral shift | box: mean | tent: vertical shift | tent: lateral shift | tent: mean |
+|---|---|---|---|---|---|---|
+| 20 | 1.6e-2 | 3.7e-3 | 2.4310 | 3.9e-3 | 4.1e-3 | 2.4181 |
+| 30 | 4.6e-3 | 1.6e-3 | 2.4426 | 1.1e-3 | 1.4e-3 | 2.4330 |
+| 40 | 5.0e-3 | 8.9e-4 | 2.4469 | 3.4e-4 | 6.6e-4 | 2.4383 |
+| 60 | 3.2e-3 | 4.2e-4 | 2.4431 | 1.5e-4 | 1.2e-4 | 2.4421 |
+
+The box error is smaller on average but its dependence on vertical alignment
+barely decays between 30 and 60 px/µm; the tent error is a smooth, larger bias
+whose alignment dependence falls quickly with resolution. Below ~20 px/µm both
+kernels move by several 1e-3 under sub-cell shifts.
+
 ## Validation evidence (`tests/test_xsection.py`)
 
 | Check | Evidence | Result |

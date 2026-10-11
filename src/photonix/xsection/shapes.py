@@ -260,19 +260,29 @@ class Region:
         return (float(p[:, 0].min()), float(p[:, 0].max()), float(p[:, 1].min()), float(p[:, 1].max()))
 
     def translated(self, dx: float = 0.0, dy: float = 0.0) -> Region:
-        """Copy shifted by ``(dx, dy)`` µm (a band only moves vertically)."""
-        shift = np.array([0.0 if self.band else dx, dy])
+        """Copy shifted by ``(dx, dy)`` µm (a band only moves vertically).
+
+        JAX values are allowed (the shift is then differentiable).
+        """
+        shift = _stack_points([(0.0 if self.band else dx, dy)])[0]
         return Region(self.polygon + shift, self.material, order=self.order, tags=self.tags,
                       name=self.name, properties=self.properties, band=self.band)
 
     def rotated(self, angle_deg: float, origin: tuple[float, float] = (0.0, 0.0)) -> Region:
-        """Copy rotated counter-clockwise by ``angle_deg`` about ``origin`` (not for bands)."""
+        """Copy rotated counter-clockwise by ``angle_deg`` about ``origin`` (not for bands).
+
+        JAX values are allowed for the angle and the origin.
+        """
         if self.band:
             raise ValueError("a laterally unbounded band cannot be rotated")
-        th = np.deg2rad(float(angle_deg))
-        rot = np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
-        o = np.asarray(origin, dtype=float)
-        pts = (self.polygon - o) @ rot.T + o
+        xpm: Any = np
+        if any(_is_jax_array(v) for v in (angle_deg, *origin, self.polygon)):
+            import jax.numpy as xpm
+        th = xpm.deg2rad(xpm.asarray(angle_deg, dtype=float))
+        c, s = xpm.cos(th), xpm.sin(th)
+        o = _stack_points([tuple(origin)])[0]
+        d = self.polygon - o
+        pts = xpm.stack([c * d[:, 0] - s * d[:, 1], s * d[:, 0] + c * d[:, 1]], axis=1) + o
         return Region(pts, self.material, order=self.order, tags=self.tags, name=self.name,
                       properties=self.properties)
 
