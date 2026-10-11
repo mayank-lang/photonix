@@ -433,7 +433,10 @@ class RingModulator:
         n, dt = fin.n_steps, fin.dt
         vv = self.drive(_samples(v, n, "v"), dt)
         v_mid = 0.5 * (vv + xp.concatenate([vv[1:], vv[-1:]]))
-        dw0, inv_i, inv_e = self.rates(fin.carrier_wl, v_mid)
+        wl = fin.carrier_wl
+        if wl is None:  # pragma: no cover - _optical guarantees a carrier
+            raise TypeError("the ring modulator needs an optical input")
+        dw0, inv_i, inv_e = self.rates(wl, v_mid)
         mu = xp.sqrt(2.0 * inv_e)
         z = (1j * dw0 - (inv_i + inv_e)) * dt
         lam = xp.exp(z)

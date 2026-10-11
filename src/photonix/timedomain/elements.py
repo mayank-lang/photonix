@@ -465,7 +465,7 @@ class MemorylessTD(TDElement):
         """Build from a scattering dictionary evaluated at the carrier (scalar entries)."""
         from photonix.core.types import ports_of
 
-        names = tuple(ports) if ports is not None else tuple(ports_of(sdict))
+        names = tuple(ports) if ports is not None else tuple(ports_of(dict(sdict)))
         idx = {p: i for i, p in enumerate(names)}
         n = len(names)
         S = xp.zeros((n, n), dtype=complex)
@@ -643,7 +643,7 @@ class DelayLineTD(TDElement):
         return CompiledTD(self.ports, D, chans, structure=(n0, n_taps))
 
     def describe(self, dt: float) -> dict[str, Any]:
-        out = {"type": "DelayLineTD", "ports": list(self.ports), "interp": self.interp}
+        out: dict[str, Any] = {"type": "DelayLineTD", "ports": list(self.ports), "interp": self.interp}
         try:
             out["delay_samples"] = self.delay_samples(dt)
         except ValueError:

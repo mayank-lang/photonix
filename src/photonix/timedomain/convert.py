@@ -101,7 +101,7 @@ def _evaluate(model: Callable, settings: Mapping[str, Any], nu, carrier_wl: floa
 def _ports_of(sdict: Mapping) -> tuple[str, ...]:
     from photonix.core.types import ports_of
 
-    return tuple(ports_of(sdict))
+    return tuple(ports_of(dict(sdict)))
 
 
 def _is_concrete(*values) -> bool:

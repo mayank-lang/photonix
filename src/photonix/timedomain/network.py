@@ -53,7 +53,7 @@ import math
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 
@@ -189,12 +189,9 @@ def _reachable(compiled: Mapping[str, CompiledTD], conns: Mapping[_Terminal, _Te
     for name, c in compiled.items():
         root = name.split("/", 1)[0]
         full = c.time_varying is not None or root in dense or not _is_concrete(c.D)
-        d = None if full else np.abs(np.asarray(c.D)) > 0
+        d = np.ones((len(c.ports), len(c.ports)), dtype=bool) if full else np.abs(np.asarray(c.D)) > 0
         for j, p in enumerate(c.ports):
-            if full:
-                outs[(name, p)] = {(name, q) for q in c.ports}
-            else:
-                outs[(name, p)] = {(name, q) for i, q in enumerate(c.ports) if d[i, j]}
+            outs[(name, p)] = {(name, q) for i, q in enumerate(c.ports) if d[i, j]}
         for ch in c.channels:
             outs[(name, ch.src)].add((name, ch.dst))
     seen: set[_Terminal] = set()
@@ -317,8 +314,8 @@ def _assemble(compiled: Mapping[str, CompiledTD], conns: Mapping[_Terminal, _Ter
     # -- eliminate the instantaneous loop ------------------------------------ #
     n_tv = len(tv_terms)
     e_t = np.zeros((n, n_tv))
-    for j, t in enumerate(tv_terms):
-        e_t[t, j] = 1.0
+    for j, t_idx in enumerate(tv_terms):
+        e_t[t_idx, j] = 1.0
     gamma_x = xp.asarray(gamma, dtype=complex)
     lhs = xp.eye(n, dtype=complex) - d0 @ gamma_x
     if _is_concrete(lhs) and n:
@@ -585,7 +582,7 @@ class TimeDomainCircuit:
         if models is None:
             from photonix.components import MODELS
 
-            registry: Mapping[str, Callable] = MODELS
+            registry: Mapping[str, Callable[..., Any]] = cast("Mapping[str, Callable[..., Any]]", MODELS)
         else:
             registry = models
         overrides = dict(overrides or {})
@@ -594,8 +591,8 @@ class TimeDomainCircuit:
         for key in (*overrides, *td_elements, *time_varying):
             if key not in netlist.instances:
                 raise KeyError(f"unknown instance {key!r}")
-        opts = {"carrier_wl": float(carrier_wl), "dt": float(dt), "interp": interp,
-                "fir_tol": fir_tol, "max_taps": max_taps}
+        opts: dict[str, Any] = {"carrier_wl": float(carrier_wl), "dt": float(dt), "interp": interp,
+                                "fir_tol": fir_tol, "max_taps": max_taps}
 
         def build(inst: str, extra: Mapping[str, Any] | None, like: TDElement | None) -> TDElement:
             if inst in td_elements:
@@ -669,8 +666,8 @@ class TimeDomainCircuit:
             if record == "external":
                 return list(self._ports), [self._ports[p] for p in self._ports]
             if record == "all":
-                terms = [(name, p) for name, el in self._flat.items() for p in el.ports]
-                return [f"{n},{p}" for n, p in terms], terms
+                every = [(name, p) for name, el in self._flat.items() for p in el.ports]
+                return [f"{n},{p}" for n, p in every], every
             record = [record]
         names: list[str] = []
         terms: list[_Terminal] = []
