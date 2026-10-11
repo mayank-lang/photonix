@@ -959,7 +959,8 @@ class Coverage:
         temperature
             Passed to temperature-aware materials (K); ``None`` = their default.
         smoothing
-            ``"arithmetic"`` -- exact area average ``<eps>`` (the convention of
+            ``"arithmetic"`` -- exact average ``<eps>`` over the sample's kernel
+            (for the box kernel the area average, the convention of
             :func:`photonix.em.rectangular_waveguide`): shape ``(ny, nx)``, or
             ``(3, ny, nx)`` (``xx, yy, zz``) if any material is anisotropic.
             ``"tensor"`` -- Kottke anisotropic smoothing, shape ``(3, ny, nx)``
@@ -986,8 +987,9 @@ class Coverage:
         average: Average = "arithmetic",
         offdiagonal: bool = False,
     ) -> Any:
-        """Cell-averaged non-optical coefficient (``"k_th"``, ``"rho_cp"``, ``"sigma"``...).
+        """Sample-averaged non-optical coefficient (``"k_th"``, ``"rho_cp"``, ``"sigma"``...).
 
+        Averages are taken over each sample's kernel (the cell for ``"box"``).
         ``average``: ``"arithmetic"`` (volume average -- exact for capacities such
         as ``rho_cp``), ``"harmonic"`` (series average), or ``"tensor"`` (the
         laminate homogenization used for conductivities and ``eps_static``: series
@@ -1158,7 +1160,7 @@ class XSection:
 
     def coefficient(self, grid: TensorGrid, quantity: str, temperature: float | None = None, *,
                     average: Average = "arithmetic", offdiagonal: bool = False, kernel: Kernel = "box") -> Any:
-        """Cell-averaged non-optical coefficient (see :meth:`Coverage.coefficient`)."""
+        """Sample-averaged non-optical coefficient (see :meth:`Coverage.coefficient`)."""
         return self.rasterize(grid, kernel).coefficient(quantity, temperature, average=average,
                                                         offdiagonal=offdiagonal)
 
