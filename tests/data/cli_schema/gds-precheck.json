@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/gds-precheck/1",
+  "title": "photonix gds-precheck --json output, version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/gds-precheck/1"
+    },
+    "file": {
+      "type": "string"
+    },
+    "cell": {
+      "type": "string"
+    },
+    "rule_sources": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "layer": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "rule": {
+            "enum": [
+              "min_width",
+              "min_space",
+              "min_area"
+            ]
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "layer",
+          "rule",
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "layers_present": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "unchecked_layers": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "items": {
+          "type": "integer"
+        },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    },
+    "clean": {
+      "type": "boolean"
+    },
+    "violation_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "truncated": {
+      "type": "boolean"
+    },
+    "summary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string"
+          },
+          "layer": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "count",
+          "layer",
+          "rule"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "rule": {
+            "type": "string"
+          },
+          "layer": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "value": {
+            "type": "number"
+          },
+          "bbox_um": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "area_um2": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "area_um2",
+          "bbox_um",
+          "layer",
+          "rule",
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "cell",
+    "clean",
+    "file",
+    "layers_present",
+    "rule_sources",
+    "rules",
+    "schema",
+    "summary",
+    "truncated",
+    "unchecked_layers",
+    "violation_count",
+    "violations"
+  ],
+  "additionalProperties": false
+}

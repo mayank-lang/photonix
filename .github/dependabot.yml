@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    # Only raise the upper end of what CI tests; the floors in pyproject.toml
+    # are deliberate and exercised by the oldest-deps job.
+    versioning-strategy: increase-if-necessary
+    groups:
+      python:
+        patterns: ["*"]

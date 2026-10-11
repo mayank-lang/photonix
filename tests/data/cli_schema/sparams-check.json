@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mayank-lang/photonix/schemas/cli/sparams-check/1",
+  "title": "photonix sparams-check --json output, version 1",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "const": "photonix.cli/sparams-check/1"
+    },
+    "file": {
+      "type": "string"
+    },
+    "ports": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "n_wavelengths": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "wl_min_um": {
+      "type": "number"
+    },
+    "wl_max_um": {
+      "type": "number"
+    },
+    "max_singular_value": {
+      "type": "number"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "enum": [
+              "passivity",
+              "reciprocity",
+              "losslessness"
+            ]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "gated": {
+            "type": "boolean"
+          },
+          "value": {
+            "type": "number"
+          },
+          "atol": {
+            "type": "number"
+          },
+          "at_wl_um": {
+            "type": "number"
+          },
+          "measure": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "at_wl_um",
+          "atol",
+          "gated",
+          "measure",
+          "name",
+          "passed",
+          "value"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "checks",
+    "file",
+    "max_singular_value",
+    "n_wavelengths",
+    "ok",
+    "ports",
+    "schema",
+    "wl_max_um",
+    "wl_min_um"
+  ],
+  "additionalProperties": false
+}

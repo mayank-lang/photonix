@@ -157,7 +157,7 @@ def to_material_grid(
     (:mod:`meep`'s engine fully supports ``MaterialGrid``). It must **not** be
     used as MPB / ``mpb.ModeSolver`` geometry: Meep's mode solver (``libpympb``)
     has no ``MATERIAL_GRID`` material branch and aborts on it -- the MPB path in
-    :mod:`.modes` passes a raw epsilon array instead. Meep indexes the weight
+    :mod:`photonix.em.meep.modes` passes a raw epsilon array instead. Meep indexes the weight
     array ``[ix, iy]`` whereas photonix stores ``eps[iy, ix]``, so the weights
     are transposed here -- the one orientation subtlety, localised to this
     function. MaterialGrid weights are bilinearly interpolated density *nodes*;

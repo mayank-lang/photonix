@@ -104,6 +104,7 @@ SType = SDict | SDense | SCoo
 """Any accepted scattering representation."""
 
 Settings = dict[str, Any]
+"""Keyword settings of a model call (parameter name -> value), e.g. ``{"wl": 1.55, "length": 10.0}``."""
 
 
 @runtime_checkable

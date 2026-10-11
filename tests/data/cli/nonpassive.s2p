@@ -1,0 +1,6 @@
+! Hand-written 2-port fixture for tests/test_cli.py: |S21| = 1.05 at 193 THz is NOT passive.
+! It is reciprocal (S12 == S21). Touchstone 1.0, S11 S21 S12 S22 per line.
+# GHZ S RI R 50
+190000 0.0 0.0 0.9 0.0 0.9 0.0 0.0 0.0
+193000 0.0 0.0 1.05 0.0 1.05 0.0 0.0 0.0
+196000 0.0 0.0 0.9 0.0 0.9 0.0 0.0 0.0

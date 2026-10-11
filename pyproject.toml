@@ -1,14 +1,19 @@
 [build-system]
-requires = ["hatchling>=1.21"]
+# hatchling >= 1.27 implements PEP 639 (SPDX ``license`` + ``license-files``).
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "photonix"
-version = "0.1.0"
+# Single source of truth: ``__version__`` in src/photonix/__init__.py (read by
+# hatchling at build time; see [tool.hatch.version] below and RELEASING.md).
+dynamic = ["version"]
 description = "Accuracy-first, differentiable photonic integrated circuit design, simulation, and verification."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
+# Placeholder until the owner chooses the author/maintainer list (see RELEASING.md).
 authors = [{ name = "photonix contributors" }]
 keywords = [
     "photonics", "silicon photonics", "photonic integrated circuits", "PIC",
@@ -18,10 +23,14 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
     "Topic :: Scientific/Engineering :: Physics",
     "Typing :: Typed",
 ]
@@ -40,13 +49,17 @@ viz = ["matplotlib>=3.7"]
 rf = ["scikit-rf>=1.0"]
 multiphysics = ["meshio>=5.3"]
 test = ["pytest>=7.4", "pytest-cov>=4.1"]
-release = ["build>=1.2", "twine>=5.0"]
+release = ["build>=1.2", "twine>=6.1", "check-wheel-contents>=0.6"]
+docs = [
+    "sphinx>=7.3", "pydata-sphinx-theme>=0.15", "myst-parser>=3.0", "numpydoc>=1.7",
+    "sphinx-copybutton>=0.5", "sphinx-gallery>=0.16", "matplotlib>=3.7",
+]
 all = [
     "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7",
     "networkx>=3.0", "scikit-rf>=1.0", "meshio>=5.3",
 ]
 dev = [
-    "pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.4", "mypy>=1.8",
+    "pytest>=7.4", "pytest-cov>=4.1", "ruff>=0.4", "mypy>=1.8", "pre-commit>=3.5",
     "jax>=0.4.20", "jaxlib>=0.4.20", "gdstk>=0.9", "matplotlib>=3.7", "networkx>=3.0",
     "scikit-rf>=1.0", "meshio>=5.3",
 ]
@@ -55,18 +68,51 @@ dev = [
 photonix = "photonix.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/photonix/photonix"
-Documentation = "https://photonix.readthedocs.io"
-Repository = "https://github.com/photonix/photonix"
-Issues = "https://github.com/photonix/photonix/issues"
+Homepage = "https://github.com/mayank-lang/photonix"
+Documentation = "https://github.com/mayank-lang/photonix/tree/main/docs"
+Repository = "https://github.com/mayank-lang/photonix"
+Issues = "https://github.com/mayank-lang/photonix/issues"
+Changelog = "https://github.com/mayank-lang/photonix/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/photonix/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/photonix"]
 
+[tool.hatch.build.targets.sdist]
+# Ship what is needed to build, test and cite; keep CI/editor files out.
+include = [
+    "/src", "/tests", "/docs", "/examples/*.py", "/benchmarks",
+    "/README.md", "/CHANGELOG.md", "/CITATION.cff", "/LICENSE", "/pyproject.toml",
+]
+exclude = ["/docs/_build", "/docs/api/generated", "/docs/auto_examples", "**/__pycache__"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --strict-markers"
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "slow: long-running numerical study (deselect with -m 'not slow')",
+    "meep: requires the optional conda-only Meep/MPB backend",
+]
+
+[tool.coverage.run]
+source = ["photonix"]
+branch = true
+# The Meep backend only runs on the conda-provided nightly job.
+omit = ["*/photonix/em/meep/*"]
+
+[tool.coverage.report]
+# Ratchet: two points below the first measured full-suite value (see CI).
+fail_under = 85
+show_missing = false
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pragma: no cover",
+]
 
 [tool.ruff]
 line-length = 120

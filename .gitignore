@@ -23,3 +23,8 @@ venv/
 *~
 .idea/
 .vscode/
+
+# Sphinx build outputs (docs/api/generated is written by docs/_ext/photonix_apigen.py at build time).
+docs/_build/
+docs/api/generated/
+docs/auto_examples/

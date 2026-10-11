@@ -1,6 +1,7 @@
 """photonix.em -- rigorous, differentiable electromagnetic solvers.
 
 Delivered:
+
 * FDE scalar mode solver with a differentiable ``n_eff`` adjoint;
 * polarization-resolved 1-D slab solver (TE & TM) validated to <0.1% vs analytic;
 * semivectorial (quasi-TE/TM) 2-D FDE solver with a non-symmetric adjoint;

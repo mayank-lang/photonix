@@ -1,7 +1,7 @@
 """Utilities for manipulating scattering objects (SDict / SDense / SCoo).
 
 These helpers are the lingua franca between modules: component models emit
-``SDict``s, the circuit solver consumes/produces them, and visualization reads
+``SDict`` objects, the circuit solver consumes/produces them, and visualization reads
 them. Everything here is differentiable (pure backend arithmetic) and works under
 both the JAX and NumPy backends.
 """
@@ -172,7 +172,7 @@ def is_passive(x: SType, atol: float = 1e-6) -> bool:
 
 
 def power(coeff) -> float | object:
-    """|coeff|^2 -- transmitted/reflected power fraction."""
+    """``|coeff|**2`` -- transmitted/reflected power fraction."""
     return xp.abs(xp.asarray(coeff)) ** 2
 
 

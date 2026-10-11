@@ -18,7 +18,7 @@ __all__ = ["lowpass_prototype", "chebyshev_epsilon", "periodic_target"]
 
 
 def lowpass_prototype(kind: str, order: int, ripple_db: float | None = None) -> np.ndarray:
-    """Element values ``g0 .. g_{N+1}`` of the normalized low-pass prototype.
+    """Element values ``g_0, ..., g_{N+1}`` of the normalized low-pass prototype.
 
     Butterworth: ``g_k = 2 sin((2k - 1) pi / (2N))``. Chebyshev with
     ``ripple_db`` pass-band ripple: the recursion of Matthaei, Young & Jones,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import requires_matplotlib
 
 import photonix as px
 
@@ -22,6 +23,7 @@ def test_circuit_rejects_duplicate_exposure():
         netlist.expose("y", ("a", "o1"))
 
 
+@requires_matplotlib
 def test_vertical_route_and_native_cell_plotting():
     route = px.layout.route(
         px.layout.Port("a", (0, 0), width=0.5),
@@ -31,6 +33,7 @@ def test_vertical_route_and_native_cell_plotting():
     assert len(px.viz.plot_cell(px.layout.components.straight()).patches) == 1
 
 
+@requires_matplotlib
 def test_complex_mode_plot_and_zero_overlap():
     assert px.viz.plot_mode(np.ones((3, 4), dtype=complex) * (1 + 1j)) is not None
     with pytest.raises(ValueError, match="zero-norm"):
