@@ -217,6 +217,10 @@ The following are deliberately reported as open rather than hidden behind a
   decks, coupling laws, output parsers, and solver-backed validation;
 - foundry-supplied corner distributions, Monte Carlo yield acceptance criteria,
   and regression baselines (the package now provides only neutral study records);
+- calibrated transmitter and receiver parameter sets (laser rate-equation
+  parameters, modulator `V_pi`/bandwidth, receiver noise) and standard-compliant
+  TDECQ / eye-mask procedures: `photonix.timedomain` provides the physics with
+  analytic and cross-solver validation only;
 - a Meep-enabled CI runner. Normal CI validates every pure adapter, but real
   MPB/FDTD tests are skipped where the conda-only dependency is absent.
 

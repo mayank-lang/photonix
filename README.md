@@ -193,6 +193,7 @@ capture without claiming foundry qualification.
 | `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
 | `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra; sensitivities, FOSM moments, process corners, worst-case distance and importance-sampled yield |
 | `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |
+| `photonix.timedomain` | Sample-mode (complex-envelope) circuit simulation of any netlist with feedback loops and modulators (`lax.scan`, differentiable); PRBS, lasers (linewidth, RIN, rate equations), MZM/EAM/ring modulators, photodiodes and filters with noise, eye diagrams, Q/BER, sensitivity, masks -- see [`docs/TIMEDOMAIN.md`](docs/TIMEDOMAIN.md) |
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |

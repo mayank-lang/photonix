@@ -9,12 +9,13 @@ __all__ = ["plot_eye"]
 
 
 def plot_eye(eye: Any, *, ax=None, max_traces: int = 400, color: str = "C0", alpha: float = 0.08,
-             show_stats: bool = True):
+             show_stats: bool = True, scale: float = 1.0, unit: str | None = None):
     """Plot a :class:`photonix.timedomain.EyeDiagram`.
 
     Draws up to ``max_traces`` folded traces against time in unit intervals,
     marks the sampling instant(s) and decision threshold(s) and, with
-    ``show_stats``, annotates Q, eye height and extinction ratio.
+    ``show_stats``, annotates Q, eye height and extinction ratio. ``scale``
+    multiplies the signal for display (e.g. ``1e3`` with ``unit="mA"``).
 
     Returns
     -------
@@ -37,7 +38,7 @@ def plot_eye(eye: Any, *, ax=None, max_traces: int = 400, color: str = "C0", alp
 
     if ax is None:
         _, ax = plt.subplots(figsize=(6, 4))
-    traces = np.asarray(eye.traces)
+    traces = np.asarray(eye.traces) * scale
     if traces.shape[0] > max_traces:
         pick = np.linspace(0, traces.shape[0] - 1, max_traces).astype(int)
         traces = traces[pick]
@@ -47,11 +48,12 @@ def plot_eye(eye: Any, *, ax=None, max_traces: int = 400, color: str = "C0", alp
         if t.min() <= k + 0.5 <= t.max():
             ax.axvline(k + 0.5, color="0.4", lw=0.6, ls=":")
     for th in np.atleast_1d(eye.thresholds):
-        ax.axhline(float(th), color="C3", lw=0.6, ls="--")
+        ax.axhline(float(th) * scale, color="0.35", lw=0.7, ls="--")
+    label = unit if unit is not None else eye.unit
     ax.set_xlabel("Time (UI)")
-    ax.set_ylabel(f"Signal ({eye.unit})" if eye.unit else "Signal")
+    ax.set_ylabel(f"Signal ({label})" if label else "Signal")
     if show_stats:
-        txt = f"Q = {eye.q_factor:.2f}\nheight = {eye.height:.3g}"
+        txt = f"Q = {eye.q_factor:.2f}\nheight = {eye.height * scale:.3g} {label}".rstrip()
         er = eye.extinction_ratio_db
         if np.isfinite(er):
             txt += f"\nER = {er:.2f} dB"
