@@ -13,7 +13,7 @@ It is **not** passed as a
 :class:`meep.MaterialGrid`: Meep's mode solver (``libpympb``) evaluates only
 ``Medium`` / epsilon-array / user-function / metal materials and hard-aborts on a
 ``MaterialGrid`` -- that class is supported by the FDTD engine only (see
-:mod:`.materials`). Effective indices come from MPB's ``find_k`` (target
+:mod:`photonix.em.meep.materials`). Effective indices come from MPB's ``find_k`` (target
 frequency -> propagation constant) via the unit bridge in :mod:`._guard`.
 """
 from __future__ import annotations

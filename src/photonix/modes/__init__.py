@@ -9,8 +9,7 @@
 
 What lives where
 ----------------
-``solve_modes`` / ``n_eff`` / ``group_index`` / ``CrossSection`` /
-``rectangular_waveguide``
+``solve_modes`` / ``n_eff`` / ``group_index`` / ``CrossSection`` / ``rectangular_waveguide``
     Re-exported from :mod:`photonix.em`. Identical objects, not copies.
 ``overlap``
     Scalar field overlap helper, kept here.

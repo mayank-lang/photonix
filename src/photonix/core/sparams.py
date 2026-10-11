@@ -172,7 +172,7 @@ def is_passive(x: SType, atol: float = 1e-6) -> bool:
 
 
 def power(coeff) -> float | object:
-    """|coeff|^2 -- transmitted/reflected power fraction."""
+    """``|coeff|**2`` -- transmitted/reflected power fraction."""
     return xp.abs(xp.asarray(coeff)) ** 2
 
 
