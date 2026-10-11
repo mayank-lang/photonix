@@ -766,6 +766,21 @@ class Coverage:
     def regions(self) -> tuple[Region, ...]:
         return tuple(self.xsection.regions)
 
+    @property
+    def sample_areas(self) -> np.ndarray:
+        """``(ny, nx)`` integral of each sample's kernel (µm²).
+
+        ``sum(fractions[r] * sample_areas)`` is the visible area of region
+        ``r`` (for the tent kernel: of its part inside the hull of the cell
+        centres).  Equal to ``grid.areas`` for the box kernel and on uniform
+        grids.
+        """
+        if self.kernel == "box":
+            return self.grid.areas
+        dual = _tent_dual_grid(self.grid)
+        wd, hd = dual.dx, dual.dy
+        return (0.5 * (hd[:-1] + hd[1:]))[:, None] * (0.5 * (wd[:-1] + wd[1:]))[None, :]
+
     def _present(self) -> np.ndarray:
         f = _concrete(self.fractions.reshape(self.fractions.shape[0], -1).max(axis=1))
         present = f > 0.0
@@ -1120,7 +1135,7 @@ class XSection:
         return self.rasterize(grid, kernel).mask(tag)
 
     def to_em(self, wl: float = 1.55, resolution: float = 40, margin: float = 1.5,
-              temperature: float | None = None):
+              temperature: float | None = None, *, kernel: Kernel = "box"):
         """Drop-in :class:`photonix.em.CrossSection` (arithmetic smoothing, uniform grid).
 
         ``solve_modes_fullvector(eps=cs.eps, grid=(cs.x, cs.y))`` then solves the
@@ -1136,7 +1151,7 @@ class XSection:
         from photonix.em.geometry import CrossSection as _EmCrossSection
 
         grid = self.uniform_grid(resolution, margin)
-        eps = np.asarray(_concrete_or_array(self.eps(grid, wl, temperature)))
+        eps = np.asarray(_concrete_or_array(self.eps(grid, wl, temperature, kernel=kernel)))
         if eps.ndim != 2:
             raise ValueError("to_em needs isotropic materials; use photonix.xsection.solve_modes for anisotropy")
         if np.iscomplexobj(eps) and not np.any(eps.imag):

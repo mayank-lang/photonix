@@ -503,6 +503,8 @@ def n_eff_convergence(
     res = [int(r) for r in resolutions]
     if [float(r) for r in resolutions] != [float(r) for r in res]:
         raise ValueError("resolutions must be integers (px/um)")
+    if len(res) < 3 or res[0] <= 0 or any(b <= a for a, b in zip(res[:-1], res[1:], strict=True)):
+        raise ValueError("resolutions must be at least three positive, strictly increasing values")
     values = [float(n_eff(xs, wl=wl, resolution=r, margin=margin, smoothing=smoothing, kernel=kernel,
                           temperature=temperature, offdiagonal=offdiagonal)) for r in res]
     return estimate_convergence(res, np.asarray(values), order=order, rtol=rtol, atol=atol)

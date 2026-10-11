@@ -581,3 +581,195 @@ def test_solver_rejects_graded_grid_and_bad_arguments():
 
 def test_math_constants_used_in_docs():
     assert math.isclose(disk(0, 0, 1.0, 1.0, n_vertices=64).area, math.pi, rel_tol=1e-12)
+
+
+# --------------------------------------------------------------------------- #
+# Tent (bilinear hat) kernel
+# --------------------------------------------------------------------------- #
+def _poly_moments(poly):
+    """Exact (int 1, int x, int y, int xy) dA of a simple polygon by Green's theorem."""
+    if len(poly) < 3:
+        return np.zeros(4)
+    p = np.asarray(poly, float)
+    x, y = p[:, 0], p[:, 1]
+    x1, y1 = np.roll(x, -1), np.roll(y, -1)
+    c = x * y1 - x1 * y
+    return np.array([c.sum() / 2, ((x + x1) * c).sum() / 6, ((y + y1) * c).sum() / 6,
+                     ((x * y1 + 2 * x * y + 2 * x1 * y1 + x1 * y) * c).sum() / 24])
+
+
+def _tent_reference(pieces, grid):
+    """Tent-weighted visible fractions from per-dual-cell clipping (independent of the sweep).
+
+    ``pieces`` is a list of (polygon, sign) whose signed sum is the visible region.  The tent of
+    cell centre (i, j) is the bilinear nodal function on the lines through the cell centres
+    (plus one mirrored ghost line per side).
+    """
+    xn = np.concatenate([[2 * grid.xc[0] - grid.xc[1]], grid.xc, [2 * grid.xc[-1] - grid.xc[-2]]])
+    yn = np.concatenate([[2 * grid.yc[0] - grid.yc[1]], grid.yc, [2 * grid.yc[-1] - grid.yc[-2]]])
+    w = np.zeros((grid.ny + 2, grid.nx + 2))
+    for b in range(yn.size - 1):
+        for a in range(xn.size - 1):
+            X0, X1, Y0, Y1 = xn[a], xn[a + 1], yn[b], yn[b + 1]
+            box = [(X0, Y0), (X1, Y0), (X1, Y1), (X0, Y1)]
+            m = sum(sign * _poly_moments(_clip_convex(poly, box)) for poly, sign in pieces)
+            W, H = X1 - X0, Y1 - Y0
+            # Corner functions (ax + bx x)(ay + by y) / (W H) in global coordinates.
+            for cx, (ax, bx) in ((a + 1, (-X0, 1.0)), (a, (X1, -1.0))):
+                for cy, (ay, by) in ((b + 1, (-Y0, 1.0)), (b, (Y1, -1.0))):
+                    w[cy, cx] += (ax * ay * m[0] + bx * ay * m[1] + ax * by * m[2] + bx * by * m[3]) / (W * H)
+    mass = (0.5 * (yn[2:] - yn[:-2]))[:, None] * (0.5 * (xn[2:] - xn[:-2]))[None, :]
+    return w[1:-1, 1:-1] / mass
+
+
+def test_tent_fractions_match_independent_clipper_moments_with_painting():
+    """Tent fractions = per-dual-cell Sutherland-Hodgman clipping + exact polygon moments, on a
+    graded grid, for a non-convex polygon partly painted over by a slanted trapezoid."""
+    lower = polygon(_star(9, 6), 2.0)
+    upper = trapezoid(0.15, -0.35, 0.55, 0.5, material=3.0, sidewall_deg=67.0)
+    grid = graded_grid((-1.1, 1.1, -1.1, 1.1), refine=[(-0.3, 0.4, -0.2, 0.3, 0.09)], h_max=0.3, ratio=1.4)
+    cov = XSection([lower, upper], background=1.0).rasterize(grid, kernel="tent")
+    assert cov.kernel == "tent" and cov.face_x is None
+    overlap = _clip_convex(lower.polygon, upper.polygon)
+    ref_up = _tent_reference([(upper.polygon, 1.0)], grid)
+    ref_low = _tent_reference([(lower.polygon, 1.0), (overlap, -1.0)], grid)
+    assert np.allclose(cov.fractions[1], ref_up, atol=1e-13, rtol=0)
+    assert np.allclose(cov.fractions[0], ref_low, atol=1e-13, rtol=0)
+    assert np.allclose(cov.fractions.sum(axis=0), 1.0, atol=1e-14, rtol=0)
+
+
+def test_tent_reproduces_bilinear_moments_but_box_does_not():
+    """The defining property: sum_k f_k A_k (1, x, y, xy)_k equals the exact region moments."""
+    reg = polygon(_star(11, 3) * 0.8, 2.0)
+    grid = uniform_grid((-1, 1, -1, 1), resolution=11.3, margin=0.3)
+    exact = _poly_moments(reg.polygon)
+    X, Y = np.meshgrid(grid.xc, grid.yc)
+    basis = np.stack([np.ones_like(X), X, Y, X * Y])
+    got = {}
+    for kernel in ("tent", "box"):
+        cov = XSection([reg], background=1.0).rasterize(grid, kernel=kernel)
+        got[kernel] = (basis * (cov.fractions[0] * cov.sample_areas)).reshape(4, -1).sum(axis=1)
+    assert np.allclose(got["tent"], exact, atol=1e-14, rtol=0)
+    assert abs(got["box"][0] - exact[0]) < 1e-14                             # box conserves area only
+    assert np.max(np.abs(got["box"][1:] - exact[1:])) > 1e-6
+
+
+def test_tent_normals_and_laminate_are_exact():
+    # Vertical interface x = s through the centre sample of a 3 x 3 grid: the tent fraction is the hat CDF.
+    grid = TensorGrid([-1.5, -0.5, 0.5, 1.5], [-1.5, -0.5, 0.5, 1.5])
+    s = 0.3
+    xs = XSection([rect(-5.0, s, -5.0, 5.0, 3.0)], background=1.5)
+    f = 1.0 - (1.0 - s) ** 2 / 2.0
+    e = xs.eps(grid, smoothing="tensor", offdiagonal=True, kernel="tent")[:, 1, 1]
+    assert e == pytest.approx([1.0 / (f / 9.0 + (1 - f) / 2.25), f * 9.0 + (1 - f) * 2.25,
+                               f * 9.0 + (1 - f) * 2.25, 0.0], abs=1e-12)
+    # Slanted half-plane: every sample whose tent sees the interface gets the exact normal.
+    th = np.deg2rad(27.0)
+    n_true = np.array([np.cos(th), np.sin(th)])
+    t = np.array([-n_true[1], n_true[0]])
+    c = 0.013 * n_true
+    big = 5.0
+    poly = [c - big * t, c + big * t, c + big * t - big * n_true, c - big * t - big * n_true]
+    g = uniform_grid((-0.5, 0.5, -0.5, 0.5), 10, 0.0)
+    hp = XSection([polygon(poly, 3.0)], background=1.0)
+    fr = hp.fractions(g, kernel="tent")[0]
+    nrm = hp.normals(g, kernel="tent")
+    cut = (fr > 1e-9) & (fr < 1 - 1e-9)
+    assert cut.sum() > 10
+    assert np.allclose(np.abs(nrm[cut] @ n_true), 1.0, atol=1e-12)
+
+
+def test_tent_kernel_api_and_validation():
+    xs = heater_over_waveguide(heater_offset=0.7, metal=2.0 - 4.0j, properties={
+        "core": {"k_th": 148.0}, "box": {"k_th": 1.38}, "substrate": {"k_th": 148.0},
+        "clad": {"k_th": 1.38}, "heater": {"k_th": 20.0}})
+    grid = uniform_grid(xs.bbox(), 20, 1.0)
+    cov = xs.rasterize(grid, kernel="tent")
+    assert np.allclose(cov.sample_areas, grid.areas, rtol=1e-12)
+    for tag, area in (("core", 0.5 * 0.22), ("heater", 2.0 * 0.12)):
+        assert float((xs.mask(grid, tag, kernel="tent") * grid.areas).sum()) == pytest.approx(area, rel=1e-12)
+    k = xs.coefficient(grid, "k_th", average="tensor", kernel="tent")
+    assert k.shape == (3,) + grid.shape and np.all(k > 1.3) and np.all(k < 148.1)
+    cs = strip().to_em(resolution=20, kernel="tent")
+    assert cs.eps.shape == strip().to_em(resolution=20).eps.shape
+    with pytest.raises(ValueError, match="kernel"):
+        xs.rasterize(grid, kernel="gauss")
+
+
+@requires_jax
+@pytest.mark.parametrize("resolution", [18, 36])
+def test_tent_eps_gradient_matches_finite_difference_cellwise(resolution):
+    """d eps / d width per sample, tent kernel.  At 36 px/um the top corners (x = +-0.25) sit exactly
+    on tent nodes, where eps(w) is C1 but not C2; a Richardson-corrected central difference removes
+    the resulting O(h) finite-difference error."""
+    import jax
+
+    grid = uniform_grid(strip(0.5, 0.22, sidewall_deg=82.0).bbox(), resolution, 1.0)
+    assert np.any(np.isclose(grid.xc if resolution == 36 else grid.x_edges, 0.25, atol=1e-12))
+
+    def eps(w):
+        return strip(w, 0.22, sidewall_deg=82.0).eps(grid, smoothing="tensor", offdiagonal=True, kernel="tent")
+
+    _, jvp = jax.jvp(eps, (0.5,), (1.0,))
+
+    def fd(h):
+        return (np.asarray(eps(0.5 + h)) - np.asarray(eps(0.5 - h))) / (2 * h)
+
+    rich = 2 * fd(5e-7) - fd(1e-6)
+    assert np.max(np.abs(np.asarray(jvp) - rich)) < 1e-7 * np.max(np.abs(rich))
+
+
+def test_tent_kernel_translation_invariance_within_gci():
+    """Spec check: sub-cell shifts (vertical, lateral, diagonal) of an 80-degree trapezoid change the
+    tensor/tent n_eff by much less than the GCI of a 20/30/40 px/um study.  The box kernel moves the
+    same core by ~5.6e-3 under vertical shifts -- as much as its GCI -- because its O(h^2) interface
+    error depends on where the horizontal faces cut their cells (as for the 1-D TE slab)."""
+    xs = strip(0.5, 0.22, sidewall_deg=80.0)
+    study = xsec.n_eff_convergence(xs, (20, 30, 40), margin=1.2)
+    assert study.asymptotic
+    grid = xs.uniform_grid(40, 1.2)
+    shifts = [(0.0, 0.25), (0.0, 0.5), (0.0, 0.75), (0.5, 0.0), (0.3, 0.6)]
+    spread = {}
+    for kernel in ("tent", "box"):
+        ref = n_eff(xs, grid=grid, kernel=kernel)
+        dev = [n_eff(xs.translated(a / 40.0, b / 40.0), grid=grid, kernel=kernel) - ref for a, b in shifts]
+        spread[kernel] = float(np.max(np.abs(dev)))
+    assert spread["tent"] < 0.1 * study.estimated_absolute_error
+    assert spread["tent"] < 1e-3                                       # observed 4.0e-4
+    assert spread["box"] > 5 * spread["tent"]
+
+
+@pytest.mark.parametrize("angle", [0.0, 45.0])
+def test_tent_extrapolation_recovers_aligned_limit_on_unaligned_grids(angle):
+    """Richardson limit of tent/tensor n_eff on ordinary (face-unaligned) grids, for the axis-aligned
+    and the 45-degree-rotated 500 x 200 nm core, equals the aligned-grid continuum value 2.36506
+    (see test_rotation_invariance_requires_tensor_smoothing) within the study's own error bound;
+    observed deviations 2.2e-4 and 2.9e-4 against bounds of 3.5e-3 and 4.2e-3."""
+    core = rect(-0.25, 0.25, -0.1, 0.1, N_SI).rotated(angle) if angle else rect(-0.25, 0.25, 0.0, 0.2, N_SI)
+    study = xsec.n_eff_convergence(XSection([core], background=N_OX), (30, 40, 60), margin=1.2)
+    assert study.asymptotic and 1.3 < study.observed_order < 2.7
+    err = abs(float(study.extrapolated) - 2.36506)
+    assert err < study.estimated_absolute_error and err < 6e-4
+
+
+@requires_jax
+def test_tent_n_eff_gradient_through_geometry_matches_finite_difference():
+    import jax
+
+    def f(w):
+        return n_eff(strip(w, 0.22, sidewall_deg=82.0), resolution=18, margin=1.0, kernel="tent")
+
+    g = float(jax.grad(f)(0.5))
+    h = 1e-6
+    fd = (f(0.5 + h) - f(0.5 - h)) / (2 * h)
+    assert g == pytest.approx(fd, rel=5e-6)
+    assert 0.5 < g < 2.0
+
+
+def test_n_eff_convergence_validates_resolutions():
+    with pytest.raises(ValueError, match="integers"):
+        xsec.n_eff_convergence(strip(), (10.5, 20, 30))
+    with pytest.raises(ValueError):
+        xsec.n_eff_convergence(strip(), (10, 20))
+    with pytest.raises(ValueError, match="increasing"):
+        xsec.n_eff_convergence(strip(), (20, 10, 30))
