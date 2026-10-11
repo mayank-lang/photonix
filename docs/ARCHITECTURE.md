@@ -24,7 +24,7 @@ sensitivities of a system-level metric with respect to any physical parameter.
                  ┌─────────────────────────────────────────────┐
    analysis/ ◄──  resonances · filters · link budget · yield · time domain ·
                   sensitivity · FOSM · corners · worst-case distance
-   synthesis/ ──► prototypes · exact CROW synthesis · coupling → gap
+   synthesis/ ──► prototypes · exact CROW and FIR lattice synthesis · coupling → gap
    optim/  ◄────  inverse design, adjoint, optimizers, objectives
                  └─────────────────────────────────────────────┘
                  ┌──────────────┐   ┌──────────────┐  ┌─────────┐

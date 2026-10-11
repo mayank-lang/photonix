@@ -192,7 +192,7 @@ capture without claiming foundry qualification.
 | `photonix.layout` | Cells, port-based placement, bend-aware routing, GDSII/OASIS I/O, hierarchical netlist extraction, DRC pre-checks, optional external KLayout DRC/LVS runs |
 | `photonix.pdk` | PDK-agnostic interface (layer stacks, cross-sections, design rules, process studies) + an open example PDK |
 | `photonix.analysis` | Resonance, filter, link-budget, yield and time-domain analysis of simulated or measured spectra; sensitivities, FOSM moments, process corners, worst-case distance and importance-sampled yield |
-| `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, designed couplings to physical gaps |
+| `photonix.synthesis` | Filter synthesis: Butterworth/Chebyshev prototypes, exact coupled-resonator (CROW) synthesis, exact FIR lattice (cascaded-MZI) synthesis with maximally flat and equiripple targets, designed couplings to physical gaps -- see [`docs/SYNTHESIS.md`](docs/SYNTHESIS.md) |
 | `photonix.multiphysics` | Import-safe Elmer, DEVSIM, Lumerical/DEVICE, and external-solver adapters |
 | `photonix.viz` | Plot spectra, mode profiles, layouts, circuit graphs |
 | `photonix.optim` | Objectives, adjoint helpers, optimizers for inverse design |

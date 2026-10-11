@@ -48,7 +48,9 @@ calibrated multiphysics.
     Plackett-Burman corners, find the worst-case distance to a spec, and
     estimate rare-failure yield by importance sampling.
 18. Synthesize Butterworth/Chebyshev coupled-resonator filters exactly and map
-    the designed couplings to physical coupler gaps.
+    the designed couplings to physical coupler gaps; synthesize FIR lattice
+    (cascaded-MZI) filters exactly from any power-complementary target, with
+    maximally flat interleavers and equiripple band splitters built in.
 
 ## Interchange and external-solver handoff
 
