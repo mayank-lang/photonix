@@ -71,6 +71,7 @@ __all__ = [
 
 Smoothing = Literal["arithmetic", "tensor"]
 Average = Literal["arithmetic", "harmonic", "tensor"]
+Kernel = Literal["box", "tent"]
 
 
 # --------------------------------------------------------------------------- #
@@ -525,6 +526,174 @@ def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, 
 
 
 # --------------------------------------------------------------------------- #
+# Exact bilinear moments (tent kernel)
+# --------------------------------------------------------------------------- #
+def _phase2_moments(V: Any, Y: Any, X: Any, dy: Any, m: Any, e_lo: Any, e_hi: Any, vin: Any, pairs: Any,
+                    bnd: Any, s: Any, e: Any, L: Any, Rt: Any, row: Any, *, xpm: Any) -> Any:
+    """Exact cell moments ``int (1, xi, eta, xi eta) dA`` of every visible region (traceable).
+
+    ``xi, eta`` are the cell-local coordinates in ``[0, 1]``.  For each kept
+    edge piece the integrand ``eta**a * F_b(x_e(y))`` (``F_0`` = length,
+    ``F_1`` = ``xi``-moment of the part of the column left of the edge) is a
+    cubic polynomial of ``y`` between the points where the edge crosses the
+    column lines, so Simpson's rule on those sub-intervals is exact.
+    """
+    lo_v, hi_v = V[e_lo], V[e_hi]
+    slope = (hi_v[:, 0] - lo_v[:, 0]) / (hi_v[:, 1] - lo_v[:, 1])
+    if pairs.shape[0]:
+        p, q = pairs[:, 0], pairs[:, 1]
+        ys = (lo_v[q, 0] - lo_v[p, 0] + lo_v[p, 1] * slope[p] - lo_v[q, 1] * slope[q]) / (slope[p] - slope[q])
+    else:
+        ys = xpm.zeros(0)
+    cand = xpm.concatenate([Y, V[vin, 1], ys])
+    bvals = cand[bnd]
+    lo, hi = bvals[:-1][s], bvals[1:][s]
+    h = (hi - lo)[:, None]
+    hr = dy[row]
+    eta0 = ((lo - Y[row]) / hr)[:, None]
+    deta = ((hi - lo) / hr)[:, None]
+    xb = (lo_v[e, 0] + (lo - lo_v[e, 1]) * slope[e])[:, None]
+    xt = (lo_v[e, 0] + (hi - lo_v[e, 1]) * slope[e])[:, None]
+    X0, X1 = X[None, :-1], X[None, 1:]
+    Wc = X1 - X0
+    D = xt - xb
+    Ds = xpm.where(D == 0, 1.0, D)
+
+    def f(u):
+        g0 = xpm.clip(xb + u * D, X0, X1) - X0
+        g1 = g0 * g0 / (2.0 * Wc)
+        eta = eta0 + u * deta
+        return (g0, g1, eta * g0, eta * g1)
+
+    uA, uB = (X0 - xb) / Ds, (X1 - xb) / Ds
+    u1 = xpm.clip(xpm.minimum(uA, uB), 0.0, 1.0)
+    u2 = xpm.clip(xpm.maximum(uA, uB), 0.0, 1.0)
+    pts = [f(u) for u in (0.0, 0.5 * u1, u1, 0.5 * (u1 + u2), u2, 0.5 * (u2 + 1.0), 1.0)]
+    w1, w2, w3 = h * u1 / 6.0, h * (u2 - u1) / 6.0, h * (1.0 - u2) / 6.0
+    exact = [w1 * (pts[0][k] + 4.0 * pts[1][k] + pts[2][k]) + w2 * (pts[2][k] + 4.0 * pts[3][k] + pts[4][k])
+             + w3 * (pts[4][k] + 4.0 * pts[5][k] + pts[6][k]) for k in range(4)]
+    if xpm is not np:
+        # Exact values, derivatives from a tie-free form (cf. _phase2): divided
+        # differences of the C1/C2 antiderivatives Phi, Psi of F where the edge
+        # meets the column with a non-negligible slant, Simpson's rule without
+        # breakpoints elsewhere (exact away from the column lines; for a piece
+        # strictly left/right of the column it has zero x-derivative, as it must).
+        import jax
+
+        def parts(x):
+            c = xpm.clip(x, X0, X1) - X0
+            p = xpm.maximum(x - X1, 0.0)
+            phi0 = 0.5 * c * c + Wc * p
+            psi0 = c ** 3 / 6.0 + 0.5 * Wc * Wc * p + 0.5 * Wc * p * p
+            phi1 = c ** 3 / (6.0 * Wc) + 0.5 * Wc * p
+            psi1 = c ** 4 / (24.0 * Wc) + Wc * Wc * p / 6.0 + 0.25 * Wc * p * p
+            return phi0, psi0, phi1, psi1
+
+        meets = (xpm.maximum(xb, xt) >= X0) & (xpm.minimum(xb, xt) <= X1)
+        steep = meets & (xpm.abs(D) > 1e-4 * Wc)
+        Dz = xpm.where(steep, D, 1.0)
+        b0, bpsi0, b1, bpsi1 = parts(xb)
+        t0, tpsi0, t1, tpsi1 = parts(xt)
+        d10, d11 = (t0 - b0) / Dz, (t1 - b1) / Dz
+        d20 = (t0 - (tpsi0 - bpsi0) / Dz) / Dz
+        d21 = (t1 - (tpsi1 - bpsi1) / Dz) / Dz
+        closed = [h * d10, h * d11, h * (eta0 * d10 + deta * d20), h * (eta0 * d11 + deta * d21)]
+        fa, fm, fb = f(0.0), f(0.5), f(1.0)
+        simpson = [h / 6.0 * (fa[k] + 4.0 * fm[k] + fb[k]) for k in range(4)]
+        smooth = [xpm.where(steep, closed[k], simpson[k]) for k in range(4)]
+        exact = [smooth[k] + jax.lax.stop_gradient(exact[k] - smooth[k]) for k in range(4)]
+    vals = xpm.stack(exact)
+    m = _scatter_add_moments(xpm, m, L, row, vals)
+    return _scatter_add_moments(xpm, m, Rt, row, -vals)
+
+
+def _scatter_add_moments(xpm: Any, target: Any, reg: Any, row: Any, values: Any) -> Any:
+    if xpm is np:
+        np.add.at(target, (slice(None), reg, row), values)
+        return target
+    return target.at[:, reg, row].add(values)
+
+
+_MOMENTS_JIT: Any = None
+
+
+def _moments_jax() -> Any:
+    global _MOMENTS_JIT
+    if _MOMENTS_JIT is None:
+        from functools import partial
+
+        import jax
+        import jax.numpy as jnp
+
+        _MOMENTS_JIT = jax.jit(partial(_phase2_moments, xpm=jnp))
+    return _MOMENTS_JIT
+
+
+def _moments(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> Any:
+    """``(4, R+1, ny, nx)`` exact visible moments ``int (1, xi, eta, xi*eta) dA`` per cell."""
+    use_jax = any(_is_jax_array(p) for p in polys)
+    conc = [_concrete(p) for p in polys]
+    topo = _topology(conc, ranks, grid)
+    R, (ny, nx) = len(polys), grid.shape
+    cell = grid.areas
+    m = np.zeros((4, R + 1, ny, nx))
+    m[0, R] = cell
+    m[1, R] = m[2, R] = 0.5 * cell
+    m[3, R] = 0.25 * cell
+    if not topo.p_edge.size:
+        if use_jax:
+            import jax.numpy as jnp
+
+            return jnp.asarray(m)
+        return m
+    s = topo.p_slab
+    args = (topo.e_lo, topo.e_hi, topo.cand_ref[topo.cand_kind == 1], topo.pairs, topo.bnd, s, topo.p_edge,
+            topo.p_left, topo.p_right, topo.slab_row[s])
+    if use_jax:
+        import jax.numpy as jnp
+
+        V = jnp.concatenate([jnp.asarray(p, dtype=float) for p in polys])
+        return _moments_jax()(V, grid.y_edges, grid.x_edges, grid.dy, m, *args)
+    V = np.concatenate([np.asarray(p, dtype=float) for p in polys])
+    return _phase2_moments(V, grid.y_edges, grid.x_edges, grid.dy, m, *args, xpm=np)
+
+
+def _node_axis(c: np.ndarray, width: np.ndarray) -> np.ndarray:
+    """Tent nodes ``[ghost, c_0 .. c_{n-1}, ghost]`` (ghosts mirror the end spacing)."""
+    lo = c[0] - (c[1] - c[0] if c.size > 1 else width[0])
+    hi = c[-1] + (c[-1] - c[-2] if c.size > 1 else width[-1])
+    return np.concatenate([[lo], c, [hi]])
+
+
+def _tent_dual_grid(grid: TensorGrid) -> TensorGrid:
+    """Grid whose lines are the cell centres of ``grid`` plus one ghost node per side.
+
+    Its cells are the supports' quarters of the tent kernels used by
+    ``kernel="tent"``: the tent of cell centre ``(xc_i, yc_j)`` is the bilinear
+    nodal (hat) function on these lines.
+    """
+    return TensorGrid(_node_axis(grid.xc, grid.dx), _node_axis(grid.yc, grid.dy))
+
+
+def _tent_assemble(m: Any, dual: TensorGrid) -> tuple[Any, Any]:
+    """Tent-weighted fractions ``(R+1, ny, nx)`` and indicator gradients ``(2, R+1, ny, nx)``."""
+    xpm = _xp_of(m)
+    m00, m10, m01, m11 = m[0], m[1], m[2], m[3]
+    # Node (j, i) is the top-right corner of dual cell (j, i), top-left of (j, i+1), ...
+    w = (m11[:, :-1, :-1] + (m01 - m11)[:, :-1, 1:] + (m10 - m11)[:, 1:, :-1]
+         + (m00 - m10 - m01 + m11)[:, 1:, 1:])
+    Wd, Hd = dual.dx, dual.dy
+    mass = (0.5 * (Hd[:-1] + Hd[1:]))[:, None] * (0.5 * (Wd[:-1] + Wd[1:]))[None, :]
+    frac = w / mass[None]
+    # int phi grad(chi) = -int chi grad(phi); d(phi_i)/dx = +1/W on the left dual column, -1/W on the right.
+    ywt = m01[:, :-1, :] + (m00 - m01)[:, 1:, :]                     # (R+1, ny, nx+1)
+    gx = ywt[:, :, 1:] / Wd[None, None, 1:] - ywt[:, :, :-1] / Wd[None, None, :-1]
+    xwt = m10[:, :, :-1] + (m00 - m10)[:, :, 1:]                     # (R+1, ny+1, nx)
+    gy = xwt[:, 1:, :] / Hd[None, 1:, None] - xwt[:, :-1, :] / Hd[None, :-1, None]
+    return frac, xpm.stack([gx, gy])
+
+
+# --------------------------------------------------------------------------- #
 # Coverage (rasterized geometry) and material evaluation
 # --------------------------------------------------------------------------- #
 def _xp_of(*arrays: Any) -> Any:
@@ -553,23 +722,44 @@ class Coverage:
     grid
         The :class:`TensorGrid`.
     fractions
-        ``(R + 1, ny, nx)`` exact *visible* area fraction of each region (in
-        ``XSection.regions`` order) per cell; the last entry is the background.
-        Sums to one in every cell.
+        ``(R + 1, ny, nx)`` exact *visible* fraction of each region (in
+        ``XSection.regions`` order) per sample; the last entry is the
+        background.  Sums to one at every sample.  For ``kernel="box"`` it is
+        the area fraction of each cell; for ``kernel="tent"`` the fraction of
+        the tent (bilinear hat) weight centred on each cell centre.
     face_x
-        ``(R + 1, ny, nx + 1)`` fraction of each vertical cell face
-        (``x = x_edges[i]``) covered by each region.
+        ``kernel="box"`` only (else ``None``): ``(R + 1, ny, nx + 1)`` fraction
+        of each vertical cell face (``x = x_edges[i]``) covered by each region.
     face_y
-        ``(R + 1, ny + 1, nx)`` the same for horizontal faces
-        (``y = y_edges[j]``).  An interface lying exactly on a face counts half
-        to each side.
+        ``kernel="box"`` only: ``(R + 1, ny + 1, nx)`` the same for horizontal
+        faces (``y = y_edges[j]``).  An interface lying exactly on a face counts
+        half to each side.
+    kernel
+        ``"box"`` or ``"tent"`` (see :meth:`XSection.rasterize`).
+    indicator_gradient
+        ``(2, R + 1, ny, nx)`` kernel-weighted integral ``int K grad(chi_r) dA``
+        of each region's indicator function (µm); it defines the interface
+        normals.  Computed from the face coverages when not given.
     """
 
     xsection: XSection
     grid: TensorGrid
     fractions: Any
-    face_x: Any
-    face_y: Any
+    face_x: Any = None
+    face_y: Any = None
+    kernel: str = "box"
+    indicator_gradient: Any = None
+
+    def __post_init__(self) -> None:
+        if self.kernel not in ("box", "tent"):
+            raise ValueError("kernel must be 'box' or 'tent'")
+        if self.indicator_gradient is None:
+            if self.face_x is None or self.face_y is None:
+                raise ValueError("a Coverage needs face coverages or an indicator_gradient")
+            xpm = _xp_of(self.face_x, self.face_y)
+            gx = (self.face_x[:, :, 1:] - self.face_x[:, :, :-1]) * self.grid.dy[None, :, None]
+            gy = (self.face_y[:, 1:, :] - self.face_y[:, :-1, :]) * self.grid.dx[None, None, :]
+            object.__setattr__(self, "indicator_gradient", xpm.stack([gx, gy]))
 
     # -- helpers ------------------------------------------------------------ #
     @property
@@ -622,7 +812,7 @@ class Coverage:
 
     # -- public ------------------------------------------------------------- #
     def mask(self, tag: str) -> Any:
-        """Visible area fraction ``(ny, nx)`` of all regions carrying ``tag``.
+        """Visible fraction ``(ny, nx)`` of all regions carrying ``tag`` (per the kernel).
 
         ``"background"`` selects the background.
         """
@@ -637,15 +827,17 @@ class Coverage:
         """Unit interface normals ``(ny, nx, 2)`` from per-region ``weights``.
 
         ``weights`` (length ``R + 1``, last = background) are the values of the
-        property whose gradient defines the normal (e.g. ``Re(eps)``).  Cells
-        with no interface -- or whose integrated gradient vanishes, such as a
-        sliver centred in its cell -- get ``(0, 0)``.
+        property ``q`` whose kernel-weighted gradient ``int K grad(q) dA``
+        defines the normal (e.g. ``Re(eps)``).  Samples with no interface -- or
+        whose integrated gradient vanishes, such as a sliver centred in its
+        cell -- get ``(0, 0)``.
         """
-        xpm = _xp_of(weights, self.face_x)
+        g = self.indicator_gradient
+        xpm = _xp_of(weights, g)
         w = xpm.asarray(weights)
         dx, dy = self.grid.dx, self.grid.dy
-        gx = xpm.tensordot(w, self.face_x[:, :, 1:] - self.face_x[:, :, :-1], axes=1) * dy[:, None]
-        gy = xpm.tensordot(w, self.face_y[:, 1:, :] - self.face_y[:, :-1, :], axes=1) * dx[None, :]
+        gx = xpm.tensordot(w, g[0], axes=1)
+        gy = xpm.tensordot(w, g[1], axes=1)
         m2 = gx * gx + gy * gy
         wc = _concrete(w)
         span = float(np.max(wc) - np.min(wc)) if wc.size else 0.0
@@ -846,14 +1038,49 @@ class XSection:
         """:func:`uniform_grid` around :meth:`bbox`."""
         return uniform_grid(self.bbox(), resolution, margin)
 
-    def rasterize(self, grid: TensorGrid) -> Coverage:
-        """Exact visible-area and face coverage of every region on ``grid``."""
+    def rasterize(self, grid: TensorGrid, kernel: Kernel = "box") -> Coverage:
+        """Exact visible coverage of every region on ``grid``.
+
+        Parameters
+        ----------
+        grid
+            The sampling grid; values are attached to its cells (centres).
+        kernel
+            Averaging kernel of each sample.  ``"box"`` (default): the cell
+            itself -- area fractions, the convention of
+            :func:`photonix.em.rectangular_waveguide` and of the FDE solvers.
+            ``"tent"``: the bilinear hat function centred on the cell centre and
+            reaching the neighbouring centres (support ``2 dx x 2 dy``).  It
+            reproduces linear functions, which removes the leading dependence
+            of a three-point finite-difference discretization on *where* an
+            interface cuts its cell; see :func:`photonix.xsection.solve_modes`
+            for when that matters.
+
+        Examples
+        --------
+        >>> from photonix.xsection import strip
+        >>> xs = strip(0.5, 0.22)
+        >>> g = xs.uniform_grid(20)
+        >>> box, tent = xs.rasterize(g), xs.rasterize(g, kernel="tent")
+        >>> area = lambda cov: round(float((cov.mask("core") * g.areas).sum()), 12)
+        >>> area(box), area(tent)                   # both conserve the 0.11 um^2 core area
+        (0.11, 0.11)
+        """
         if not isinstance(grid, TensorGrid):
             raise TypeError("grid must be a TensorGrid (see uniform_grid / graded_grid)")
-        x0, x1, _, _ = grid.bbox
+        if kernel not in ("box", "tent"):
+            raise ValueError("kernel must be 'box' or 'tent'")
+        sweep_grid = grid if kernel == "box" else _tent_dual_grid(grid)
+        x0, x1, _, _ = sweep_grid.bbox
         if max(abs(x0), abs(x1)) >= BAND_HALF_WIDTH:
             raise ValueError(f"the grid must lie within |x| < {BAND_HALF_WIDTH} um of the origin")
-        frac, face_x, face_y = _sweep([r.polygon for r in self.regions], self.ranks, grid)
+        polys = [r.polygon for r in self.regions]
+        if kernel == "box":
+            frac, face_x, face_y = _sweep(polys, self.ranks, grid)
+            cov = Coverage(self, grid, frac, face_x, face_y)
+        else:
+            frac, grad = _tent_assemble(_moments(polys, self.ranks, sweep_grid), sweep_grid)
+            cov = Coverage(self, grid, frac, kernel="tent", indicator_gradient=grad)
         if self.background is None:
             bg = _concrete(frac[-1])
             if bg.max() > 1e-9:
@@ -862,33 +1089,35 @@ class XSection:
                     f"no region covers the window near (x, y) = ({grid.xc[i]:.4g}, {grid.yc[j]:.4g}) um and "
                     "background=None; add a background material or a covering band"
                 )
-        return Coverage(self, grid, frac, face_x, face_y)
+        return cov
 
     # -- convenience wrappers ---------------------------------------------- #
-    def fractions(self, grid: TensorGrid) -> Any:
-        """``(R + 1, ny, nx)`` exact visible area fractions (last = background)."""
-        return self.rasterize(grid).fractions
+    def fractions(self, grid: TensorGrid, kernel: Kernel = "box") -> Any:
+        """``(R + 1, ny, nx)`` exact visible fractions (last = background); see :meth:`rasterize`."""
+        return self.rasterize(grid, kernel).fractions
 
     def eps(self, grid: TensorGrid, wl: float = 1.55, temperature: float | None = None, *,
-            smoothing: Smoothing = "arithmetic", offdiagonal: bool = False) -> Any:
-        """Permittivity on ``grid`` (see :meth:`Coverage.eps`)."""
-        return self.rasterize(grid).eps(wl, temperature, smoothing=smoothing, offdiagonal=offdiagonal)
+            smoothing: Smoothing = "arithmetic", offdiagonal: bool = False, kernel: Kernel = "box") -> Any:
+        """Permittivity on ``grid`` (see :meth:`Coverage.eps` and :meth:`rasterize`)."""
+        return self.rasterize(grid, kernel).eps(wl, temperature, smoothing=smoothing, offdiagonal=offdiagonal)
 
-    def normals(self, grid: TensorGrid, wl: float = 1.55, temperature: float | None = None) -> Any:
+    def normals(self, grid: TensorGrid, wl: float = 1.55, temperature: float | None = None, *,
+                kernel: Kernel = "box") -> Any:
         """Interface normals ``(ny, nx, 2)`` weighted by ``Re(eps)`` at ``wl``."""
-        cov = self.rasterize(grid)
+        cov = self.rasterize(grid, kernel)
         vals, aniso = cov._index_values(wl, temperature)
         w = (vals[:, 0] + vals[:, 1]) / 2 if aniso else vals
         return cov.normals(_xp_of(w).real(w))
 
     def coefficient(self, grid: TensorGrid, quantity: str, temperature: float | None = None, *,
-                    average: Average = "arithmetic", offdiagonal: bool = False) -> Any:
+                    average: Average = "arithmetic", offdiagonal: bool = False, kernel: Kernel = "box") -> Any:
         """Cell-averaged non-optical coefficient (see :meth:`Coverage.coefficient`)."""
-        return self.rasterize(grid).coefficient(quantity, temperature, average=average, offdiagonal=offdiagonal)
+        return self.rasterize(grid, kernel).coefficient(quantity, temperature, average=average,
+                                                        offdiagonal=offdiagonal)
 
-    def mask(self, grid: TensorGrid, tag: str) -> Any:
+    def mask(self, grid: TensorGrid, tag: str, kernel: Kernel = "box") -> Any:
         """Visible fraction ``(ny, nx)`` of the regions tagged ``tag``."""
-        return self.rasterize(grid).mask(tag)
+        return self.rasterize(grid, kernel).mask(tag)
 
     def to_em(self, wl: float = 1.55, resolution: float = 40, margin: float = 1.5,
               temperature: float | None = None):

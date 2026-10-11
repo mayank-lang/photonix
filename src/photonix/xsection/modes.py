@@ -47,6 +47,7 @@ grid with horizontal faces, before quoting digits.  These are convergence
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Literal
@@ -56,12 +57,13 @@ import scipy.sparse as sp
 import scipy.sparse.linalg as spla
 
 from photonix.core.backend import HAS_JAX, xp
+from photonix.em.convergence import GridConvergenceResult, estimate_convergence
 from photonix.em.fde_vector import VectorModeData
 
-from .raster import TensorGrid, XSection, uniform_grid
+from .raster import Kernel, TensorGrid, XSection, uniform_grid
 from .shapes import _host, _is_jax_array
 
-__all__ = ["XSectionModes", "yee_permittivity", "solve_modes", "n_eff", "n_eff_eps_tensor"]
+__all__ = ["XSectionModes", "yee_permittivity", "solve_modes", "n_eff", "n_eff_eps_tensor", "n_eff_convergence"]
 
 if HAS_JAX:  # pragma: no branch
     import jax
@@ -81,6 +83,7 @@ class XSectionModes(VectorModeData):
     ey: np.ndarray | None = None
     grid: TensorGrid | None = None
     smoothing: str = "arithmetic"
+    kernel: str = "box"
 
 
 def _ddx_fwd(n: int, h: float) -> sp.csc_matrix:
@@ -232,6 +235,7 @@ def yee_permittivity(
     *,
     smoothing: Literal["arithmetic", "tensor"] = "tensor",
     offdiagonal: bool = True,
+    kernel: Kernel = "box",
 ) -> tuple[Any, ...]:
     """Permittivity components on the Yee positions of a uniform ``grid``.
 
@@ -243,6 +247,9 @@ def yee_permittivity(
     ``"arithmetic"``: the cell-centred area average for all three diagonal
     components (the convention of :func:`photonix.em.solve_modes_fullvector`);
     always ``(exx, eyy, ezz)``.
+    ``kernel`` selects the averaging weight of each sample (see
+    :meth:`XSection.rasterize`): the cell centred on the component (``"box"``)
+    or the tent spanning its neighbours (``"tent"``).
 
     Examples
     --------
@@ -255,15 +262,16 @@ def yee_permittivity(
     _check_uniform(grid)
     dx, dy = float(grid.dx[0]), float(grid.dy[0])
     if smoothing == "arithmetic":
-        e = xs.eps(grid, wl, temperature)
+        e = xs.eps(grid, wl, temperature, kernel=kernel)
         if e.ndim == 3:
             return e[0], e[1], e[2]
         return e, e, e
     if smoothing != "tensor":
         raise ValueError("smoothing must be 'arithmetic' or 'tensor'")
-    ex_cell = xs.eps(grid.shifted(0.5 * dx, 0.0), wl, temperature, smoothing="tensor", offdiagonal=offdiagonal)
-    eyy = xs.eps(grid.shifted(0.0, 0.5 * dy), wl, temperature, smoothing="tensor")[1]
-    ezz = xs.eps(grid, wl, temperature, smoothing="tensor")[2]
+    ex_cell = xs.eps(grid.shifted(0.5 * dx, 0.0), wl, temperature, smoothing="tensor", offdiagonal=offdiagonal,
+                     kernel=kernel)
+    eyy = xs.eps(grid.shifted(0.0, 0.5 * dy), wl, temperature, smoothing="tensor", kernel=kernel)[1]
+    ezz = xs.eps(grid, wl, temperature, smoothing="tensor", kernel=kernel)[2]
     if offdiagonal:
         return ex_cell[0], eyy, ezz, ex_cell[3]
     return ex_cell[0], eyy, ezz
@@ -288,6 +296,7 @@ def solve_modes(
     temperature: float | None = None,
     grid: TensorGrid | None = None,
     offdiagonal: bool = True,
+    kernel: Kernel = "box",
 ) -> XSectionModes:
     """Full-vector hybrid modes of a cross-section.
 
@@ -308,6 +317,19 @@ def solve_modes(
         area-averaged permittivity (observed order ~1.7).
     temperature
         Passed to temperature-aware materials.
+    grid
+        Explicit uniform :class:`TensorGrid` (overrides ``resolution`` and ``margin``).
+    offdiagonal
+        Include the ``eps_xy`` term of slanted interfaces (tensor smoothing only).
+    kernel
+        Averaging kernel (see :meth:`XSection.rasterize`).  ``"box"`` (default)
+        has the smaller error at one resolution but that error depends on where
+        horizontal/vertical faces cut their cells (``n_eff`` of a 220 nm core
+        moves by ~5e-3 at 40 px/um under sub-cell shifts), so refinement
+        sequences are not monotone.  ``"tent"`` makes the error smooth in the
+        grid spacing (~3e-4 spread) at the price of a larger, systematic
+        ``O(h**2)`` bias -- use it for Richardson extrapolation
+        (:func:`n_eff_convergence`).
 
     Returns
     -------
@@ -330,14 +352,14 @@ def solve_modes(
     grid = uniform_grid(xs.bbox(), resolution, margin) if grid is None else grid
     dx, dy = _check_uniform(grid)
     comps = tuple(_host(e) for e in yee_permittivity(xs, grid, wl, temperature, smoothing=smoothing,
-                                                     offdiagonal=offdiagonal))
+                                                     offdiagonal=offdiagonal, kernel=kernel))
     k0 = 2.0 * np.pi / wl
     neff, ex, ey, te = _solve(comps, dx, dy, k0, num_modes)
     fields = np.array([a if t >= 0.5 else b for a, b, t in zip(ex, ey, te, strict=True)])
     guided = np.real(neff) > _exterior_index(*comps[:3])
     return XSectionModes(n_eff=neff, fields=fields, x=grid.xc.copy(), y=grid.yc.copy(), wl=wl,
                          polarization="full", te_fraction=te, guided=guided, ex=ex, ey=ey, grid=grid,
-                         smoothing=smoothing)
+                         smoothing=smoothing, kernel=kernel)
 
 
 if HAS_JAX:
@@ -407,13 +429,14 @@ def n_eff(
     temperature: float | None = None,
     grid: TensorGrid | None = None,
     offdiagonal: bool = True,
+    kernel: Kernel = "box",
 ) -> Any:
     """Fundamental (highest-index) real ``n_eff``; differentiable through the geometry.
 
-    When the polygons of ``xs`` hold JAX values (e.g. built from a traced
-    width), the result is a JAX scalar whose gradient flows through the exact
-    rasterization and the eigenvalue adjoint (lossless materials).  Otherwise
-    a Python float.
+    Arguments as for :func:`solve_modes`.  When the polygons of ``xs`` hold
+    JAX values (e.g. built from a traced width), the result is a JAX scalar
+    whose gradient flows through the exact rasterization (either kernel) and
+    the eigenvalue adjoint (lossless materials).  Otherwise a Python float.
 
     Examples
     --------
@@ -423,7 +446,8 @@ def n_eff(
     """
     grid = uniform_grid(xs.bbox(), resolution, margin) if grid is None else grid
     dx, dy = _check_uniform(grid)
-    comps = yee_permittivity(xs, grid, wl, temperature, smoothing=smoothing, offdiagonal=offdiagonal)
+    comps = yee_permittivity(xs, grid, wl, temperature, smoothing=smoothing, offdiagonal=offdiagonal,
+                             kernel=kernel)
     k0 = 2.0 * np.pi / wl
     if not any(_is_jax_array(c) for c in comps):
         neff = _solve(tuple(np.asarray(c) for c in comps), dx, dy, k0, 1)[0]
@@ -434,3 +458,51 @@ def n_eff(
         raise ValueError("the differentiable n_eff supports lossless (real) permittivity only")
     flat = jnp.concatenate([jnp.ravel(c) for c in comps])
     return n_eff_eps_tensor(flat, grid.shape, dx, dy, k0)
+
+
+def n_eff_convergence(
+    xs: XSection,
+    resolutions: Sequence[int] = (20, 30, 40),
+    *,
+    wl: float = 1.55,
+    margin: float = 1.5,
+    smoothing: Literal["arithmetic", "tensor"] = "tensor",
+    kernel: Kernel = "tent",
+    temperature: float | None = None,
+    offdiagonal: bool = True,
+    order: float | None = 2.0,
+    rtol: float = 1e-3,
+    atol: float = 0.0,
+) -> GridConvergenceResult:
+    """Grid-refinement study of the fundamental ``n_eff`` with Richardson extrapolation.
+
+    Solves on ``uniform_grid(xs.bbox(), r, margin)`` for every ``r`` in
+    ``resolutions`` (px/µm, increasing, at least three) and hands the values to
+    :func:`photonix.em.estimate_convergence`.  The default ``kernel="tent"``
+    with tensor smoothing is the combination whose error is a smooth
+    ``C h**2`` (observed order 1.6-2.1 in the tests, independent of how the
+    faces sit in the cells), so the extrapolation and its GCI are meaningful;
+    with ``kernel="box"`` the sequence is generally not monotone and the study
+    reports ``asymptotic=False``.
+
+    Returns
+    -------
+    photonix.em.GridConvergenceResult
+        ``extrapolated`` is the Richardson value, ``estimated_absolute_error``
+        the safety-factored error bound (GCI); check ``asymptotic`` before use.
+        Only the discretization error is estimated -- the window ``margin``,
+        the material data and the geometry are not.
+
+    Examples
+    --------
+    >>> from photonix.xsection import strip
+    >>> study = n_eff_convergence(strip(0.5, 0.22), (10, 14, 20), margin=1.0)
+    >>> bool(study.asymptotic), bool(2.40 < float(study.extrapolated) < 2.50)
+    (True, True)
+    """
+    res = [int(r) for r in resolutions]
+    if [float(r) for r in resolutions] != [float(r) for r in res]:
+        raise ValueError("resolutions must be integers (px/um)")
+    values = [float(n_eff(xs, wl=wl, resolution=r, margin=margin, smoothing=smoothing, kernel=kernel,
+                          temperature=temperature, offdiagonal=offdiagonal)) for r in res]
+    return estimate_convergence(res, np.asarray(values), order=order, rtol=rtol, atol=atol)

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from .from_stack import from_layer_stack
 from .library import coupler, heater_over_waveguide, rib_waveguide, strip
-from .modes import XSectionModes, n_eff, n_eff_eps_tensor, solve_modes, yee_permittivity
+from .modes import XSectionModes, n_eff, n_eff_convergence, n_eff_eps_tensor, solve_modes, yee_permittivity
 from .properties import resolve_index, resolve_property
 from .raster import Coverage, TensorGrid, XSection, graded_grid, uniform_grid
 from .shapes import BAND_HALF_WIDTH, MaterialSpec, Region, band, disk, polygon, polygon_area, rect, rib, trapezoid
@@ -55,4 +55,5 @@ __all__ = [
     "solve_modes",
     "n_eff",
     "n_eff_eps_tensor",
+    "n_eff_convergence",
 ]
