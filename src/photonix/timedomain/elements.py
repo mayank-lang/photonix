@@ -66,6 +66,11 @@ __all__ = [
     "thiran_coefficients",
     "split_instantaneous",
     "design_fir",
+    "fir_response",
+    "window_taps",
+    "planck_taper",
+    "tail_support",
+    "centered_frequencies",
     "parse_interp",
 ]
 
@@ -129,7 +134,7 @@ class TDElement:
     shape.
     """
 
-    ports: tuple[str, ...] = ()
+    ports: tuple[str, ...]
 
     def compile(self, dt: float) -> CompiledTD:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -160,8 +165,8 @@ def split_instantaneous(n0: int, b, a=None):
     --------
     >>> import numpy as np
     >>> d, n0, b, a = split_instantaneous(0, np.array([0.5, 0.25]))
-    >>> float(d), n0, [float(v) for v in b], a
-    (0.5, 1, [0.25], None)
+    >>> complex(d), n0, [complex(v) for v in b], a
+    ((0.5+0j), 1, [(0.25+0j)], None)
     """
     n0 = int(n0)
     if n0 >= 1:
@@ -222,7 +227,7 @@ def lagrange_taps(p, order: int = 3):
     Examples
     --------
     >>> import numpy as np
-    >>> [round(float(v), 12) for v in np.asarray(lagrange_taps(1.0, 3))]
+    >>> [round(float(v), 12) + 0.0 for v in np.asarray(lagrange_taps(1.0, 3))]
     [0.0, 1.0, 0.0, 0.0]
     >>> bool(np.isclose(np.asarray(lagrange_taps(1.5, 3)).sum(), 1.0))
     True
@@ -250,12 +255,12 @@ def thiran_coefficients(d, order: int = 3):
     --------
     >>> import numpy as np
     >>> a = np.asarray(thiran_coefficients(3.0, 3))       # integer delay -> pure z^-3
-    >>> [round(float(v), 12) for v in a]
+    >>> [round(float(v), 12) + 0.0 for v in a]
     [1.0, 0.0, 0.0, 0.0]
     """
     d = xp.asarray(d, dtype=float)
-    coeffs = []
-    for k in range(order + 1):
+    coeffs = [xp.ones_like(d)]            # a_0 = 1 (the k = 0 product is identically one)
+    for k in range(1, order + 1):
         c = (-1.0) ** k * math.comb(order, k) * xp.ones_like(d)
         for n in range(order + 1):
             c = c * (d - order + n) / (d - order + k + n)
@@ -274,58 +279,154 @@ def _concrete_float(value, what: str) -> float:
 
 
 # --------------------------------------------------------------------------- #
-# Least-squares FIR design
+# Band-limited FIR design (tapered inverse DFT)
 # --------------------------------------------------------------------------- #
-def _fir_matrix(nu, dt, n0: int, n_taps: int):
-    n = n0 + np.arange(n_taps)
-    return np.exp(-2j * np.pi * np.outer(np.asarray(nu, dtype=float) * dt, n))
+def centered_frequencies(n: int, dt: float) -> np.ndarray:
+    """The centred DFT grid ``nu_k = (k - n // 2) / (n dt)`` (Hz), ascending.
+
+    Examples
+    --------
+    >>> [float(v) for v in centered_frequencies(4, 0.25)]
+    [-2.0, -1.0, 0.0, 1.0]
+    """
+    return (np.arange(n) - n // 2) / (n * dt)
 
 
-def _fir_pinv(nu, dt, n0: int, n_taps: int, weights) -> np.ndarray:
-    """Weighted least-squares pseudo-inverse ``(A^H W A)^{-1} A^H W`` (``n_taps x n_freq``)."""
-    a = _fir_matrix(nu, dt, n0, n_taps)
-    w = np.asarray(weights, dtype=float)
-    aw = a.conj().T * w
-    return np.linalg.solve(aw @ a, aw)
+def planck_taper(x, band: float = 0.5) -> np.ndarray:
+    """Smooth (C-infinity) spectral window over ``x = |nu| / f_Nyquist``.
+
+    Equal to 1 for ``x <= band``, falls smoothly to 0 at ``x = 1`` (the Planck
+    taper, McKechan, Robinson & Sathyaprakash, Class. Quantum Grav. 27, 084020,
+    2010). Because every derivative is continuous, the inverse DFT of a smooth
+    response times this window decays faster than any power of the tap index,
+    so short FIRs reproduce the response exactly inside ``band``.
+
+    Examples
+    --------
+    >>> [round(float(v), 6) for v in planck_taper([0.0, 0.5, 0.75, 1.0], 0.5)]
+    [1.0, 1.0, 0.5, 0.0]
+    """
+    x = np.abs(np.asarray(x, dtype=float))
+    if band >= 1.0:
+        return np.ones_like(x)
+    r = np.clip((x - band) / (1.0 - band), 1e-12, 1.0 - 1e-12)
+    z = np.clip(1.0 / (1.0 - r) - 1.0 / r, -700.0, 700.0)
+    return np.where(x <= band, 1.0, np.where(x >= 1.0, 0.0, 1.0 / (1.0 + np.exp(z))))
 
 
-def design_fir(nu, response, dt: float, *, n0: int, n_taps: int, band: float = 0.8,
-               out_of_band_weight: float = 1e-3):
-    """Least-squares FIR ``sum_m h_m exp(-j 2 pi nu (n0 + m) dt)`` matching ``response(nu)``.
+def tail_support(h, budget: float) -> tuple[int, int]:
+    """Shortest window ``[lo, hi]`` of a circular response whose discarded taps sum to ``<= budget``.
 
-    The fit is weighted 1 for ``|nu| <= band / (2 dt)`` and
-    ``out_of_band_weight`` beyond, which keeps the out-of-band gain bounded
-    without spending taps on it. ``response`` may be ``(n_freq,)`` or
-    ``(n_freq, k)`` (several responses sharing one tap window); it may be a
-    traced array, the design is linear in it.
+    ``h[m]`` is indexed ``m mod N``; ``lo``/``hi`` are signed indices in
+    ``[-N/2, N/2)``. The window grows from the peak toward whichever side
+    still holds the larger discarded magnitude, so oscillating tails (with
+    zeros) are handled correctly.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> h = np.zeros(16); h[0], h[1], h[-1] = 1.0, 0.1, 0.01
+    >>> tail_support(h, 0.005)
+    (-1, 1)
+    """
+    mag = np.abs(np.asarray(h))
+    n = mag.size
+    order = np.r_[np.arange(n // 2, n) - n, np.arange(0, n // 2)]
+    vals = mag[order % n]
+    csum = np.concatenate([[0.0], np.cumsum(vals)])
+    total = float(csum[-1])
+    lo = hi = int(np.argmax(vals))
+    while True:
+        left = float(csum[lo])
+        right = total - float(csum[hi + 1])
+        if left + right <= budget or (lo == 0 and hi == n - 1):
+            break
+        if (right >= left and hi < n - 1) or lo == 0:
+            hi += 1
+        else:
+            lo -= 1
+    return int(order[lo]), int(order[hi])
+
+
+def window_taps(response, dt: float, n0: int, n_taps: int, band: float = 0.5):
+    """Taps ``h[n0 .. n0 + n_taps - 1]`` of the inverse DFT of ``response * planck_taper``.
+
+    ``response`` is sampled on :func:`centered_frequencies` (any length
+    ``N >= 2 n_taps``); it may be a traced array -- the taps are linear in it.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> dt = 1e-12; nu = centered_frequencies(256, dt)
+    >>> taps = window_taps(np.exp(-2j * np.pi * nu * 3 * dt), dt, 3, 1, band=1.0)   # integer delay
+    >>> round(abs(complex(taps[0])), 12)
+    1.0
+    """
+    resp = _complex(response)
+    n = int(resp.shape[0])
+    nu = centered_frequencies(n, dt)
+    shift = planck_taper(np.abs(nu) * 2.0 * dt, band) * np.exp(2j * np.pi * nu * n0 * dt)
+    g = xp.fft.ifft(xp.fft.ifftshift(resp * xp.asarray(shift)))
+    return g[:n_taps]
+
+
+def design_fir(response, dt: float, *, tol: float = 1e-6, band: float = 0.5, n_bulk: int = 0):
+    """Shortest FIR reproducing a band-limited response inside ``|nu| <= band / (2 dt)``.
+
+    The response (sampled on :func:`centered_frequencies`) is multiplied by
+    :func:`planck_taper` and inverse-transformed; the tap window keeps all but
+    at most ``tol / 2`` of the taps' total magnitude (:func:`tail_support`).
+    Hence, up to DFT aliasing (make ``N`` large enough that the response is
+    time-limited), the in-band error is at most ``tol / 2`` and the gain
+    nowhere exceeds ``max |response| + tol / 2``: a passive response gives a
+    passive (and in a feedback loop, stable) filter. ``n_bulk`` is an integer
+    delay removed before the IDFT so the support search is centred.
 
     Returns
     -------
-    taps, max_error
-        Taps ``(n_taps,)`` or ``(n_taps, k)`` and the maximum in-band absolute
-        error (``nan`` when ``response`` is traced).
+    n0, taps, max_error
+        First tap index (may be negative: a non-causal response), the taps,
+        and the maximum absolute in-band error on the design grid.
 
     Examples
     --------
     >>> import numpy as np
     >>> dt = 1e-12
-    >>> nu = np.linspace(-0.5, 0.5, 512, endpoint=False) / dt
-    >>> h, err = design_fir(nu, np.exp(-2j * np.pi * nu * 7.25 * dt), dt, n0=0, n_taps=24)
-    >>> bool(err < 1e-3)        # a 7.25-sample delay, in-band error
-    True
+    >>> nu = centered_frequencies(1024, dt)
+    >>> n0, h, err = design_fir(np.exp(-2j * np.pi * nu * 7.25 * dt), dt, tol=1e-4, n_bulk=7)
+    >>> bool(err < 5e-5), len(h) < 100       # a 7.25-sample fractional delay
+    (True, True)
     """
-    nu = np.asarray(nu, dtype=float)
-    inband = np.abs(nu) <= 0.5 * band / dt + 1e-12 / dt
-    weights = np.where(inband, 1.0, out_of_band_weight)
-    pinv = _fir_pinv(nu, dt, n0, n_taps, weights)
-    taps = xp.asarray(pinv) @ _complex(response)
-    try:
-        resp = np.asarray(response, dtype=complex)
-        fit = _fir_matrix(nu, dt, n0, n_taps) @ np.asarray(taps)
-        err = float(np.max(np.abs(fit - resp)[inband])) if np.any(inband) else 0.0
-    except Exception:  # noqa: BLE001 - traced response
-        err = float("nan")
-    return taps, err
+    resp = np.asarray(response, dtype=complex)
+    n = resp.size
+    nu = centered_frequencies(n, dt)
+    taper = planck_taper(np.abs(nu) * 2.0 * dt, band)
+    g = np.fft.ifft(np.fft.ifftshift(resp * taper * np.exp(2j * np.pi * nu * n_bulk * dt)))
+    lo, hi = tail_support(g, 0.5 * tol)
+    idx = np.arange(lo, hi + 1) % n
+    taps = g[idx]
+    n0 = n_bulk + lo
+    fit = fir_response(n0, taps, n)
+    inband = np.abs(nu) * 2.0 * dt <= band + 1e-12
+    err = float(np.max(np.abs(fit - resp)[inband]))
+    return n0, taps, err
+
+
+def fir_response(n0: int, taps, n: int) -> np.ndarray:
+    """Response ``sum_m h_m exp(-j 2 pi nu (n0 + m) dt)`` of FIR taps on the centred ``n``-point grid.
+
+    Computed with one FFT (exact for any tap span, which wraps modulo ``n``).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> h = fir_response(2, [1.0], 4)          # a 2-sample delay: exp(-j pi k) on nu*dt = k/4
+    >>> [round(complex(v).real, 12) + 0.0 for v in h]
+    [1.0, -1.0, 1.0, -1.0]
+    """
+    buf = np.zeros(n, dtype=complex)
+    np.add.at(buf, (int(n0) + np.arange(np.size(taps))) % n, np.asarray(taps, dtype=complex))
+    return np.fft.fftshift(np.fft.fft(buf))
 
 
 # --------------------------------------------------------------------------- #
@@ -388,6 +489,17 @@ def _np_set(S, i, j, v):
     return S
 
 
+def _gvd_grid(spread_samples: float) -> int:
+    """DFT size for a dispersive FIR whose impulse response spans about ``spread_samples``."""
+    return int(2 ** math.ceil(math.log2(max(1024.0, 8.0 * (spread_samples + 64.0)))))
+
+
+def _gvd_target(nu, tau, beta2):
+    """``exp(-j (omega tau + beta2 omega^2 / 2))`` on the frequency grid ``nu``."""
+    omega = 2.0 * np.pi * xp.asarray(nu)
+    return xp.exp(-1j * (omega * tau + 0.5 * beta2 * omega ** 2))
+
+
 @dataclass(frozen=True)
 class DelayLineTD(TDElement):
     """A reciprocal waveguide delay: delay ``tau_s``, carrier phase, loss, optional GVD.
@@ -414,8 +526,10 @@ class DelayLineTD(TDElement):
         Amplitude transmission (``10**(-loss_dB / 20)``).
     beta2_l_s2
         Total group-velocity dispersion ``beta_2 L`` in s^2, or ``None`` for
-        none. Implemented, together with the fractional delay, by a
-        least-squares FIR over ``|nu| <= gvd_band / (2 dt)``.
+        none. Implemented, together with the fractional delay, by an FIR
+        (:func:`design_fir`) that is exact to ``gvd_tol / 2`` for
+        ``|nu| <= gvd_band / (2 dt)`` and rolls off smoothly (passively) to
+        zero at the Nyquist edge.
     interp
         Fractional-delay design: ``"lagrangeN"`` (odd ``N``; FIR, phase error
         ``O((omega dt)^(N+1))``, magnitude slightly below one at high
@@ -441,8 +555,8 @@ class DelayLineTD(TDElement):
     interp: str = "lagrange3"
     ports: tuple[str, ...] = ("o1", "o2")
     split: tuple[int, int] | None = None
-    gvd_band: float = 0.8
-    gvd_tol: float = 1e-7
+    gvd_band: float = 0.5
+    gvd_tol: float = 1e-6
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ports", tuple(self.ports))
@@ -465,16 +579,17 @@ class DelayLineTD(TDElement):
         if d < 0:
             raise ValueError("a delay line cannot have a negative delay")
         if self.beta2_l_s2 is not None:
-            b2 = abs(_concrete_float(self.beta2_l_s2, "beta2_l_s2"))
-            omega_edge = math.pi * self.gvd_band / dt
-            half = int(math.ceil(b2 * omega_edge / dt)) + 12
-            n0 = int(math.floor(d)) - half
+            b2 = _concrete_float(self.beta2_l_s2, "beta2_l_s2")
+            n_b = int(round(d))
+            n_f = _gvd_grid(abs(b2) * math.pi / dt ** 2)
+            target = np.asarray(_gvd_target(centered_frequencies(n_f, dt), d * dt, b2))
+            n0, taps, _ = design_fir(target, dt, tol=self.gvd_tol, band=self.gvd_band, n_bulk=n_b)
             if n0 < 0:
                 raise ValueError(
-                    f"the dispersive spread ({b2 * omega_edge:.3g} s) exceeds the group delay ({d * dt:.3g} s); "
-                    "a causal FIR cannot represent it -- reduce gvd_band or dt, or add delay"
+                    f"the dispersive spread of the delay line exceeds its group delay ({d * dt:.3g} s); "
+                    "a causal FIR cannot represent it -- reduce dt or gvd_band, or add delay"
                 )
-            return n0, 2 * half + 2
+            return n0, int(taps.size)
         kind, order = parse_interp(self.interp)
         if kind == "nearest":
             return int(round(d)), 1
@@ -503,13 +618,10 @@ class DelayLineTD(TDElement):
         amp = self.amplitude
         a_fb = None
         if self.beta2_l_s2 is not None:
-            n_f = max(8 * n_taps, 256)
-            nu = (np.arange(n_f) - n_f // 2) / (n_f * dt)
-            omega = 2.0 * np.pi * nu
-            target = xp.exp(-1j * (omega * (xp.asarray(self.tau_s, dtype=float) - n0 * dt)
-                                   + 0.5 * xp.asarray(self.beta2_l_s2, dtype=float) * omega ** 2))
-            taps, _ = design_fir(nu, target, dt, n0=0, n_taps=n_taps, band=self.gvd_band)
-            b = amp * taps
+            n_f = _gvd_grid(float(n_taps))
+            target = _gvd_target(centered_frequencies(n_f, dt), xp.asarray(self.tau_s, dtype=float),
+                                 xp.asarray(self.beta2_l_s2, dtype=float))
+            b = amp * window_taps(target, dt, n0, n_taps, self.gvd_band)
         else:
             kind, order = parse_interp(self.interp)
             if kind == "nearest":
@@ -588,7 +700,7 @@ class FIRTD(TDElement):
         for (p_in, p_out), (n0, h) in self.taps.items():
             d0, n0c, bc, ac = split_instantaneous(int(n0), _complex(h))
             if int(n0) == 0:
-                D = D.at[idx[p_out], idx[p_in]].add(d0) if hasattr(D, "at") else _np_add(D, idx[p_out], idx[p_in], d0)
+                D = _np_add(D, idx[p_out], idx[p_in], d0)
             if bc is not None:
                 chans.append(Channel(p_in, p_out, n0c, bc, ac))
         return CompiledTD(self.ports, D, tuple(chans))
@@ -600,6 +712,9 @@ class FIRTD(TDElement):
 
 
 def _np_add(S, i, j, v):
+    """``S[i, j] += v`` functionally (JAX ``.at`` update or a NumPy copy)."""
+    if hasattr(S, "at"):
+        return S.at[i, j].add(v)
     S = np.array(S, copy=True)
     S[i, j] += v
     return S
@@ -664,12 +779,16 @@ class PoleResidueTD(TDElement):
             if key[0] not in self.ports or key[1] not in self.ports:
                 raise ValueError(f"entry {key} references an unknown port")
 
+    def _keys(self) -> list[tuple[str, str]]:
+        """Port pairs in a deterministic order (residues first, then direct-only terms)."""
+        return list(dict.fromkeys([*self.residues, *self.direct]))
+
     def response(self, nu):
         """The continuous-time response ``H(j 2 pi nu)`` per port pair (dict)."""
         s = 2j * np.pi * np.asarray(nu, dtype=float)
         poles = np.asarray(self.poles, dtype=complex)
         out = {}
-        for key in set(self.residues) | set(self.direct):
+        for key in self._keys():
             h = np.zeros_like(s) + complex(np.asarray(self.direct.get(key, 0.0)))
             if key in self.residues:
                 r = np.asarray(self.residues[key], dtype=complex)
@@ -687,7 +806,7 @@ class PoleResidueTD(TDElement):
         lam = xp.exp(z)
         phi1, phi2 = _phi12(z)
         chans: list[Channel] = []
-        for key in set(self.residues) | set(self.direct):
+        for key in self._keys():
             p_in, p_out = key
             nd = int(round(float(self.delays.get(key, 0.0)) / dt))
             terms = []
@@ -705,7 +824,7 @@ class PoleResidueTD(TDElement):
             for n0, b, a_fb in terms:
                 d0, n0c, bc, ac = split_instantaneous(n0, b, a_fb)
                 if n0 == 0:
-                    D = D.at[idx[p_out], idx[p_in]].add(d0) if hasattr(D, "at") else _np_add(D, idx[p_out], idx[p_in], d0)
+                    D = _np_add(D, idx[p_out], idx[p_in], d0)
                 if bc is not None:
                     chans.append(Channel(p_in, p_out, n0c, bc, ac))
         return CompiledTD(self.ports, D, tuple(chans))
