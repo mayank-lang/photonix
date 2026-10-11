@@ -156,6 +156,21 @@ couplings, which shows how far off the narrow-band approximation is. The
 synthesis is lossless. With propagation loss, `d.model(loss_db_cm=...)`
 shows the resulting insertion loss and pass-band rounding.
 
+FIR filters (interleavers, band splitters and flat-top MZI chains) are
+synthesized with `synthesize_lattice`. It peels a power-complementary
+polynomial pair into coupler ratios and heater phases exactly:
+
+```python
+il = sy.interleaver(3, fsr_hz=100e9)   # 50 GHz odd/even interleaver, maximally flat
+il.couplings, il.delays                # (0.9889, 0.2297, 0.8547, 0.5), (2, 2, 1) x 713.65 um
+S = il.model()(wl=il.wavelength(np.linspace(-50e9, 50e9, 1001)))   # circuit.lattice_filter
+```
+
+`equiripple_lowpass` gives minimax targets, and `complementary_bar` /
+`spectral_factor` supply the partner of any cross response with `|B| <= 1`.
+The algorithm, validation evidence and limits of both synthesis routes are in
+[`SYNTHESIS.md`](SYNTHESIS.md).
+
 ## 8. Find what matters and how far the design is from failing
 
 Monte Carlo yield tells you *whether* a design passes. The deterministic tools

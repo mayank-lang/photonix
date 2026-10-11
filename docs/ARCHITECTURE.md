@@ -28,6 +28,7 @@ sensitivities of a system-level metric with respect to any physical parameter.
    macromodel/ ◄─ vector fitting · delays · passivity · causality · state space
    timedomain/ ◄─ sample-mode circuits · lasers · modulators · receivers ·
                   eye / Q / BER · sensitivity
+   synthesis/ ──► prototypes · exact CROW and FIR lattice synthesis · coupling → gap
    optim/  ◄────  inverse design, adjoint, optimizers, objectives
                  └─────────────────────────────────────────────┘
                  ┌──────────────┐   ┌──────────────┐  ┌─────────┐

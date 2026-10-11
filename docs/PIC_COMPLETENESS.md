@@ -74,6 +74,9 @@ calibrated multiphysics.
     dicing lane, keep-out and facet markers, SiEPIC-style `opt_in` test
     labels, and floorplan checks (outside-die, keep-out, overlaps,
     edge-coupler facet alignment).
+    the designed couplings to physical coupler gaps; synthesize FIR lattice
+    (cascaded-MZI) filters exactly from any power-complementary target, with
+    maximally flat interleavers and equiripple band splitters built in.
 
 ## Interchange and external-solver handoff
 

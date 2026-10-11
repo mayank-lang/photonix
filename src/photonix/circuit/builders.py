@@ -67,6 +67,7 @@ def lattice_filter(
     neff: float = 2.4,
     ng: float = 4.2,
     loss_db_cm: float = 0.0,
+    wl0: float = 1.55,
 ) -> Model:
     """Cascaded-MZI lattice filter with ``len(couplings)`` couplers.
 
@@ -74,7 +75,7 @@ def lattice_filter(
     of ``length + delta_lengths[i]`` and a lower arm of ``length``, plus an
     optional extra upper-arm phase ``phases[i]`` (radians). Ports follow the
     2x2 coupler: ``o1``/``o2`` in (upper/lower), ``o4``/``o3`` out
-    (upper/lower).
+    (upper/lower). ``neff`` is the effective index at ``wl0``.
 
     Examples
     --------
@@ -95,7 +96,7 @@ def lattice_filter(
     nl = Netlist(name="lattice_filter")
     for i, k in enumerate(couplings):
         nl.add(f"c{i}", "coupler", coupling=k)
-    wg = {"neff": neff, "ng": ng, "loss_db_cm": loss_db_cm}
+    wg = {"neff": neff, "ng": ng, "loss_db_cm": loss_db_cm, "wl0": wl0}
     for i, (dl, ph) in enumerate(zip(delta_lengths, phases, strict=True)):
         nl.add(f"top{i}", "straight", length=length + dl, **wg)
         nl.add(f"bot{i}", "straight", length=length, **wg)
