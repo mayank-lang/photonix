@@ -17,9 +17,9 @@ verification handoffs through one consistent port and data model.
 | Layout & exchange | Hierarchical cells with port-based placement, Euler/S-bends, bend-aware Manhattan routing, geometry-carrying netlist extraction, DRC pre-checks, GDSII/OASIS, netlist JSON, Touchstone, and KLayout handoff |
 | PDK | Component registry, layer stacks (mode solver and Meep export), waveguide cross-sections bound into simulation, design rules, process corners |
 
-> Status: **v0.1.0 (beta).** MIT-licensed. Photonix is a simulation and design
+> Status: **v0.2.0 (beta).** MIT-licensed. Photonix is a simulation and design
 > layer, not a substitute for a target foundry's qualified PDK, DRC/LVS decks,
-> or tape-out sign-off.
+> or tape-out sign-off. Release notes are in [`CHANGELOG.md`](CHANGELOG.md).
 
 
 ## Install
@@ -35,7 +35,12 @@ pip install photonix
 ```
 
 For an editable checkout, clone the repository and run
-`pip install -e ".[all]"` from its root.
+`pip install -e ".[all]"` from its root:
+
+```bash
+git clone https://github.com/mayank-lang/photonix
+cd photonix && pip install -e ".[all]"
+```
 
 photonix runs on a NumPy fallback backend when JAX is absent (autodiff disabled);
 install the `jax` extra for the full differentiable experience.
@@ -48,6 +53,27 @@ photonix info
 photonix info --json       # suitable for a simulation manifest or bug report
 # `python -m photonix info` is equivalent
 ```
+
+### Command line
+
+The `photonix` command covers the common tasks that would otherwise need a
+script. Every command accepts `--json` (a versioned schema) and returns
+documented exit codes (0 ok, 1 check failed, 2 usage error, 3 missing optional
+dependency), so it slots into CI and tape-out handoff pipelines:
+
+```bash
+photonix models                                   # registered compact models and their defaults
+photonix mode --width 0.5 --thickness 0.22        # full-vector FDE n_eff of a strip waveguide
+photonix sweep mzi --wl 1.5:1.6:201 -p delta_length=20 -o mzi.s4p
+photonix sparams check vendor_device.s2p          # passivity / reciprocity gate (exit 1 on violation)
+photonix sparams convert mzi.s4p mzi.npz
+photonix gds inspect chip.gds                     # cells, layers, bounding box (needs gdstk)
+photonix gds precheck chip.gds --pdk demo         # DRC pre-check against PDK rules
+photonix netlist simulate circuit.json --wl 1.55  # Netlist JSON -> spectrum
+photonix validate --quick                         # analytic self-checks + reproducibility manifest
+```
+
+See [`docs/CLI.md`](docs/CLI.md) for every option and the JSON schemas.
 
 ### Optional: FDTD via MEEP
 
@@ -211,6 +237,29 @@ production-PIC boundary and remaining sign-off gaps are in
 and licensed-tool handoffs are collected in
 [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md), and the numerical evidence policy
 is in [`docs/VALIDATION.md`](docs/VALIDATION.md).
+
+## Citing photonix
+
+If photonix contributes to published work, please cite the version you used.
+The citation metadata is in [`CITATION.cff`](CITATION.cff), so GitHub's
+"Cite this repository" button gives APA and BibTeX entries. Once the Zenodo
+integration is switched on, each release also gets a DOI. Until then, cite the
+release tag, for example:
+
+```bibtex
+@software{photonix,
+  title   = {photonix: accuracy-first, differentiable photonic integrated circuit design},
+  author  = {{photonix contributors}},
+  version = {0.2.0},
+  year    = {2026},
+  url     = {https://github.com/mayank-lang/photonix/releases/tag/v0.2.0},
+  license = {MIT}
+}
+```
+
+Please also keep the output of `photonix info --json` (or
+`photonix validate --json`) with the results, so the backend, precision and
+dependency versions are on record.
 
 ## License
 
