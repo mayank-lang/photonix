@@ -529,19 +529,21 @@ def test_lossy_heater_gives_decaying_complex_index():
     assert 2.3 < m_near.neff0 < 2.6 and m_near.te_fraction[0] > 0.9
 
 
-@pytest.mark.parametrize("gap", [0.1, 0.2, 0.3, 0.4])
-def test_coupler_splitting_reproduces_soi_fit(gap):
+@pytest.mark.parametrize(("gap", "kernel"), [(0.1, "box"), (0.2, "box"), (0.3, "box"), (0.4, "box"),
+                                             (0.2, "tent")])
+def test_coupler_splitting_reproduces_soi_fit(gap, kernel):
     """Even/odd TE splitting of library.coupler vs SOI_STRIP_SPLITTING_FIT.
 
     The fit declares a 1.3 % residual against its 80 px/um legacy solves plus a
     +/-1.3 % resolution spread of those solves, so it is trusted to ~2 % of the
     continuum.  Tensor smoothing at 60 px/um lands within 1.31 % at every gap
-    (gap 0.2 is the worst); the legacy arithmetic discretization at the fit's own
-    80 px/um, solved through this geometry path, lands within 1.26 % (design study).
+    (gap 0.2 is the worst; 1.67 % with the tent kernel); the legacy arithmetic
+    discretization at the fit's own 80 px/um, solved through this geometry path,
+    lands within 1.26 % (design study).
     """
     from photonix.components.couplers import supermode_splitting
 
-    m = solve_modes(coupler(0.5, gap, 0.22), resolution=60, margin=1.0, num_modes=3)
+    m = solve_modes(coupler(0.5, gap, 0.22), resolution=60, margin=1.0, num_modes=3, kernel=kernel)
     te = np.flatnonzero(m.te_fraction > 0.5)[:2]
     dn = float(np.real(m.n_eff[te[0]] - m.n_eff[te[1]]))
     assert dn == pytest.approx(float(supermode_splitting(gap, 1.55)), rel=0.02)

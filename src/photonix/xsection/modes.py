@@ -26,24 +26,39 @@ area average, which is exactly the operator of
 ``n_eff``); unlike that solver this one also accepts anisotropic and lossy
 (complex) media.
 
-Evidence (``tests/test_xsection.py``; numbers for a 500 x 200 nm Si/SiO2 core):
+Each sample's average uses the ``kernel`` of :meth:`XSection.rasterize`:
+``"box"`` (the cell centred on the component, default) or ``"tent"`` (the
+bilinear hat reaching the neighbouring samples).
+
+Evidence (``tests/test_xsection.py``; numbers for a 500 x 200 nm Si/SiO2 core
+unless stated):
 
 * rotation invariance -- the continuum ``n_eff`` of a rotated core does not
-  depend on the angle.  At 45 deg and 40 / 80 px/um the tensor error against
-  the axis-aligned Richardson limit is 2.3e-3 / 4.0e-4 (order ~2.5) versus
+  depend on the angle.  At 45 deg and 40 / 80 px/um the tensor (box) error
+  against the axis-aligned Richardson limit 2.36506 is 2.3e-3 / 4.0e-4 versus
   2.0e-2 / 1.0e-2 for arithmetic smoothing (first order);
 * on grids whose lines contain the horizontal faces, rectangle and trapezoid
   converge with observed order ~2 (tensor) and both schemes extrapolate to the
   same limit within their GCI;
+* tent kernel on ordinary (unaligned) grids: :func:`n_eff_convergence` over
+  30/40/60 px/um recovers 2.36506 to 2.2e-4 (axis-aligned) and 2.9e-4
+  (45 deg), inside its 3.5e-3 / 4.2e-3 error bounds; sub-cell shifts of an
+  80-deg, 220 nm trapezoid move ``n_eff`` by about 4e-4 at 40 px/um (box: 5.6e-3);
+* coupler supermode splitting reproduces ``SOI_STRIP_SPLITTING_FIT`` within
+  its ~2 % trust band at 60 px/um (gaps 0.1-0.4 um);
 * the sparse operator equals the matrix-free one used by the adjoint, and the
-  arithmetic path reproduces the legacy solver to rounding.
+  arithmetic/box path reproduces the legacy solver to rounding.
 
-Limitation: second-order *tangential* interface errors remain and depend on
-where a horizontal face cuts its cell (the same is true of the 1-D TE slab
-with cell-averaged ``eps``), so ``n_eff`` still wiggles at the ~5e-3 level at
-40 px/um for sub-cell vertical shifts of a 220 nm core; converge, or align the
-grid with horizontal faces, before quoting digits.  These are convergence
-(level 1) and exact-symmetry checks, not measurements.
+Limitation: with the default box kernel the second-order interface error
+depends on where a horizontal or vertical face cuts its cell (as for the 1-D
+TE slab with cell-averaged ``eps``): ``n_eff`` of a 220 nm core moves by
+~5e-3 at 40 px/um under sub-cell vertical shifts, and refinement sequences on
+ordinary grids are often not monotone, so a Richardson estimate built from
+them is unreliable.  The tent kernel removes that dependence but has a
+larger, systematic error at one resolution (about -6e-3 at 40 px/um for the
+220 nm strip, about 2x-3x the typical box error): use it with
+:func:`n_eff_convergence`.  These are convergence (level 1) and
+exact-symmetry checks, not measurements.
 """
 from __future__ import annotations
 
@@ -327,7 +342,7 @@ def solve_modes(
         horizontal/vertical faces cut their cells (``n_eff`` of a 220 nm core
         moves by ~5e-3 at 40 px/um under sub-cell shifts), so refinement
         sequences are not monotone.  ``"tent"`` makes the error smooth in the
-        grid spacing (~3e-4 spread) at the price of a larger, systematic
+        grid spacing (~4e-4 shift spread) at the price of a larger, systematic
         ``O(h**2)`` bias -- use it for Richardson extrapolation
         (:func:`n_eff_convergence`).
 

@@ -48,6 +48,33 @@ weighted by the property jump across each interface.  The smoothed tensor uses
 Kottke's ``tau`` average in the local (normal, tangent, z) frame, which reduces
 for isotropic media to ``P <eps^-1>^-1 + (1 - P) <eps>`` with ``P = n n^T`` and
 is the exact homogenization of a laminate (series across, parallel along).
+
+Averaging kernels
+-----------------
+``kernel="box"`` averages over each cell (the above).  ``kernel="tent"``
+replaces the cell by the bilinear hat function ``K`` centred on the cell centre
+and reaching the neighbouring centres: the same sweep, run on the grid whose
+lines are the cell centres (:func:`_tent_dual_grid`), returns the exact moments
+``int (1, xi, eta, xi*eta) dA`` of every visible region per dual cell (Simpson's
+rule is exact for the cubic integrands between the points where an edge meets
+the column lines), and the hats are combinations of those moments.  The normal
+is the direction of ``int K grad(q) dA = -int q grad(K) dA``, again exact.
+
+Why a tent: the three-point second difference is exactly the tent average of
+the second derivative, ``(u(y+h) - 2u(y) + u(y-h)) / h**2 = <u''>_K``.  If
+``eps`` is averaged with the same kernel, the local error of the discrete
+Helmholtz operator at an interface has no ``O(1)`` term and its ``O(h)`` term
+(the first moment of ``eps`` inside ``K``) sums to zero over neighbouring
+samples, because ``K`` reproduces linear functions.  What remains is the
+smooth ``O(h**2)`` error of the stencil itself, independent of where the
+interface cuts its cell.  With the box kernel an ``O(h**2)`` term that
+oscillates with that position survives (zero-sum but not zero-first-moment
+weights); averaged over positions it happens to cancel part of the stencil
+error, so the box is usually *more* accurate at a single resolution and the
+tent is the one that converges monotonically.  This is our analysis of the
+standard scheme (the hat is the lumped-mass weight of linear finite elements),
+verified numerically in ``tests/test_xsection.py``; it is not a published
+recipe.
 """
 from __future__ import annotations
 

@@ -124,13 +124,16 @@ def _check_simple(p: np.ndarray) -> None:
     if n <= 3:
         return
     seg = np.stack([p, np.roll(p, -1, axis=0)], axis=1)  # (n, 2, 2)
-    hit = _segments_intersect(seg, seg)
-    i, j = np.triu_indices(n, k=2)
-    adjacent = (j - i == 1) | ((i == 0) & (j == n - 1))
-    bad = hit[i, j] & ~adjacent
-    if np.any(bad):
-        k = int(np.argmax(bad))
-        raise ValueError(f"polygon is not simple: edges {int(i[k])} and {int(j[k])} intersect")
+    block = 512  # bounds the (block, n) work arrays for polygons with many vertices
+    for i0 in range(0, n, block):
+        hit = _segments_intersect(seg[i0:i0 + block], seg)
+        i = np.arange(i0, min(n, i0 + block))[:, None]
+        j = np.arange(n)[None, :]
+        adjacent = (np.abs(j - i) <= 1) | ((i == 0) & (j == n - 1)) | ((j == 0) & (i == n - 1))
+        bad = hit & ~adjacent & (j > i)
+        if np.any(bad):
+            a, b = np.unravel_index(int(np.argmax(bad)), bad.shape)
+            raise ValueError(f"polygon is not simple: edges {int(i0 + a)} and {int(b)} intersect")
 
 
 def _check_material(material: Any) -> None:

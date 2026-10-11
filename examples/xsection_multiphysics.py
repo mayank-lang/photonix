@@ -5,7 +5,9 @@
 * the same kind of geometry object giving a thermal-conductivity map for a heater
   over a waveguide (illustrative bulk property values, not process data);
 * the rotation-invariance check that motivates tensor smoothing: the n_eff of a
-  45-degree-rotated core must equal that of the axis-aligned one.
+  45-degree-rotated core must equal that of the axis-aligned one.  The tent
+  kernel has the larger error at each resolution but converges smoothly, so its
+  Richardson estimate (printed) lands on the aligned-core limit.
 
 Run:  python examples/xsection_multiphysics.py
 Saves: examples/outputs/xsection_multiphysics.png
@@ -67,16 +69,22 @@ def main() -> None:
     limit = (4 * n80 - n40) / 3
     rot = xs.XSection([xs.rect(-0.25, 0.25, -0.1, 0.1, 3.4757).rotated(45.0)], background=1.444)
     ress = [20, 30, 40, 60]
-    for sm, kw, style in (("arithmetic", {}, "o-"), ("tensor", {"offdiagonal": False}, "s--"),
-                          ("tensor", {}, "^-")):
+    for sm, kw, style, label in (("arithmetic", {}, "o-", "arithmetic"),
+                                 ("tensor", {"offdiagonal": False}, "s--", "tensor (diagonal only)"),
+                                 ("tensor", {}, "^-", "tensor"),
+                                 ("tensor", {"kernel": "tent"}, "v:", "tensor, tent kernel")):
         err = [abs(xs.n_eff(rot, resolution=r, margin=1.0, smoothing=sm, **kw) - limit) for r in ress]
-        label = sm + (" (diagonal only)" if kw else "")
         axes[1, 1].loglog(ress, err, style, label=label)
         print(f"45-deg core, {label:26s}: |n_eff - limit| =", " ".join(f"{e:.1e}" for e in err))
+    # The tent kernel converges smoothly, so its Richardson estimate is trustworthy.
+    study = xs.n_eff_convergence(rot, (30, 40, 60), margin=1.0)
+    print(f"45-deg core, tent Richardson (30/40/60): {float(study.extrapolated):.5f} "
+          f"+/- {study.estimated_absolute_error:.1e} (aligned-core limit {limit:.5f})")
     axes[1, 1].set_xlabel("resolution (px/µm)")
     axes[1, 1].set_ylabel("|n_eff(45°) - n_eff(aligned limit)|")
     axes[1, 1].set_title("Rotation invariance needs tensor smoothing")
-    axes[1, 1].legend()
+    axes[1, 1].set_ylim(2e-4, 1e-1)
+    axes[1, 1].legend(loc="lower left", fontsize=8)
     for ax in axes.flat[:3]:
         ax.set_xlabel("x (µm)")
         ax.set_ylabel("y (µm)")
