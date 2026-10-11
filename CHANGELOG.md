@@ -76,10 +76,14 @@ command-line interface, and release, CI and documentation infrastructure.
   minimal-install job (NumPy, SciPy and pytest only), an oldest-dependencies
   job, a coverage gate, a nightly Meep job, a docs build, a weekly scheduled
   run, and cancellation of superseded runs.
-- **Documentation site.** A Sphinx configuration (MyST Markdown, autosummary API
-  reference generated from each package's `__all__`) and a conventions page
-  covering time and propagation sign, complex index, S-parameter normalization,
-  port naming and units.
+- **Documentation site.** A Sphinx configuration (MyST Markdown) whose API
+  reference is generated from every public module's `__all__` when the site is
+  built, documenting each object once at its defining module and linking
+  re-exports there; a test checks that every public name is covered. Also an
+  examples page with the committed figures, a command-line reference, and a
+  conventions page covering time and propagation sign, complex index,
+  S-parameter normalization, port naming and units. The build is warning-free
+  under `sphinx -W`.
 
 ### Changed
 
