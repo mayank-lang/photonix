@@ -8,6 +8,7 @@ import warnings
 
 import numpy as np
 import pytest
+from scipy.integrate import trapezoid  # np.trapezoid needs NumPy >= 2.0
 
 import photonix as px
 import photonix.layout as lay
@@ -92,7 +93,7 @@ def test_sbend_offset_and_length():
     # numeric arc length of the cosine profile
     x = np.linspace(0, 20, 200001)
     dy = -1.5 * np.pi / 20 * np.sin(np.pi * x / 20)
-    assert c.model_settings["length"] == pytest.approx(np.trapezoid(np.sqrt(1 + dy**2), x), rel=1e-6)
+    assert c.model_settings["length"] == pytest.approx(trapezoid(np.sqrt(1 + dy**2), x), rel=1e-6)
 
 
 # --------------------------------------------------------------------------- #

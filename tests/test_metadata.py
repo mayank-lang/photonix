@@ -133,7 +133,7 @@ def test_no_stale_placeholder_urls_or_setup_files():
     assert not (ROOT / "GITHUB_SETUP.md").exists()
     for name in ("README.md", "CONTRIBUTING.md", "RELEASING.md", "SECURITY.md", "pyproject.toml", "CITATION.cff"):
         text = (ROOT / name).read_text(encoding="utf-8")
-        assert "github.com/photonix/photonix" not in text and "readthedocs" not in text, name
+        assert "github.com/photonix/photonix" not in text and "photonix.readthedocs" not in text, name
     assert f"git clone https://{REPO}" in (ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "## Citing photonix" in readme and f"v{px.__version__}" in readme

@@ -334,7 +334,8 @@ def test_gaussian_overlap_against_numerical_integral():
     x = np.linspace(-15, 15, 20001)
     f = np.exp(-((x - d) ** 2) / w1**2)
     g = np.exp(-(x**2) / w2**2) * np.exp(1j * k * theta * x)
-    eta_x = abs(np.trapezoid(f * g.conj(), x)) ** 2 / (np.trapezoid(f**2, x) * np.trapezoid(abs(g) ** 2, x))
+    trap = integrate.trapezoid  # np.trapezoid needs NumPy >= 2.0
+    eta_x = abs(trap(f * g.conj(), x)) ** 2 / (trap(f**2, x) * trap(abs(g) ** 2, x))
     eta_y = 2 * w1 * w2 / (w1**2 + w2**2)
     model = float(c.gaussian_overlap(wl=wl, mfd1=2 * w1, mfd2=2 * w2, offset_x=d, tilt_deg=3.0))
     assert model == pytest.approx(eta_x * eta_y, rel=1e-8)
