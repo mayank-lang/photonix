@@ -172,9 +172,53 @@ def _is_concrete(x) -> bool:
         return False
 
 
+def _reachable(compiled: Mapping[str, CompiledTD], conns: Mapping[_Terminal, _Terminal],
+               sources: Sequence[_Terminal], dense: frozenset[str] = frozenset()) -> set[_Terminal]:
+    """Terminals whose *incident* wave can ever be non-zero when light enters at ``sources``.
+
+    Light incident at an element port leaves through every port with a
+    non-zero instantaneous coupling or a channel from it (all ports of a
+    time-varying element, and of every element named in ``dense``), and
+    arrives at the partner terminal of each connection.
+    """
+    partner: dict[_Terminal, _Terminal] = {}
+    for a, b in conns.items():
+        partner[a] = b
+        partner[b] = a
+    outs: dict[_Terminal, set[_Terminal]] = {}
+    for name, c in compiled.items():
+        root = name.split("/", 1)[0]
+        full = c.time_varying is not None or root in dense or not _is_concrete(c.D)
+        d = None if full else np.abs(np.asarray(c.D)) > 0
+        for j, p in enumerate(c.ports):
+            if full:
+                outs[(name, p)] = {(name, q) for q in c.ports}
+            else:
+                outs[(name, p)] = {(name, q) for i, q in enumerate(c.ports) if d[i, j]}
+        for ch in c.channels:
+            outs[(name, ch.src)].add((name, ch.dst))
+    seen: set[_Terminal] = set()
+    stack = list(sources)
+    while stack:
+        t = stack.pop()
+        if t in seen:
+            continue
+        seen.add(t)
+        for o in outs.get(t, ()):
+            if o in partner and partner[o] not in seen:
+                stack.append(partner[o])
+    return seen
+
+
 def _assemble(compiled: Mapping[str, CompiledTD], conns: Mapping[_Terminal, _Terminal],
-              ports: Mapping[str, _Terminal], record: Sequence[_Terminal]):
-    """Reduce the network to the per-step linear maps (see the module docstring)."""
+              ports: Mapping[str, _Terminal], record: Sequence[_Terminal],
+              active: set[_Terminal] | None = None):
+    """Reduce the network to the per-step linear maps (see the module docstring).
+
+    ``active`` (optional) is the set of terminals whose incident wave can be
+    non-zero; channels fed from any other terminal carry nothing and are
+    dropped (an exact simplification).
+    """
     term_index: dict[_Terminal, int] = {}
     for name, c in compiled.items():
         for p in c.ports:
@@ -223,6 +267,8 @@ def _assemble(compiled: Mapping[str, CompiledTD], conns: Mapping[_Terminal, _Ter
     chans = []
     for name, c in compiled.items():
         for ch in c.channels:
+            if active is not None and (name, ch.src) not in active:
+                continue
             chans.append((term_index[(name, ch.src)], term_index[(name, ch.dst)], ch))
     n_chan = len(chans)
     src_terms = list(dict.fromkeys(s for s, _, _ in chans))
@@ -482,7 +528,6 @@ class TimeDomainCircuit:
         self._flat = {k: v.frozen(self.dt) for k, v in self._flat.items()}
         self._rebuild: Callable[[Mapping[str, Any]], dict[str, TDElement]] | None = None
         self._cache: dict[Any, Any] = {}
-        self._structure_ref: dict[Any, _Structure] = {}
         self._check_delays()
 
     # -- construction -------------------------------------------------------- #
@@ -649,16 +694,48 @@ class TimeDomainCircuit:
         return names, terms
 
     # -- assembly with caching ------------------------------------------------ #
-    def _prepare(self, overrides: Mapping[str, Any] | None, record_terms: Sequence[_Terminal]):
-        if overrides:
-            if self._rebuild is None:
-                raise ValueError("overrides need a circuit built with TimeDomainCircuit.from_netlist")
-            elements = self._rebuild(overrides)
-            flat, conns, ports, _ = flatten_elements(elements, self.connections, self.ports)
-        else:
-            flat, conns, ports = self._flat, self._conns, self._ports
+    def _compiled_reference(self) -> dict[str, CompiledTD]:
+        if "compiled" not in self._cache:
+            self._cache["compiled"] = {name: el.compile(self.dt) for name, el in self._flat.items()}
+        return self._cache["compiled"]
+
+    def _active(self, driven: tuple[str, ...], dense: frozenset[str]) -> set[_Terminal]:
+        key = ("active", driven, dense)
+        if key not in self._cache:
+            srcs = [self._ports[p] for p in driven]
+            self._cache[key] = _reachable(self._compiled_reference(), self._conns, srcs, dense)
+        return self._cache[key]
+
+    def _prepare(self, overrides: Mapping[str, Any] | None, record_terms: Sequence[_Terminal],
+                 driven: tuple[str, ...] | None = None):
+        """Assemble the network (cached when nothing is overridden).
+
+        ``driven`` lists the external ports carrying light; channels it can
+        never reach are pruned (exact). Overridden instances are treated as
+        fully coupled for the pruning, so the pruned structure never depends
+        on a traced value.
+        """
+        dense = frozenset(overrides or ())
+        active = None if driven is None else self._active(driven, dense)
+        key = ("assembly", tuple(record_terms), driven, dense)
+        if not overrides:
+            if key not in self._cache:
+                self._cache[key] = _assemble(self._compiled_reference(), self._conns, self._ports, record_terms,
+                                             active)
+            return self._cache[key]
+        if self._rebuild is None:
+            raise ValueError("overrides need a circuit built with TimeDomainCircuit.from_netlist")
+        elements = self._rebuild(overrides)
+        flat, conns, ports, _ = flatten_elements(elements, self.connections, self.ports)
         compiled = {name: el.compile(self.dt) for name, el in flat.items()}
-        st, arrays, info = _assemble(compiled, conns, ports, record_terms)
+        st, arrays, info = _assemble(compiled, conns, ports, record_terms, active)
+        if key not in self._cache:
+            self._cache[key] = _assemble(self._compiled_reference(), self._conns, self._ports, record_terms, active)
+        if self._cache[key][0] != st:
+            raise ValueError(
+                "the overrides changed the static structure of the network (delays or tap counts); "
+                "only coefficient-level changes can be traced -- rebuild the circuit instead"
+            )
         return st, arrays, info
 
     def _runner(self, st: _Structure, unroll: int):
@@ -676,7 +753,8 @@ class TimeDomainCircuit:
         controls: Mapping[str, Waveform | Any] | None = None,
         record: RecordSpec = "external",
         overrides: Mapping[str, Mapping[str, Any]] | None = None,
-        unroll: int = 8,
+        prune: bool = True,
+        unroll: int = 1,
     ) -> dict[str, Waveform]:
         """Step the circuit through ``n_steps`` samples.
 
@@ -702,6 +780,11 @@ class TimeDomainCircuit:
             layout (integer delays, tap counts) of every element is kept, so
             the values may be JAX tracers: this is how to differentiate a
             time-domain figure of merit with respect to circuit parameters.
+        prune
+            Drop channels that light entering at the driven ports can never
+            reach (e.g. the counter-propagating direction of every waveguide
+            in a reflection-free circuit). Exact; roughly halves the cost of
+            unidirectional simulations.
         unroll
             Loop unrolling of :func:`jax.lax.scan` (speed only).
 
@@ -711,18 +794,11 @@ class TimeDomainCircuit:
             Recorded name ``->`` outgoing :class:`Waveform` (sqrt(W)).
         """
         names, rec_terms = self._record_terminals(record)
-        st, arrays, info = self._prepare(overrides, rec_terms)
-        key = ("structure", tuple(rec_terms))
-        if overrides:
-            ref = self._structure_ref.get(key)
-            if ref is None:
-                ref_st, _, _ = self._prepare(None, rec_terms)
-                self._structure_ref[key] = ref = ref_st
-            if ref != st:
-                raise ValueError(
-                    "the overrides changed the static structure of the network (delays or tap counts); "
-                    "only coefficient-level changes can be traced -- rebuild the circuit instead"
-                )
+        for port in inputs:
+            if port not in self._ports:
+                raise KeyError(f"unknown external port {port!r}; ports are {list(self._ports)}")
+        driven = tuple(p for p in self._ports if p in inputs) if prune else None
+        st, arrays, info = self._prepare(overrides, rec_terms, driven)
         ext = info["ext"]
         t0 = None
         lengths = []

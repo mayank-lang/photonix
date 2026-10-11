@@ -244,6 +244,8 @@ class FIRDesign:
     n_freq: int
     band: float
     pairs: Mapping[tuple[str, str], tuple]
+    #: Common scale (<= 1) applied to every pair so that a passive model gives a strictly passive FIR.
+    gain: float = 1.0
 
 
 def fir_from_model(
@@ -304,12 +306,54 @@ def fir_from_model(
         order = 3                         # an FIR element interpolates pure delays with Lagrange taps
     ports = _ports_of(model(wl=carrier_wl, **settings))
     n_freq = 1024
+    tol_design = fir_tol
+    while True:
+        design, s, scale = _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol_design, band, order)
+        n_freq = design.n_freq
+        el = _fir_build(ports, dt, design, s, model, settings, carrier_wl)
+        # Strict passivity: a passive model must not become (slightly) active anywhere in the band,
+        # or a lossless feedback loop built from it would grow without bound over long runs.
+        fir_resp = {k: fir_response(n0, np.asarray(b), n_freq) for k, (n0, b) in el.taps.items()}
+        sigma_fir = _max_singular_value(ports, fir_resp)
+        if _max_singular_value(ports, s) <= 1.0 + 1e-9 and sigma_fir > 1.0:
+            design = FIRDesign(n_freq, float(band), design.pairs, gain=1.0 / sigma_fir)
+            el = _fir_build(ports, dt, design, s, model, settings, carrier_wl)
+        if el.fit_error <= fir_tol * max(scale, 1e-300) or tol_design < fir_tol / 60:
+            break
+        tol_design /= 4.0                     # the passivity scaling ate the margin: tighten and redo
+    latency = max((spec[-1] for spec in design.pairs.values()), default=0)
+    if latency:
+        warnings.warn(
+            f"model {getattr(model, '__name__', model)!r} has a non-causal response at this carrier; "
+            f"added {latency} samples ({latency * dt:.3g} s) of latency to make it causal",
+            stacklevel=2,
+        )
+    longest = max((int(np.shape(b)[0]) for _, b in el.taps.values()), default=0)
+    if longest > max_taps:
+        warnings.warn(
+            f"model {getattr(model, '__name__', model)!r} needs {longest} > max_taps={max_taps} FIR taps at "
+            f"dt = {dt:g} s (a long impulse response, e.g. a high-Q resonance); the fit was truncated. "
+            "Model the device structurally (rings, delays) or with a rational (pole-residue) model.",
+            stacklevel=2,
+        )
+        el = _truncate(el, max_taps, s, dt)
+    if el.fit_error > fir_tol * max(scale, 1e-300):
+        warnings.warn(
+            f"FIR fit of {getattr(model, '__name__', model)!r} has a maximum in-band error of {el.fit_error:.2e} "
+            f"(> fir_tol={fir_tol:g} of the peak response)",
+            stacklevel=2,
+        )
+    return el
+
+
+def _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol, band, order):
+    """Choose the DFT size and every pair's static tap window (see :func:`fir_from_model`)."""
     while True:
         nu = centered_frequencies(n_freq, dt)
         s = _evaluate(model, settings, nu, carrier_wl)
         s = {k: np.broadcast_to(np.asarray(v, dtype=complex), nu.shape) for k, v in s.items()}
         scale = max((float(np.max(np.abs(v))) for v in s.values()), default=0.0)
-        tol_abs = fir_tol * max(scale, 1e-300)
+        tol_abs = tol * max(scale, 1e-300)
         pairs: dict[tuple[str, str], tuple] = {}
         aliased = False
         for key, v in s.items():
@@ -337,30 +381,20 @@ def fir_from_model(
         n_freq *= 2
     # One common latency makes every pair causal and keeps their relative timing.
     latency = max(0, -min((spec[1] for spec in pairs.values()), default=0))
-    if latency:
-        warnings.warn(
-            f"model {getattr(model, '__name__', model)!r} has a non-causal response at this carrier; "
-            f"added {latency} samples ({latency * dt:.3g} s) of latency to make it causal",
-            stacklevel=2,
-        )
     design = FIRDesign(n_freq, float(band), {k: (*spec[:-1], latency) for k, spec in pairs.items()})
-    el = _fir_build(ports, dt, design, s, model, settings, carrier_wl)
-    longest = max((int(np.shape(b)[0]) for _, b in el.taps.values()), default=0)
-    if longest > max_taps:
-        warnings.warn(
-            f"model {getattr(model, '__name__', model)!r} needs {longest} > max_taps={max_taps} FIR taps at "
-            f"dt = {dt:g} s (a long impulse response, e.g. a high-Q resonance); the fit was truncated. "
-            "Model the device structurally (rings, delays) or with a rational (pole-residue) model.",
-            stacklevel=2,
-        )
-        el = _truncate(el, max_taps, s, dt)
-    if el.fit_error > fir_tol * max(scale, 1e-300):
-        warnings.warn(
-            f"FIR fit of {getattr(model, '__name__', model)!r} has a maximum in-band error of {el.fit_error:.2e} "
-            f"(> fir_tol={fir_tol:g} of the peak response)",
-            stacklevel=2,
-        )
-    return el
+    return design, s, scale
+
+
+def _max_singular_value(ports, responses) -> float:
+    """Largest singular value over frequency of the matrix built from ``{(in, out): response}``."""
+    idx = {p: i for i, p in enumerate(ports)}
+    n_f = int(np.shape(next(iter(responses.values())))[0]) if responses else 0
+    if not n_f:
+        return 0.0
+    mat = np.zeros((n_f, len(ports), len(ports)), dtype=complex)
+    for (pi, po), r in responses.items():
+        mat[:, idx[po], idx[pi]] = np.asarray(r)
+    return float(np.max(np.linalg.svd(mat, compute_uv=False)))
 
 
 def _fir_taps(spec, v_centered, dt, band, tau, a0):
@@ -368,7 +402,12 @@ def _fir_taps(spec, v_centered, dt, band, tau, a0):
         _, n0, order, latency = spec
         return n0 + latency, a0 * lagrange_taps(tau / dt - n0, order).astype(complex)
     _, n0, n_taps, latency = spec
-    return n0 + latency, window_taps(v_centered, dt, n0, n_taps, band)
+    taps = window_taps(v_centered, dt, n0, n_taps, band)
+    # Exact at the carrier (nu = 0): a complex gain correction of order fir_tol.
+    s0 = v_centered[int(v_centered.shape[0]) // 2]
+    h0 = xp.sum(taps)
+    taps = xp.where(xp.abs(h0) > 0, s0 / xp.where(xp.abs(h0) > 0, h0, 1.0), 1.0) * taps
+    return n0 + latency, taps
 
 
 def _in_band_error(design: FIRDesign, taps, s, dt) -> float:
@@ -395,7 +434,8 @@ def _fir_build(ports, dt, design: FIRDesign, s, model, settings, carrier_wl) -> 
             s_c = model(wl=carrier_wl, **settings) if s_c is None else s_c
             a0 = xp.reshape(xp.asarray(s_c[key], dtype=complex), ())
         v = xp.broadcast_to(xp.asarray(s[key], dtype=complex), (design.n_freq,))
-        taps[key] = _fir_taps(spec, v, dt, design.band, tau, a0)
+        n0, b = _fir_taps(spec, v, dt, design.band, tau, a0)
+        taps[key] = (n0, b * design.gain if design.gain != 1.0 else b)
     err = float("nan")
     if _is_concrete(*[t[1] for t in taps.values()]) and all(_is_concrete(s[k]) for k in design.pairs):
         err = _in_band_error(design, taps, s, dt)
@@ -501,8 +541,12 @@ def to_td(
         if like is None or isinstance(like, DelayLineTD):
             el = _delay_line(model, settings, carrier_wl=carrier_wl, dt=dt, interp=interp, like=like, check=check,
                              fir_tol=fir_tol)
+            if el is not None and like is None and isinstance(el.tau_s, float) and abs(el.tau_s) <= 1e-9 * dt:
+                return MemorylessTD.from_sdict(model(wl=carrier_wl, **settings))   # a lumped phase / loss
             if el is not None:
                 return el
+        elif isinstance(like, MemorylessTD):
+            return MemorylessTD.from_sdict(model(wl=carrier_wl, **settings), like.ports)
     if any(model is m for m in flat):
         if like is None or isinstance(like, MemorylessTD):
             el = _memoryless(model, settings, carrier_wl=carrier_wl, dt=dt, check=check, fir_tol=fir_tol)
