@@ -413,12 +413,8 @@ class LaserParams:
         _, s0 = self.steady_state(current_a)
         return math.sqrt(self.v_g_cm_s * self.a_cm2 * s0 / self.tau_p_s) / (2.0 * math.pi)
 
-    def small_signal_response(self, f_hz, current_a: float):
-        """Linearized ``dP_out / dI`` (W/A) at ``f_hz`` about the steady state at ``current_a``.
-
-        Obtained from the Jacobian of the full rate equations (a numerical
-        linearization, independent of the time-domain integrator).
-        """
+    def _jacobian(self, current_a: float) -> tuple[float, float, np.ndarray]:
+        """Steady state ``(N0, S0)`` and the Jacobian of ``(dN/dt, dS/dt)`` there (central differences)."""
         n0, s0 = self.steady_state(current_a)
         x0 = np.array([n0, s0])
         jac = np.zeros((2, 2))
@@ -428,6 +424,15 @@ class LaserParams:
             xp_[i] += h
             xm[i] -= h
             jac[:, i] = (_rhs_np(self, xp_, current_a) - _rhs_np(self, xm, current_a)) / (2 * h)
+        return n0, s0, jac
+
+    def small_signal_response(self, f_hz, current_a: float):
+        """Linearized ``dP_out / dI`` (W/A) at ``f_hz`` about the steady state at ``current_a``.
+
+        Obtained from the Jacobian of the full rate equations (a numerical
+        linearization, independent of the time-domain integrator).
+        """
+        _, _, jac = self._jacobian(current_a)
         b = np.array([self.eta_i / (Q_E * self.volume_cm3), 0.0])
         w = 2.0 * np.pi * np.atleast_1d(np.asarray(f_hz, dtype=float))
         out = []
@@ -435,6 +440,60 @@ class LaserParams:
             x = np.linalg.solve(1j * wk * np.eye(2) - jac, b)
             out.append(complex(self.output_power_w(1.0)) * x[1])
         return np.asarray(out).reshape(np.shape(f_hz))
+
+    def noise_spectra(self, f_hz, current_a: float) -> dict[str, np.ndarray]:
+        """Linearized Langevin noise spectra at ``current_a``: RIN and frequency noise (one-sided).
+
+        Small fluctuations ``x = (dN, dS)`` about the steady state obey
+        ``dx/dt = J x + F`` with the Jacobian ``J`` of the rate equations and
+        the Langevin forces of :func:`rate_equation_laser` (diffusion matrix
+        ``2 R_sp P``, ``-R_sp P``, ``2 (R_sp P + N V / tau_n)`` in number
+        units). Hence ``S_x(Omega) = G Q G^H`` with ``G = (j Omega - J)^-1``
+        and the instantaneous frequency
+        ``dnu = [(alpha_H / 2) Gamma v_g g'(N0) dN + F_phi] / (2 pi)``.
+        Below the relaxation resonance the carrier term adds ``alpha_H^2``
+        times the Schawlow-Townes level, so ``frequency_noise(0)`` equals
+        ``(1 + alpha_H^2) Delta nu_ST / pi = linewidth_hz / pi`` (Henry 1982).
+
+        Returns
+        -------
+        dict
+            ``"rin"``: relative intensity noise ``2 S_SS / S0^2`` (1/Hz);
+            ``"frequency_noise"``: ``S_nu`` (Hz^2/Hz), both one-sided.
+
+        Examples
+        --------
+        >>> import math
+        >>> p = LaserParams(epsilon_cm3=0.0)
+        >>> i0 = 3 * p.threshold_current_a
+        >>> s = p.noise_spectra([0.0], i0)
+        >>> bool(abs(float(s["frequency_noise"][0]) * math.pi / p.linewidth_hz(i0) - 1) < 1e-4)
+        True
+        """
+        n0, s0, jac = self._jacobian(current_a)
+        v_p = self.volume_cm3 / self.gamma
+        pn = s0 * v_p                                    # photon number
+        nc = n0 * self.volume_cm3                        # carrier number
+        r_sp = self.beta_sp * nc / self.tau_n_s
+        # (N, S) density-unit diffusion matrix (per unit time, two-sided)
+        q = np.array([
+            [2.0 * (r_sp * pn + nc / self.tau_n_s) / self.volume_cm3 ** 2, -r_sp * pn / (self.volume_cm3 * v_p)],
+            [-r_sp * pn / (self.volume_cm3 * v_p), 2.0 * r_sp * pn / v_p ** 2],
+        ])
+        dn = 1e-6 * n0
+        g_prime = float(self.gain(n0 + dn) - self.gain(n0 - dn)) / (2.0 * dn)
+        k_phi = 0.5 * self.alpha_h * self.gamma * self.v_g_cm_s * g_prime
+        f = np.atleast_1d(np.asarray(f_hz, dtype=float))
+        s_nn = np.empty(f.size)
+        s_ss = np.empty(f.size)
+        for i, fk in enumerate(f):
+            g = np.linalg.inv(2j * np.pi * fk * np.eye(2) - jac)
+            sx = g @ q @ g.conj().T
+            s_nn[i], s_ss[i] = sx[0, 0].real, sx[1, 1].real
+        s_omega = k_phi ** 2 * s_nn + r_sp / (2.0 * pn)       # two-sided, (rad/s)^2 / Hz
+        shape = np.shape(f_hz)
+        return {"rin": (2.0 * s_ss / s0 ** 2).reshape(shape),
+                "frequency_noise": (2.0 * s_omega / (2.0 * np.pi) ** 2).reshape(shape)}
 
     def linewidth_hz(self, current_a: float) -> float:
         """Schawlow-Townes-Henry linewidth ``R_sp (1 + alpha_h^2) / (4 pi P_ph)`` at ``current_a``.

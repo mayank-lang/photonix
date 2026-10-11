@@ -156,23 +156,62 @@ def test_relaxation_oscillation_frequency_and_small_signal_response():
         assert abs(h_td / complex(p.small_signal_response(fm, i0)) - 1) < 2e-3
 
 
-def test_rate_equation_linewidth_shows_the_henry_factor():
+def test_linearized_langevin_theory_gives_the_henry_linewidth():
+    # DC frequency noise of the linearized rate equations = Delta nu_ST (1 + alpha^2) / pi (Henry 1982)
+    for alpha in (0.0, 2.0, 4.0):
+        for beta_sp in (1e-5, 1e-4):
+            p = LaserParams(epsilon_cm3=0.0, alpha_h=alpha, beta_sp=beta_sp)
+            for m in (1.5, 4.0):
+                i0 = m * p.threshold_current_a
+                s0 = float(p.noise_spectra(0.0, i0)["frequency_noise"])
+                assert s0 * math.pi / p.linewidth_hz(i0) == pytest.approx(1.0, rel=1e-3)
+    p0 = LaserParams(epsilon_cm3=0.0, alpha_h=0.0)
+    p4 = LaserParams(epsilon_cm3=0.0, alpha_h=4.0)
+    i0 = 3 * p0.threshold_current_a
+    assert p4.linewidth_hz(i0) / p0.linewidth_hz(i0) == pytest.approx(17.0)
+
+
+@requires_jax          # 2.4 M Runge-Kutta substeps: compiled lax.scan (the NumPy loop is minutes)
+def test_rate_equation_noise_spectra_match_the_linearized_theory():
+    """Simulated frequency noise and RIN against the independent linear-noise analysis.
+
+    Statistical tolerances are ~4 sigma of the Welch estimates (checked over seeds 7-11). Bands avoid the
+    relaxation peak and its second harmonic, where the strong RO fluctuations at beta_sp = 1e-4 make the
+    (correct) nonlinear simulation depart from the linear theory.
+    """
+    from scipy.signal import welch
+
     dt, n = 1e-12, 600000
-    estimates = {}
-    for alpha in (0.0, 4.0):
-        p = LaserParams(epsilon_cm3=0.0, alpha_h=alpha, beta_sp=1e-4)
-        i0 = 4 * p.threshold_current_a
-        fld, _ = rate_equation_laser(np.full(n, i0), dt, p, noise=True, seed=7, substeps=2)
-        phi = np.unwrap(np.angle(np.asarray(fld.samples)))
-        st = p.linewidth_hz(i0) / (1 + alpha ** 2)                    # Schawlow-Townes part
-        # the white (Langevin) phase diffusion, from single-step increments
-        assert abs(np.var(np.diff(phi)) / (2 * np.pi * dt) / st - 1) < 0.03 if alpha == 0 else True
-        lags = np.arange(2000, 6001, 1000)                            # >> 1 / damping (0.33 ns)
-        var = np.array([np.var(phi[k:] - phi[:-k]) for k in lags])
-        estimates[alpha] = np.polyfit(lags * dt, var, 1)[0] / (2 * np.pi)
-        assert abs(estimates[alpha] / p.linewidth_hz(i0) - 1) < 0.2   # statistical (~10 % rms)
-    ratio = estimates[4.0] / estimates[0.0]
-    assert 17 * 0.75 < ratio < 17 * 1.25                              # (1 + alpha^2) enhancement
+    p = LaserParams(epsilon_cm3=0.0, alpha_h=4.0, beta_sp=1e-4)
+    i0 = 4 * p.threshold_current_a
+    fld, _ = rate_equation_laser(np.full(n, i0), dt, p, noise=True, seed=7)
+    e = np.asarray(fld.samples)
+    f, s_nu = welch(np.diff(np.unwrap(np.angle(e))) / (2 * np.pi * dt), fs=1 / dt, nperseg=2 ** 15)
+    pw = np.abs(e) ** 2
+    _, rin = welch(pw / pw.mean(), fs=1 / dt, nperseg=2 ** 15)
+    th = p.noise_spectra(f, i0)
+
+    def band(x, lo, hi):
+        return float(np.mean(x[(f >= lo) & (f <= hi)]))
+
+    low, high = (0.03e9, 1.5e9), (50e9, 200e9)
+    # white Schawlow-Townes level far above f_R (the carrier term has died out there)
+    assert band(s_nu, *high) * math.pi / (p.linewidth_hz(i0) / 17.0) == pytest.approx(1.0, abs=0.03)
+    for lo, hi in (low, (1.5e9, 4e9)):
+        assert band(s_nu, lo, hi) / band(th["frequency_noise"], lo, hi) == pytest.approx(1.0, abs=0.08)
+    # Henry enhancement seen in the simulation: low-frequency over Schawlow-Townes level ~ 1 + alpha^2
+    henry_sim = band(s_nu, *low) / band(s_nu, *high)
+    henry_th = band(th["frequency_noise"], *low) / band(th["frequency_noise"], *high)
+    assert henry_th == pytest.approx(17.0, rel=0.05)
+    assert henry_sim == pytest.approx(henry_th, rel=0.10)
+    # RIN: level away from the resonance, and the relaxation-oscillation peak position
+    assert band(rin, 0.03e9, 4e9) / band(th["rin"], 0.03e9, 4e9) == pytest.approx(1.0, abs=0.12)
+    assert band(rin, 20e9, 100e9) / band(th["rin"], 20e9, 100e9) == pytest.approx(1.0, abs=0.05)
+    above = f > 1e9
+    f_peak_sim = f[np.argmax(np.where(above, rin, 0.0))]
+    f_peak_th = f[np.argmax(np.where(above, th["rin"], 0.0))]
+    assert f_peak_sim == pytest.approx(f_peak_th, rel=0.02)
+    assert f_peak_th == pytest.approx(p.relaxation_frequency_hz(i0), rel=0.05)
 
 
 def test_cw_laser_linewidth_and_rin():
