@@ -659,7 +659,8 @@ def test_parse_wavelengths_and_params():
 @pytest.mark.parametrize("text", ["[1, 2]", '{"format": "photonix.sparameters", "version": null}',
                                   '{"format": "photonix.sparameters", "version": "1"}',
                                   '{"format": "photonix.sparameters", "version": 1, "ports": "ab", '
-                                  '"wavelengths_um": [1.55], "s_real": [[[0, 1], [1, 0]]], "s_imag": [[[0, 0], [0, 0]]]}'])
+                                  '"wavelengths_um": [1.55], "s_real": [[[0, 1], [1, 0]]], '
+                                  '"s_imag": [[[0, 0], [0, 0]]]}'])
 def test_malformed_dataset_json_is_an_input_error(capsys, tmp_path, text):
     path = tmp_path / "bad.json"
     path.write_text(text)
@@ -710,10 +711,10 @@ def test_existing_outputs_need_force_and_are_checked_before_work(capsys, tmp_pat
 
 
 def test_json_output_into_a_closed_pipe_exits_quietly():
-    code = (f"import subprocess, sys; p = subprocess.Popen([sys.executable, '-m', 'photonix', 'sweep', 'straight', "
-            f"'--wl', '1.5:1.6:4001', '--json'], stdout=subprocess.PIPE, stderr=subprocess.PIPE); "
-            f"p.stdout.read(10); p.stdout.close(); err = p.stderr.read(); rc = p.wait(); "
-            f"print(rc, b'Traceback' in err)")
+    code = ("import subprocess, sys; p = subprocess.Popen([sys.executable, '-m', 'photonix', 'sweep', 'straight', "
+            "'--wl', '1.5:1.6:4001', '--json'], stdout=subprocess.PIPE, stderr=subprocess.PIPE); "
+            "p.stdout.read(10); p.stdout.close(); err = p.stderr.read(); rc = p.wait(); "
+            "print(rc, b'Traceback' in err)")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, check=True)
     rc, traceback_seen = out.stdout.split()
     assert rc in ("141", "-13") and traceback_seen == "False"
