@@ -44,20 +44,23 @@ snapped to the database grid.
 | Arrays | GDS `AREF` and OASIS repetitions expand into references `<base>_<col>_<row>` (`<base>_<k>` for explicit offsets) |
 | Paths | `FlexPath`/`RobustPath` become polygons (except recognised pin markers) |
 | Instance names | `SREF` property `INSTANCE_NAME_ATTR` (= 1) |
-| Labels | `LabeledCell.labels` ↔ GDS `TEXT` (OASIS `TEXT` has no rotation/magnification) |
+| Labels | `LabeledCell.labels` ↔ GDS `TEXT`. OASIS `TEXT` has no anchor, rotation or magnification: the sidecar records them and `read_layout` restores them (matched by text, layer and position) |
 | Ports | sidecar → PinRec pins → labels on edges, per structure (below) |
-| `model`, `model_settings`, original names, `DieCell` floorplan attributes | JSON sidecar only |
+| `model`, `model_settings`, original names, `DieCell` floorplan attributes, OASIS label presentation | JSON sidecar only |
 
 ### Ports
 
 1. **Sidecar** (`<file>.photonix.json`): exact centre, orientation, width,
    layer and type. Each structure entry also stores a content hash of the
    structure as written: polygons, paths and placements on the integer grid,
-   independent of element order, with `TEXT` excluded. If a structure is
-   edited after writing, its entry is ignored with a `StaleSidecarWarning`.
-   That structure falls back to markers and becomes `GEOMETRY_ONLY` (extraction
-   refuses it), while untouched structures keep their semantics. Re-saving a
-   file without changing its geometry, or adding text, keeps the sidecar valid.
+   independent of element order, with `TEXT` excluded, plus the content hash
+   of every structure it places (recursively). If a structure, or any
+   structure below it, is edited after writing, its entry is ignored with a
+   `StaleSidecarWarning`, so a model never describes changed sub-cell
+   geometry. That structure falls back to markers and becomes `GEOMETRY_ONLY`
+   (extraction refuses it), while untouched structures keep their semantics.
+   Re-saving a file without changing its geometry, or adding text, keeps the
+   sidecar valid.
 2. **PinRec** markers (SiEPIC-Tools convention; L. Chrostowski and
    M. Hochberg, *Silicon Photonics Design*, CUP 2015): a two-point `PATH`
    on the pin layer (1/10 optical, 1/11 electrical), 0.1 µm long, centred
@@ -155,10 +158,16 @@ PinRec markers or the sidecar carry all of these.
   (`FloorplanIssue`):
   * `outside_die`: a top-level block leaves the die;
   * `keepout`: any leaf instance, or polygons drawn in a composite, enters
-    the dicing lane or the keep-out band;
+    the dicing lane or the keep-out band. A facet device (`facet_models`) may
+    cross the band only towards the edge its `o2` faces; inside another
+    side's lane it is reported like any leaf;
   * `overlap`: two top-level blocks overlap (routes excluded unless asked);
   * `facet`: an edge coupler's `o2` misses the facet by more than
     `facet_tol`, faces a non-facet side, or faces no edge.
+
+  All checks run in die coordinates: when `top` places the frame (e.g. a
+  die centred on the origin), that reference's transform is undone first,
+  and issue boxes are reported in the frame's coordinates.
 
 ## Packaging cells (`photonix.layout.library`)
 

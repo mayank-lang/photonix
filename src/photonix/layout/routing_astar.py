@@ -31,15 +31,21 @@ Obstacles are rasterised by their exact Euclidean distance at every node. A
 straight step is allowed only between nodes at least ``r + grid/2`` from all
 obstacles (``r = keepout + width/2`` is the centre-line clearance), which
 bounds the distance along the whole step because distance is 1-Lipschitz.
-A turn is allowed only if every node of the fillet's ``d x d`` corner box
-(plus one grid cell around it) is at least ``r + grid/sqrt(2)`` away, which
-covers every point of the drawn bend. The finished route is then *verified*
-exactly: the minimum distance from its drawn centre line to every obstacle
-edge must be at least ``r``.
+A turn is allowed only if every node within ``grid/sqrt(2)`` of the drawn
+fillet curve is at least ``r + grid/sqrt(2)`` away from all obstacles; every
+point of the curve has such a node within ``grid/sqrt(2)``, so this covers the
+whole drawn bend (and nothing of the corner that the bend never touches). The
+finished route is then *verified* exactly: the minimum distance from its drawn
+centre line to every obstacle edge must be at least ``r``.
 
 The two straight leads that leave ``port1`` and enter ``port2`` (length
-``max(d, r + grid/sqrt(2))``) are exempt, because they must abut the devices
-the ports belong to.
+``max(d, r + grid/sqrt(2))``) are checked exactly against every obstacle
+except the polygons that touch or contain that port itself (within
+``width/2`` of its centre), because a port must abut the device it belongs
+to. A lead that runs into any other obstacle raises
+:class:`~photonix.layout.RoutingError`; so does the straight route between
+two collinear facing ports when it crosses an obstacle that touches neither
+port.
 
 Self-crossing
 -------------
@@ -244,14 +250,33 @@ def route_astar(
     e = np.asarray(port2.center, dtype=float)
     S = s + lead * h1v
     G = e - lead * hgv
+    # Polygons a port touches or lies in belong to its device: only they are exempt along that port's lead.
+    ex1 = _touching(polys, s, 0.5 * w)
+    ex2 = _touching(polys, e, 0.5 * w)
+    exempt = (ex1, ex2)
 
     # Collinear facing ports whose leads overlap: the straight route is all lead.
     if np.allclose(hgv, h1v):
         fwd = float((e - s) @ h1v)
         lat = float((e - s) @ np.array([-h1v[1], h1v[0]]))
         if abs(lat) < TOL and 0 < fwd <= 2 * lead + TOL:
-            return route_cell(np.array([s, e]), np.full(2, math.atan2(h1v[1], h1v[0])), port1, port2,
+            line = np.array([s, e])
+            gap = _line_gap(line, [q for k, q in enumerate(polys) if k not in ex1 and k not in ex2], r_c)
+            if gap is not None:
+                raise RoutingError(
+                    f"the straight route between the collinear facing ports passes {gap:.4g} um from an "
+                    f"obstacle (centre-line clearance {r_c:.4g} um)"
+                )
+            return route_cell(line, np.full(2, math.atan2(h1v[1], h1v[0])), port1, port2,
                               w, lay, fwd, 0, name="route_astar")
+
+    for name, origin, tip, own in (("port1's lead-out", s, S, ex1), ("port2's lead-in", e, G, ex2)):
+        gap = _line_gap(np.array([origin, tip]), [q for k, q in enumerate(polys) if k not in own], r_c)
+        if gap is not None:
+            raise RoutingError(
+                f"{name} (the straight {lead:.4g} um before the first bend) passes {gap:.4g} um from an "
+                f"obstacle (centre-line clearance {r_c:.4g} um)"
+            )
 
     # ---- grid ---------------------------------------------------------------
     pts_all = [s, e, S, G] + [q for poly in polys for q in poly]
@@ -304,9 +329,21 @@ def route_astar(
     if blocked_s[gi, gj]:
         raise RoutingError("port2's lead-in point lies within the keepout of an obstacle")
 
-    # ---- turn feasibility: corner boxes free (summed-area table) ------------
+    # ---- turn feasibility ---------------------------------------------------
+    # Every point of a drawn bend has a grid node within grid/sqrt(2), so the bend clears r_c when every
+    # node that near the curve is at least r_t from all obstacles. Fast path: the whole corner box (plus
+    # one cell) is free (summed-area table). Otherwise only the blocked nodes of the box are tested
+    # against the actual fillet curve, lazily and memoised.
     sat = np.zeros((nx + 1, ny + 1), dtype=np.int64)
     sat[1:, 1:] = np.cumsum(np.cumsum(blocked_t, axis=0), axis=1)
+    near = grid / math.sqrt(2.0) + 1e-7
+    curves: dict[tuple[int, int], tuple[np.ndarray, np.ndarray]] = {}
+    for sx in (1, -1):
+        for sy in (1, -1):
+            # Corner at the origin, entering along (-sx, 0) and leaving along (0, sy): bend in the (sx, sy) quadrant.
+            arc = fillet_path(np.array([(2 * sx * d, 0.0), (0.0, 0.0), (0.0, 2 * sy * d)]), R, bend=bend, p=p,
+                              npts=npts).points[1:-1]
+            curves[(sx, sy)] = (arc[:-1], arc[1:])
 
     def span(coords: np.ndarray, sign: int) -> tuple[np.ndarray, np.ndarray]:
         lo_v = coords - grid if sign > 0 else coords - d - grid
@@ -325,6 +362,27 @@ def route_astar(
             C, D = ja[None, :], jb[None, :] + 1
             count = sat[B, D] - sat[A, D] - sat[B, C] + sat[A, C]
             turn_ok[(sx, sy)] = (count == 0) & ~blocked_s
+    turn_memo: dict[tuple[tuple[int, int], int, int], bool] = {}
+
+    def turn_free(key: tuple[int, int], i: int, j: int) -> bool:
+        """Exact-curve turn test at node (i, j) for a corner box the fast path rejected."""
+        mk = (key, i, j)
+        hit = turn_memo.get(mk)
+        if hit is not None:
+            return hit
+        ok = not bool(blocked_s[i, j])
+        if ok:
+            ia, ib = xspan[key[0]]
+            ja, jb = yspan[key[1]]
+            sub = blocked_t[ia[i]:ib[i] + 1, ja[j]:jb[j] + 1]
+            bi, bj = np.nonzero(sub)
+            if bi.size:
+                pts = np.stack([xs_[ia[i] + bi] - xs_[i], ys_[ja[j] + bj] - ys_[j]], axis=1)
+                c0, c1 = curves[key]
+                dd = segment_distances(pts, pts, c0, c1)
+                ok = not bool(np.any(dd <= near))
+        turn_memo[mk] = ok
+        return ok
 
     # ---- straight-run checks and minimum post-turn runs ---------------------
     cx = np.zeros((nx + 1, ny), dtype=np.int64)
@@ -407,7 +465,8 @@ def route_astar(
         for h2 in ((h + 1) % 4, (h + 3) % 4):
             ux, uy = _DIRS[h]
             vx, vy = _DIRS[h2]
-            if not tok[(vx - ux, vy - uy)][i][j]:
+            key = (vx - ux, vy - uy)
+            if not tok[key][i][j] and not turn_free(key, i, j):
                 continue
             if i == gi and j == gj and h2 == h_goal:          # corner on the goal itself
                 relax(st, i, j, h2, gc + bp)
@@ -453,9 +512,9 @@ def route_astar(
         # one that is self-clear and clears every obstacle.
         cell = _closed_form_fallback(port1, port2, R=R, bend=bend, p=p, w=w, lay=lay, npts=npts,
                                      bend_penalty=bp + 2.0 * d - _bl, self_gap=self_gap, polys=polys,
-                                     r_c=r_c, lead=lead, h1=h1v, hg=hgv)
+                                     r_c=r_c, lead=lead, h1=h1v, hg=hgv, exempt=exempt)
     cell.name = "route_astar"
-    gap = _clearance_violation(centerline(cell), polys, r_c, s, h1v, lead, e, hgv)
+    gap = _clearance_violation(centerline(cell), polys, r_c, s, h1v, lead, e, hgv, exempt)
     if gap is not None:
         raise RoutingError(  # pragma: no cover - guarded by the rasterisation bounds
             f"internal error: A* route passes {gap:.4g} um from an obstacle (centre-line clearance {r_c:.4g} um)"
@@ -465,7 +524,8 @@ def route_astar(
 
 def _closed_form_fallback(port1: Port, port2: Port, *, R: float, bend: str, p: float, w: float, lay, npts: int,
                           bend_penalty: float, self_gap: float, polys: list[np.ndarray], r_c: float,
-                          lead: float, h1: np.ndarray, hg: np.ndarray) -> Cell:
+                          lead: float, h1: np.ndarray, hg: np.ndarray,
+                          exempt: tuple[set[int], set[int]]) -> Cell:
     s = np.asarray(port1.center, dtype=float)
     e = np.asarray(port2.center, dtype=float)
     for _cost, verts in plan_routes(port1, port2, radius=R, bend=bend, p=p, max_bends=6,
@@ -476,7 +536,7 @@ def _closed_form_fallback(port1: Port, port2: Port, *, R: float, bend: str, p: f
             continue
         if self_clearance(path.points, self_gap) is not None:
             continue
-        if _clearance_violation(path.points, polys, r_c, s, h1, lead, e, hg) is not None:
+        if _clearance_violation(path.points, polys, r_c, s, h1, lead, e, hg, exempt) is not None:
             continue
         return route_manhattan(port1, port2, radius=R, bend=bend, p=p, width=w, layer=lay,
                                waypoints=clean_vertices(verts)[1:-1], npts=npts)
@@ -486,8 +546,22 @@ def _closed_form_fallback(port1: Port, port2: Port, *, R: float, bend: str, p: f
     )
 
 
-def _clip_lead(line: np.ndarray, origin: np.ndarray, direction: np.ndarray, lead: float) -> np.ndarray:
-    """Drop the straight lead (``lead`` µm from ``origin`` along ``direction``) from the start of ``line``."""
+def _touching(polys: list[np.ndarray], point: np.ndarray, half_width: float) -> set[int]:
+    """Indices of the polygons within ``half_width`` of ``point`` (the device a port belongs to)."""
+    out = set()
+    for k, poly in enumerate(polys):
+        dd = float(_point_polygon_distance(np.array([point[0]]), np.array([point[1]]), poly)[0])
+        if dd <= half_width + 1e-6:
+            out.add(k)
+    return out
+
+
+def _split_lead(line: np.ndarray, origin: np.ndarray, direction: np.ndarray,
+                lead: float) -> tuple[np.ndarray, np.ndarray]:
+    """Split ``line`` into its straight lead (``lead`` µm from ``origin`` along ``direction``) and the rest.
+
+    The two pieces share their joint vertex.
+    """
     nrm = np.array([-direction[1], direction[0]])
 
     def axis_t(q: np.ndarray) -> float | None:
@@ -501,26 +575,41 @@ def _clip_lead(line: np.ndarray, origin: np.ndarray, direction: np.ndarray, lead
             break
         i += 1
     if i + 1 < len(line) and axis_t(line[i + 1]) is not None:     # lead ends inside a straight segment
-        return np.concatenate([[origin + lead * direction], line[i + 1:]])
-    return line[i:]
+        tip = origin + lead * direction
+        return np.concatenate([line[:i + 1], [tip]]), np.concatenate([[tip], line[i + 1:]])
+    return line[:i + 1], line[i:]
 
 
-def _clearance_violation(line: np.ndarray, polys: list[np.ndarray], r_c: float, s: np.ndarray, h1: np.ndarray,
-                         lead: float, e: np.ndarray, hg: np.ndarray) -> float | None:
-    """Exact check of a drawn centre line (leads excluded): the smallest obstacle distance below ``r_c``, or None."""
-    core = _clip_lead(np.asarray(line, dtype=float), s, h1, lead)
-    core = _clip_lead(core[::-1], e, -hg, lead)[::-1]
-    if len(core) < 2:
+def _line_gap(line: np.ndarray, polys: Sequence[np.ndarray], r_c: float) -> float | None:
+    """The smallest distance below ``r_c`` from a polyline to any of ``polys`` (0 inside), or None."""
+    if len(line) < 2:
         return None
-    a0, a1 = core[:-1], core[1:]
-    lo, hi = core.min(axis=0) - r_c, core.max(axis=0) + r_c
+    a0, a1 = line[:-1], line[1:]
+    lo, hi = line.min(axis=0) - r_c, line.max(axis=0) + r_c
     worst = None
     for poly in polys:
         if np.any(poly.max(axis=0) < lo) or np.any(poly.min(axis=0) > hi):
             continue
         dmin = float(np.min(segment_distances(a0, a1, poly, np.roll(poly, -1, axis=0))))
-        inside = float(_point_polygon_distance(core[:, 0], core[:, 1], poly).min())
+        inside = float(_point_polygon_distance(line[:, 0], line[:, 1], poly).min())
         gap = min(dmin, inside)
         if gap < r_c - 1e-6 and (worst is None or gap < worst):
             worst = gap
     return worst
+
+
+def _clearance_violation(line: np.ndarray, polys: list[np.ndarray], r_c: float, s: np.ndarray, h1: np.ndarray,
+                         lead: float, e: np.ndarray, hg: np.ndarray,
+                         exempt: tuple[set[int], set[int]] = (set(), set())) -> float | None:
+    """Exact check of a drawn centre line: the smallest obstacle distance below ``r_c``, or None.
+
+    The body is checked against every polygon; each lead only against the polygons its port does not
+    touch (``exempt[0]`` for ``port1``, ``exempt[1]`` for ``port2``).
+    """
+    lead1, rest = _split_lead(np.asarray(line, dtype=float), s, h1, lead)
+    lead2, core = _split_lead(rest[::-1], e, -hg, lead)
+    gaps = [_line_gap(core[::-1], polys, r_c),
+            _line_gap(lead1, [q for k, q in enumerate(polys) if k not in exempt[0]], r_c),
+            _line_gap(lead2[::-1], [q for k, q in enumerate(polys) if k not in exempt[1]], r_c)]
+    found = [g for g in gaps if g is not None]
+    return min(found) if found else None

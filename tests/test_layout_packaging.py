@@ -414,6 +414,45 @@ def test_check_floorplan_edge_coupler_facets():
     assert issues(770.0, d=trench) == [] and issues(800.0, d=trench) == [("facet", ("ec",))]
 
 
+def test_check_floorplan_facet_device_is_exempt_only_towards_its_facet():
+    die = die_frame((1000.0, 1000.0), dicing_lane=50.0, keepout=50.0, facet_sides=("E",))
+    ec = lc.edge_coupler(200.0)
+    # on the E facet but inside the N dicing lane: the facet exemption does not cover the N side
+    issues = lay.check_floorplan(_chip(die, ("ec", ec, (800.0, 980.0), 0.0)), die)
+    assert [(i.kind, i.instances) for i in issues] == [("keepout", ("ec",))]
+    # and it does not cover the W side either (a coupler long enough to reach back into the W band)
+    long_ec = lc.edge_coupler(950.0)
+    issues = lay.check_floorplan(_chip(die, ("ec", long_ec, (50.0, 500.0), 0.0)), die)
+    assert [(i.kind, i.instances) for i in issues] == [("keepout", ("ec",))]
+    # crossing the band towards the facet it faces is fine
+    assert lay.check_floorplan(_chip(die, ("ec", ec, (800.0, 500.0), 0.0)), die) == []
+
+
+@pytest.mark.parametrize("origin, rotation, mirror", [((-500.0, -500.0), 0.0, False), ((300.0, -200.0), 90.0, False),
+                                                      ((1000.0, 0.0), 0.0, True)])
+def test_check_floorplan_maps_through_the_frame_transform(origin, rotation, mirror):
+    """The same chip, with the frame placed anywhere in top, gives the same issues in die coordinates."""
+    die = die_frame((1000.0, 1000.0), dicing_lane=50.0, keepout=50.0, facet_sides=("E",))
+    blocks = [("centre", lc.straight(100.0), (450.0, 500.0), 0.0), ("lane", lc.straight(100.0), (950.0, 950.0), 0.0),
+              ("ec", lc.edge_coupler(200.0), (800.0, 300.0), 0.0)]
+    ref_issues = lay.check_floorplan(_chip(die, *blocks), die)
+    assert {(i.kind, i.instances) for i in ref_issues} == {("outside_die", ("lane",)), ("keepout", ("lane",))}
+    moved = lay.Cell("chip")
+    frame = moved.add_ref(die, origin=origin, rotation=rotation, mirror=mirror, name="frame")
+    for name, cell, (x, y), rot in blocks:            # place each block where the frame puts its die position
+        r = Reference(cell, origin=(x, y), rotation=rot)
+        o = frame.transform_point((x, y)) if hasattr(frame, "transform_point") else None
+        del r
+        th = math.radians(rotation)
+        yy = -y if mirror else y
+        o = (math.cos(th) * x - math.sin(th) * yy + origin[0], math.sin(th) * x + math.cos(th) * yy + origin[1])
+        moved.add_ref(cell, origin=o, rotation=(-rot if mirror else rot) + rotation, mirror=mirror, name=name)
+    got = lay.check_floorplan(moved, die)
+    assert [(i.kind, i.instances) for i in got] == [(i.kind, i.instances) for i in ref_issues]
+    for g, r in zip(got, ref_issues, strict=True):
+        np.testing.assert_allclose(np.array(g.bbox), np.array(r.bbox), atol=1e-9)
+
+
 def test_die_frame_survives_a_layout_round_trip(tmp_path):
     die = die_frame((1000.0, 1000.0), dicing_lane=50.0, keepout=50.0, facet_sides=("E",),
                     facet_trench_layer=(97, 0), facet_trench_width=20.0, die_id="X1")

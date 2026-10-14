@@ -70,8 +70,11 @@ are exact. The label convention measures the drawn face, so it cannot know a
 port that is narrower than its face (an MMI port on the body edge reads the
 body width), a port inside a shape (a pad centre), at a corner (ambiguous,
 skipped with a warning) or on a layer without geometry (a fibre port).
-OASIS ``TEXT`` records carry no rotation or magnification, so labels lose them
-in ``.oas`` files.
+OASIS ``TEXT`` records carry no anchor, rotation or magnification; the sidecar
+records them for every label and :func:`read_layout` restores them on ``.oas``
+files (a label is matched by text, layer and position, so one added or moved
+after writing keeps the file's defaults: anchor ``"sw"``, no rotation, unit
+magnification). Without a sidecar they are lost.
 
 The default ``timestamp`` makes GDSII output byte-reproducible, so
 :attr:`LayoutArtifact.sha256` identifies a layout.
@@ -398,8 +401,19 @@ def _canonical_polygon(points: np.ndarray, grid: float) -> np.ndarray:
     return ints
 
 
-def _content_hash(gcell, grid: float) -> str:
-    """Order-independent hash of a structure's drawn content on the integer grid (TEXT excluded)."""
+def _content_hash(gcell, grid: float, memo: dict[int, str] | None = None, _visiting: set[int] | None = None) -> str:
+    """Order-independent hash of a structure's drawn content on the integer grid (TEXT excluded).
+
+    The hash covers the whole hierarchy below the structure: each reference contributes its child's
+    content hash (computed bottom-up and memoised in ``memo`` by structure identity), so editing any
+    descendant changes the hash of every structure that places it.
+    """
+    memo = {} if memo is None else memo
+    key = id(gcell)
+    if key in memo:
+        return memo[key]
+    visiting = set() if _visiting is None else _visiting
+    visiting.add(key)
     shapes: list[str] = []
 
     def add(points, layer: int, datatype: int) -> None:
@@ -416,13 +430,20 @@ def _content_hash(gcell, grid: float) -> str:
                 add(np.asarray(poly.points) + off, poly.layer, poly.datatype)
     refs: list[str] = []
     for ref in gcell.references:
-        child = ref.cell if isinstance(ref.cell, str) else ref.cell.name
+        if isinstance(ref.cell, str):            # reference to an undefined structure: its name is all there is
+            child, sub = ref.cell, ""
+        else:
+            child = ref.cell.name
+            # A cyclic hierarchy (rejected by the reader) hashes the back reference by name only.
+            sub = "" if id(ref.cell) in visiting else _content_hash(ref.cell, grid, memo, visiting)
         origin = np.asarray(ref.origin, dtype=float)
         offs = sorted(tuple(int(v) for v in np.rint((origin + off) / grid)) for off in _offsets(ref))
-        refs.append(repr((child, offs, _clean_angle(math.degrees(ref.rotation)), bool(ref.x_reflection),
+        refs.append(repr((child, sub, offs, _clean_angle(math.degrees(ref.rotation)), bool(ref.x_reflection),
                           round(float(ref.magnification), 12))))
     payload = json.dumps([sorted(shapes), sorted(refs)]).encode()
-    return hashlib.sha256(payload).hexdigest()
+    visiting.discard(key)
+    memo[key] = hashlib.sha256(payload).hexdigest()
+    return memo[key]
 
 
 # --------------------------------------------------------------------------- #
@@ -636,18 +657,24 @@ def write_layout(
     else:
         side = sidecar_path_for(target) if sidecar is True else os.fspath(sidecar)
         reread = {c.name: c for c in _read_lib(target, kind).cells}
+        hash_memo: dict[int, str] = {}
         entries = {}
         for name, c in writer.cells.items():
             entries[name] = {
                 "name": c.name,
                 "fingerprint": structures[name],
-                "content_hash": _content_hash(reread[name], grid),
+                "content_hash": _content_hash(reread[name], grid, hash_memo),
                 "model": c.model,
                 "model_settings": _encode(c.model_settings, f"cell {c.name!r}"),
                 "ports": [{"name": p.name, "center": list(p.center), "orientation": p.orientation,
                            "width": p.width, "layer": list(p.layer), "port_type": p.port_type}
                           for p in c.ports.values()],
             }
+            if isinstance(c, LabeledCell) and c.labels:
+                # OASIS TEXT has no anchor, rotation or magnification: the sidecar keeps them.
+                entries[name]["labels"] = [{"text": lb.text, "position": list(lb.position), "layer": list(lb.layer),
+                                            "rotation": lb.rotation, "magnification": lb.magnification,
+                                            "anchor": lb.anchor} for lb in c.labels]
             die_attrs = _die_attrs(c)
             if die_attrs is not None:
                 entries[name]["die"] = die_attrs
@@ -875,8 +902,10 @@ def _gds_property(element, attr: int) -> str | None:
 
 class _Reader:
     def __init__(self, lib, *, grid: float, side: dict | None, port_convention: str, pin_layers: dict,
-                 port_layers, label_layers, tol: float, electrical_layers, magnification: str):
+                 port_layers, label_layers, tol: float, electrical_layers, magnification: str,
+                 restore_labels: bool = False):
         self.lib = lib
+        self.restore_labels = restore_labels
         self.grid = grid
         self.side = side or {}
         self.port_convention = port_convention
@@ -890,6 +919,7 @@ class _Reader:
         self.visiting: set[str] = set()
         self.mag_memo: dict[tuple[int, float], LabeledCell] = {}
         self.stale: list[str] = []
+        self.hash_memo: dict[int, str] = {}
 
     # -- elements -------------------------------------------------------- #
     def _pin(self, path):
@@ -968,6 +998,29 @@ class _Reader:
         cell.labels = [lbl for i, lbl in enumerate(cell.labels) if i not in used]
         return ports
 
+    def _restore_labels(self, labels: list[Label], saved: list[dict]) -> list[Label]:
+        """Put back the anchor, rotation and magnification the sidecar recorded for each label.
+
+        A label is matched by text, layer and position on the grid; labels added or moved after
+        writing keep what the file says.
+        """
+        g = self.grid
+        pool: dict[tuple, list[dict]] = {}
+        for lb in saved:
+            x, y = lb["position"]
+            key = (lb["text"], _layer(lb["layer"]), int(round(x / g)), int(round(y / g)))
+            pool.setdefault(key, []).append(lb)
+        out = []
+        for lbl in labels:
+            key = (lbl.text, lbl.layer, int(round(lbl.position[0] / g)), int(round(lbl.position[1] / g)))
+            hits = pool.get(key)
+            if hits:
+                lb = hits.pop(0)
+                lbl = Label(lbl.text, lbl.position, lbl.layer, float(lb["rotation"]), float(lb["magnification"]),
+                            str(lb["anchor"]))
+            out.append(lbl)
+        return out
+
     def _layer_under(self, polygons, pt: np.ndarray) -> tuple[int, int]:
         gdstk = _gdstk()
         allowed = None if self.port_layers is None else [_layer(v) for v in self.port_layers]
@@ -1009,8 +1062,9 @@ class _Reader:
         self.visiting.add(gname)
         where = f"structure {gname!r}"
         entry = self.side.get(gname)
-        if entry is not None and entry.get("content_hash") != _content_hash(gcell, self.grid):
-            warnings.warn(f"{where} changed after its sidecar was written; its sidecar ports and model are ignored",
+        if entry is not None and entry.get("content_hash") != _content_hash(gcell, self.grid, self.hash_memo):
+            warnings.warn(f"{where} (or a structure it places) changed after its sidecar was written; its sidecar "
+                          "ports and model are ignored",
                           StaleSidecarWarning, stacklevel=3)
             self.stale.append(gname)
             entry = None
@@ -1041,6 +1095,8 @@ class _Reader:
                 cell.labels.append(Label(str(lbl.text), (float(pos[0]), float(pos[1])), (lbl.layer, lbl.texttype),
                                          _clean_angle(math.degrees(lbl.rotation)), float(lbl.magnification),
                                          str(lbl.anchor)))
+        if entry is not None and self.restore_labels and entry.get("labels"):
+            cell.labels = self._restore_labels(cell.labels, entry["labels"])
         used_names: set[str] = set()
         for gref in gcell.references:
             self._reference(cell, gref, used_names, where)
@@ -1243,6 +1299,7 @@ def read_layout(
         raise ValueError(f"no structure {top!r} in {target!r}; structures: {sorted(cells)}")
     reader = _Reader(lib, grid=grid, side=(side_doc or {}).get("structures"), port_convention=port_convention,
                      pin_layers=pin_layers, port_layers=port_layers, label_layers=label_layers, tol=tol,
-                     electrical_layers=electrical_layers, magnification=magnification)
+                     electrical_layers=electrical_layers, magnification=magnification,
+                     restore_labels=kind == "oas")
     out = reader.convert(cells[top])
     return out.flatten() if flatten else out

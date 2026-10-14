@@ -585,6 +585,55 @@ def test_astar_off_grid_ports_layers_and_failures():
         lay.route_astar(a, b, obstacles=[WALL], radius=5.0, max_nodes=10)
 
 
+def _rect(x0, y0, x1, y1):
+    return np.array([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], dtype=float)
+
+
+def test_astar_leads_are_checked_against_foreign_obstacles():
+    """Only the polygons a port touches are exempt along its lead; anything else in the lead is an error."""
+    a, b = lay.Port("a", (0, 0), 0, 0.5), lay.Port("b", (60, 0), 180, 0.5)
+    wall = _rect(2.25, -40, 2.75, 40)                 # a separate waveguide 2.5 um in front of port a
+    with pytest.raises(lay.RoutingError, match="port1's lead-out"):
+        lay.route_astar(a, b, obstacles=[wall], keepout=1.0, grid=1.0, radius=5.0)
+    with pytest.raises(lay.RoutingError, match="port2's lead-in"):
+        lay.route_astar(a, b, obstacles=[wall + np.array([55.0, 0.0])], keepout=1.0, grid=1.0, radius=5.0)
+    # Collinear facing ports closer than two leads: the straight shortcut is checked too.
+    c, f = lay.Port("c", (0, 0), 0), lay.Port("f", (8, 0), 180)
+    with pytest.raises(lay.RoutingError, match="collinear"):
+        lay.route_astar(c, f, obstacles=[_rect(3, -1, 5, 1)], keepout=1.0, radius=5.0)
+    # ... but the devices the ports sit on (polygons touching the ports) never block it.
+    own = [_rect(-10, -0.25, 0, 0.25), _rect(8, -0.25, 18, 0.25)]
+    r = lay.route_astar(c, f, obstacles=own, keepout=1.0, radius=5.0)
+    assert r.model_settings["n_bends"] == 0 and r.model_settings["length"] == pytest.approx(8.0)
+    # A foreign obstacle beside the lead, inside the keepout but not touching the port, is caught as well.
+    beside = _rect(1.0, 0.6, 4.0, 1.5)                 # edge 0.35 um from the lead's edge, keepout 1 um
+    with pytest.raises(lay.RoutingError, match="lead-out"):
+        lay.route_astar(a, b, obstacles=[beside], keepout=1.0, grid=1.0, radius=5.0)
+
+
+def test_astar_turn_test_ignores_corner_area_the_fillet_never_covers():
+    """An obstacle in the inside of a bend, far from the drawn arc, does not block the L route."""
+    R, keepout, grid = 5.0, 1.0, 1.0
+    a, b = lay.Port("a", (0, 0), 0), lay.Port("b", (30, 30), 270)
+    th = np.linspace(0, 2 * np.pi, 33)[:-1]
+    blob = np.stack([25 + 2.0 * np.cos(th), 5 + 2.0 * np.sin(th)], axis=1)   # at the arc centre, 3 um from the arc
+    for bend in ("circular", "euler"):
+        r = lay.route_astar(a, b, obstacles=[blob], keepout=keepout, grid=grid, radius=R, bend=bend)
+        ref = lay.route_manhattan(a, b, radius=R, bend=bend, waypoints=[(30, 0)])
+        assert r.model_settings["n_bends"] == 1
+        assert r.model_settings["length"] == pytest.approx(ref.model_settings["length"], abs=1e-9)
+        _check_route(r, a, b, radius=R)
+    # The exact final check still applies: an obstacle on the arc itself forces a detour or an error.
+    on_arc = np.stack([25 + 5 * math.cos(-math.pi / 4) + 0.5 * np.cos(th),
+                       5 + 5 * math.sin(-math.pi / 4) + 0.5 * np.sin(th)], axis=1)
+    try:
+        r = lay.route_astar(a, b, obstacles=[on_arc], keepout=keepout, grid=grid, radius=R, bend="circular")
+    except lay.RoutingError:
+        pass
+    else:
+        assert r.model_settings["n_bends"] != 1
+
+
 # --------------------------------------------------------------------------- #
 # Length matching
 # --------------------------------------------------------------------------- #
@@ -640,13 +689,41 @@ def test_small_extra_length_uses_a_shallow_bump():
     assert np.max(np.abs(_centerline(lo)[:, 1].max() - _centerline(hi)[:, 1].max())) < 1e-4
 
 
+@pytest.mark.parametrize("a, b, R, extra", [
+    (lay.Port("a", (0, 0), 0), lay.Port("b", (45.62, 21.65), 180), 2.0, 60.0),     # offset >= 2d: S-bend, not Z
+    (lay.Port("a", (0, 0), 270), lay.Port("b", (1.97, -40.04), 90), 5.0, 60.0),    # offset < 2d, long axial room
+    (lay.Port("a", (0, 0), 0), lay.Port("b", (100.0, 30.0), 180), 5.0, 60.0),
+    (lay.Port("a", (0, 0), 0), lay.Port("b", (3.0, 2.0), 180), 5.0, None),         # no room for any S-bend
+])
+def test_length_matched_to_route_auto_length_reproduces_route_auto(a, b, R, extra):
+    """route_auto's length is reachable: the base is the shortest of route_auto's candidates."""
+    ref = lay.route_auto(a, b, radius=R, bend="circular")
+    L = ref.model_settings["length"]
+    m = lay.route_length_matched(a, b, target_length=L, radius=R, bend="circular")
+    assert m.model_settings["length"] == pytest.approx(L, abs=1e-9)
+    _check_route(m, a, b, radius=R)
+    np.testing.assert_allclose(_centerline(m), _centerline(ref), atol=1e-6)
+    with pytest.raises(lay.RoutingError, match=f"shortest route \\({L:.6g} um\\)"):
+        lay.route_length_matched(a, b, target_length=L - 0.5, radius=R, bend="circular")
+    if extra is not None:                  # the S-bend has no straight run: meanders go on the next base
+        longer = lay.route_length_matched(a, b, target_length=L + extra, radius=R, bend="circular")
+        assert longer.model_settings["length"] == pytest.approx(L + extra, abs=1e-9)
+        _check_route(longer, a, b, radius=R)
+
+
 def test_length_matched_spreads_meanders_and_reports_errors():
     a, b = lay.Port("a", (0, 0), 0), lay.Port("b", (150, 40), 180)
     base = lay.route_auto(a, b, radius=5.0, bend="circular", allow_sbend=False).model_settings["length"]
     r = lay.route_length_matched(a, b, target_length=base + 300.0, radius=5.0, max_height=30.0)
     assert r.model_settings["length"] == pytest.approx(base + 300.0, abs=1e-9)
     _check_route(r, a, b, radius=5.0)
-    with pytest.raises(lay.RoutingError, match="shorter than the shortest"):
+    # The shortest route is route_auto's S-bend, not the Z route: the error reports that true minimum.
+    sbend = lay.route_auto(a, b, radius=5.0, bend="circular").model_settings["length"]
+    assert sbend < base - 1.0
+    with pytest.raises(lay.RoutingError, match=f"shorter than the shortest route \\({sbend:.6g} um\\)"):
+        lay.route_length_matched(a, b, target_length=sbend - 1.0, radius=5.0)
+    # Between the two: the S-bend has no straight run for a meander, and the error names the Z route.
+    with pytest.raises(lay.RoutingError, match=f"next base route is {base:.6g} um long"):
         lay.route_length_matched(a, b, target_length=base - 1.0, radius=5.0)
     with pytest.raises(lay.RoutingError, match="could not place"):
         lay.route_length_matched(a, b, target_length=base + 300.0, radius=5.0, n_meanders=40)

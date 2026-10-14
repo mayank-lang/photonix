@@ -483,6 +483,24 @@ def _leaves(name: str, cell: Cell, origin, rotation: float, mirror: bool):
         yield from _leaves(f"{name}.{ref.name or f'ref{i}'}", ref.cell, o, rot, mirror != ref.mirror)
 
 
+_Xform = tuple[tuple[float, float], float, bool]          # (origin, rotation in degrees, mirror)
+
+
+def _compose(outer: _Xform, inner: _Xform) -> _Xform:
+    """``outer`` after ``inner`` (each mirror -> rotate -> translate), as one transform."""
+    (o_o, r_o, m_o), (o_i, r_i, m_i) = outer, inner
+    o = _transform(np.array([o_i], dtype=float), o_o, r_o, m_o)[0]
+    return (float(o[0]), float(o[1])), (-r_i if m_o else r_i) + r_o, m_o != m_i
+
+
+def _invert(t: _Xform) -> _Xform:
+    """Inverse of a mirror -> rotate -> translate transform, in the same form."""
+    (ox, oy), rot, mir = t
+    r_inv = rot if mir else -rot             # M R(-a) = R(a) M
+    o = -_transform(np.array([(ox, oy)], dtype=float), (0.0, 0.0), r_inv, mir)[0]
+    return (float(o[0]), float(o[1])), r_inv, mir
+
+
 def _overlap(a: BBox, b: BBox, tol: float) -> BBox | None:
     x0, y0 = max(a[0][0], b[0][0]), max(a[0][1], b[0][1])
     x1, y1 = min(a[1][0], b[1][0]), min(a[1][1], b[1][1])
@@ -510,7 +528,9 @@ def check_floorplan(
         A leaf instance (or ``top``'s own geometry) reaches into the dicing
         lane or the keep-out band, i.e. outside :meth:`DieCell.usable_box`
         (with ``keepout`` overriding the die's). Facet devices (cells whose
-        ``model`` is in ``facet_models``) are exempt: they must cross the band.
+        ``model`` is in ``facet_models``) are exempt only towards the die
+        edge their ``facet_port`` faces, which they must cross; their extent
+        in every other direction is checked like any other leaf.
     ``overlap``
         Two top-level references' bounding boxes overlap by more than
         ``tol`` in both directions. Route cells (``model == "route"``), whose
@@ -521,7 +541,10 @@ def check_floorplan(
         ``facet_tol`` from :meth:`DieCell.facet_position`.
 
     References whose cell is ``die`` (or any :class:`DieCell`) are the frame
-    and are not checked.
+    and are not checked. Everything is checked in the frame's coordinates: if
+    ``top`` places ``die`` (once), its reference transform is undone first, so
+    the die may sit anywhere in ``top``; otherwise ``top``'s coordinates are
+    taken to be the die's.
 
     Examples
     --------
@@ -549,26 +572,52 @@ def check_floorplan(
         return (box[0][0] < area[0][0] - tol or box[0][1] < area[0][1] - tol
                 or box[1][0] > area[1][0] + tol or box[1][1] > area[1][1] + tol)
 
+    frames = [r for r in top.references if r.cell is die]
+    if len({(tuple(r.origin), r.rotation % 360.0, r.mirror) for r in frames}) > 1:
+        raise ValueError(f"{top.name!r} places the die frame {die.name!r} more than once with different transforms")
+    # top -> die coordinates
+    to_die: _Xform = _invert(((float(frames[0].origin[0]), float(frames[0].origin[1])), frames[0].rotation,
+                              frames[0].mirror)) if frames else ((0.0, 0.0), 0.0, False)
+
+    def placed(ref: Reference) -> _Xform:
+        return _compose(to_die, ((float(ref.origin[0]), float(ref.origin[1])), ref.rotation, ref.mirror))
+
     blocks = [(r.name or f"ref{i}", r) for i, r in enumerate(top.references)
               if r.cell is not die and not isinstance(r.cell, DieCell)]
-    boxes = {name: reference_bbox(r) for name, r in blocks}
+    boxes = {name: _box(_transform(_cell_points(r.cell), *placed(r))) for name, r in blocks}
     for name, _r in blocks:
         if outside(boxes[name], outline):
             issues.append(FloorplanIssue("outside_die", f"{name!r} extends beyond the {w:g} x {h:g} um die",
                                          (name,), boxes[name]))
 
-    own = _box(np.concatenate([p for p, _ in top.polygons])) if top.polygons else None
+    own = _box(_transform(np.concatenate([p for p, _ in top.polygons]), *to_die)) if top.polygons else None
     if own is not None and outside(own, usable):
         issues.append(FloorplanIssue("keepout", f"geometry drawn directly in {top.name!r} enters the keep-out",
                                      (top.name,), own))
+
+    def facing(leaf: Cell, origin, rot: float, mir: bool) -> tuple[Port | None, str | None]:
+        """The facet port in die coordinates and the die side it faces (None if it faces no edge)."""
+        if facet_port not in leaf.ports:
+            return None, None
+        p = leaf.ports[facet_port].moved(origin[0], origin[1], rot, mir)
+        side = next((s for s, o in _SIDE_ORIENTATION.items()
+                     if abs((p.orientation - o + 180.0) % 360.0 - 180.0) <= 1e-6), None)
+        return p, side
+
     facets = []
     for name, ref in blocks:
-        for leaf_name, leaf, origin, rot, mir in _leaves(name, ref.cell, ref.origin, ref.rotation, ref.mirror):
+        for leaf_name, leaf, origin, rot, mir in _leaves(name, ref.cell, *placed(ref)):
+            area = usable
             if leaf.model in facet_set:
                 facets.append((leaf_name, leaf, origin, rot, mir))
-                continue
+                _p, side = facing(leaf, origin, rot, mir)
+                if side is not None:          # free to cross the band towards the edge it faces, only
+                    (ux0, uy0), (ux1, uy1) = usable
+                    big = math.inf
+                    area = {"E": ((ux0, uy0), (big, uy1)), "W": ((-big, uy0), (ux1, uy1)),
+                            "N": ((ux0, uy0), (ux1, big)), "S": ((ux0, -big), (ux1, uy1))}[side]
             box = _box(_transform(_cell_points(leaf), origin, rot, mir))
-            if box != ((0.0, 0.0), (0.0, 0.0)) and outside(box, usable):
+            if box != ((0.0, 0.0), (0.0, 0.0)) and outside(box, area):
                 issues.append(FloorplanIssue("keepout", f"{leaf_name!r} enters the dicing lane / keep-out band "
                                              f"(usable area {usable})", (leaf_name,), box))
 
@@ -584,10 +633,10 @@ def check_floorplan(
             issues.append(FloorplanIssue("facet", f"facet device {leaf_name!r} has no port {facet_port!r}",
                                          (leaf_name,), _box(_transform(_cell_points(leaf), origin, rot, mir))))
             continue
-        p: Port = leaf.ports[facet_port].moved(origin[0], origin[1], rot, mir)
+        fp, side = facing(leaf, origin, rot, mir)
+        assert fp is not None
+        p: Port = fp
         where = (p.center, p.center)
-        side = next((s for s, o in _SIDE_ORIENTATION.items()
-                     if abs((p.orientation - o + 180.0) % 360.0 - 180.0) <= 1e-6), None)
         if side is None or p.port_type != OPTICAL:
             issues.append(FloorplanIssue("facet", f"{leaf_name}.{facet_port} faces {p.orientation:g} deg, not a die "
                                          "edge", (leaf_name,), where))

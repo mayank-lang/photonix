@@ -90,9 +90,15 @@ corner-polyline length + `bend_penalty * n_bends`; heuristic = Manhattan
 distance + `bend_penalty` times the fewest turns still needed (0–4), which is
 admissible, so A* returns Dijkstra's cost (`heuristic=False`). Obstacles are
 rasterised by exact Euclidean distance at the nodes: straight steps need
-`keepout + width/2 + grid/2`, turns need every node of the fillet's corner box
-at `keepout + width/2 + grid/sqrt(2)` — enough, because distance is
-1-Lipschitz, to bound every point of the drawn path.
+`keepout + width/2 + grid/2`, turns need every node within `grid/sqrt(2)` of
+the drawn fillet curve at `keepout + width/2 + grid/sqrt(2)` — enough, because
+distance is 1-Lipschitz and every point of the curve has a node that near, to
+bound every point of the drawn path (corner area the fillet never covers does
+not block a turn). The straight leads at the ports (length
+`max(d, keepout + width/2 + grid/sqrt(2))`) and the straight route between
+collinear facing ports are checked exactly against every obstacle except the
+polygons touching or containing that port (within `width/2` of its centre,
+i.e. the device it belongs to); a blocked lead raises `RoutingError`.
 
 **route_length_matched.** A trombone of height `h` adds `2h` of polyline and
 four corners that each shorten the filleted path by `2d - L_bend`, so
@@ -101,8 +107,15 @@ bumps (`h >= 2d`; `max_height` adds bumps; bumps spread over several runs when
 one run is too short). Extra lengths below the smallest trombone use one
 trapezoid of four bends of angle `theta`, with
 `dL(theta) = 4T(1 - cos theta) + 4(L_bend(theta) - 2T)` rising continuously
-from 0, solved by bisection. Small lateral offsets between facing ports use a
-minimum-radius S-bend as the base route.
+from 0, solved by bisection. The base route is the shortest of: the S-bend
+`route_auto` draws for facing ports (spanning the whole axial distance, when
+its radius is at least `radius`), a minimum-radius S-bend followed by a
+straight (lateral offset below `2d` and enough axial room for both bends),
+and the `route_auto` Manhattan plan. A target equal to `route_auto`'s length
+therefore succeeds; longer targets use the shortest base whose straight runs
+can hold the meanders (the full-span S-bend has none), and the error for a
+too-short target reports the true minimum. Targets between the full-span
+S-bend and the next base route fail with an error naming that route's length.
 
 ## Validation (`tests/test_routing_advanced.py`)
 
@@ -142,8 +155,9 @@ two offset sides, against an independent reference.
   than adding corners (pass a `waypoints` backbone). Mixed jog/S-bend groups are
   laid out sequentially, which needs more axial room than pure jogs.
 * `route_astar` needs axis-aligned ports, keeps up to `grid/sqrt(2)` extra
-  clearance from curved or oblique obstacles, and exempts the two straight
-  leads at the ports from the clearance check. A grid search cannot see its own
+  clearance from curved or oblique obstacles, and exempts only the polygons a
+  port touches (its own device) from the check of that port's straight lead.
+  A grid search cannot see its own
   path: if the cheapest grid route would cross itself it falls back to the
   closed-form topologies (correct, not optimal around obstacles). The search is
   pure Python: a 400 × 300 µm window at 1 µm grid takes a fraction of a second
