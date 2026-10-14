@@ -438,11 +438,9 @@ def test_check_floorplan_maps_through_the_frame_transform(origin, rotation, mirr
     ref_issues = lay.check_floorplan(_chip(die, *blocks), die)
     assert {(i.kind, i.instances) for i in ref_issues} == {("outside_die", ("lane",)), ("keepout", ("lane",))}
     moved = lay.Cell("chip")
-    frame = moved.add_ref(die, origin=origin, rotation=rotation, mirror=mirror, name="frame")
+    moved.add_ref(die, origin=origin, rotation=rotation, mirror=mirror, name="frame")
+    moved.add_ref(die, origin=origin, rotation=rotation, mirror=mirror, name="frame_again")   # same transform: ok
     for name, cell, (x, y), rot in blocks:            # place each block where the frame puts its die position
-        r = Reference(cell, origin=(x, y), rotation=rot)
-        o = frame.transform_point((x, y)) if hasattr(frame, "transform_point") else None
-        del r
         th = math.radians(rotation)
         yy = -y if mirror else y
         o = (math.cos(th) * x - math.sin(th) * yy + origin[0], math.sin(th) * x + math.cos(th) * yy + origin[1])

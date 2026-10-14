@@ -357,8 +357,12 @@ def test_edited_structure_invalidates_only_its_sidecar_entry(tmp_path):
             cell.add(gdstk.rectangle((0, 3), (1, 4)))
 
     _rewrite(path, edit=stretch)
-    with pytest.warns(lay.StaleSidecarWarning, match=edited.replace("$", r"\$")):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         back = lay.read_layout(path)
+    # the edited structure and its ancestors (here the top cell) are stale; its siblings are not
+    assert {str(w.message).split("'")[1] for w in caught if issubclass(w.category, lay.StaleSidecarWarning)} == \
+        {edited, "mzi"}
     split = next(r for r in back.references if r.name == "splitter").cell
     bend = next(r for r in back.references if r.name == "top_b1").cell
     assert split.model == lay.GEOMETRY_ONLY and set(split.ports) == {"o1", "o2", "o3"}   # ports from pins
@@ -411,9 +415,9 @@ def test_content_hash_covers_the_hierarchy_below():
         top.add(gdstk.Reference(mid, (0, 3)))
         return top, mid
 
-    (t1, m1), (t2, m2) = make(1.0), make(1.0)
+    (t1, m1), (t2, _m2) = make(1.0), make(1.0)
     assert _content_hash(t1, 1e-3) == _content_hash(t2, 1e-3)
-    (t3, m3) = make(2.0)
+    t3, m3 = make(2.0)
     assert _content_hash(m3, 1e-3) != _content_hash(m1, 1e-3)
     assert _content_hash(t3, 1e-3) != _content_hash(t1, 1e-3)
 
