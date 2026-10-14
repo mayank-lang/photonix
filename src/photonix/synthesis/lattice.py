@@ -53,6 +53,7 @@ __all__ = [
 ]
 
 _C = 299_792_458.0
+_TRIM_TOL = 1e-14          # relative size below which common end coefficients are trimmed
 
 
 class CrossBar(NamedTuple):
@@ -229,6 +230,42 @@ def _polish(h: np.ndarray, r: np.ndarray, real: bool) -> np.ndarray:
     return unpack(sol.x)
 
 
+def _clearly_outside(h: np.ndarray, rts: np.ndarray | None = None) -> np.ndarray:
+    """Zeros of ``H(z) = sum h_k z^-k`` that lie clearly outside the unit circle.
+
+    A zero ``rho`` qualifies when ``|rho| - 1`` exceeds 1e-10 and 100 times its
+    first-order uncertainty ``eps sum_k |h_k| |rho|^(m-k) / |p'(rho)|``, and
+    no other zero is closer to it than half its distance to the circle: the
+    scattered roots of a (numerically) multiple unit-circle zero are left
+    alone, since moving them would shift that zero off the circle.
+    """
+    rts = np.roots(h) if rts is None else rts
+    if rts.size == 0:
+        return np.zeros(0, dtype=bool)
+    mod = np.abs(rts)
+    size = np.polyval(np.abs(h), mod)
+    slope = np.abs(np.polyval(np.polyder(h), rts))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        unc = np.where(slope > 0, 100 * np.finfo(float).eps * size / slope, np.inf)
+    gap = np.abs(rts[:, None] - rts[None, :]) + np.diag(np.full(rts.size, np.inf))
+    isolated = np.min(gap, axis=1) > 0.5 * (mod - 1.0)
+    return (mod - 1.0 > np.maximum(unc, 1e-10)) & isolated
+
+
+def _reflect_outside(h: np.ndarray, real: bool) -> np.ndarray:
+    """Multiply ``H`` by the all-pass factors that move its clearly-outside zeros to ``1/rho*``.
+
+    ``|H|`` on the circle is unchanged. Each zero ``rho`` is deflated in the
+    stable direction (``w = z^-1``, root ``1/rho`` inside the circle).
+    """
+    rts = np.roots(h)
+    g = np.asarray(h, dtype=complex)
+    for rho in rts[_clearly_outside(h, rts)]:
+        q, _ = np.polydiv(g[::-1], np.array([1.0, -1.0 / rho]))     # H = (w - 1/rho) Q(w)
+        g = np.convolve(-q[::-1] / rho, abs(rho) * np.array([1.0, -1.0 / np.conj(rho)]))
+    return g.real.astype(complex) if real else g
+
+
 def spectral_factor(power, degree: int | None = None, *, tol: float = 1e-9) -> tuple[np.ndarray, float]:
     """Minimum-phase spectral factor of a non-negative trigonometric polynomial.
 
@@ -306,6 +343,16 @@ def spectral_factor(power, degree: int | None = None, *, tol: float = 1e-9) -> t
     h0 = best[0].real.astype(complex) if real else best[0]
     polished = finish(_polish(h0[: m + 1], sub, real))
     h, err = min((finish(h0[: m + 1]), polished), key=lambda t: t[1])
+    # A unit-circle cluster of R swallows nearby off-circle zeros (its roots
+    # scatter by eps^(1/2m)), so the selection or the polish can land on a factor
+    # with a zero clearly outside the circle. The factor's own roots are better
+    # resolved: reflect those clearly outside (an all-pass factor, so the power
+    # is unchanged; no re-polish, which could drift back) and keep the repair if
+    # it is accurate.
+    if m and _clearly_outside(h[: m + 1]).any():
+        repaired = finish(_reflect_outside(h[: m + 1], real))
+        if repaired[1] <= max(tol * peak, err) and not _clearly_outside(repaired[0][: m + 1]).any():
+            h, err = repaired
     if np.real(h[0]) < 0:
         h = -h
     if err > tol * peak:
@@ -411,12 +458,17 @@ def equiripple_lowpass(degree: int, passband_edge: float, stopband_edge: float, 
     A zero-phase FIR ``G`` of ``2 degree + 1`` taps is designed with the
     Parks-McClellan algorithm (:func:`scipy.signal.remez`) to approximate 1 on
     ``[0, passband_edge]`` and 0 on ``[stopband_edge, pi]`` (``weight``
-    weights the stop band). Its exact extremes ``G_min < 0`` and ``G_max > 1``
-    (from the roots of ``G'`` in ``cos omega``) give the power response
+    weights the stop band). Its exact extremes ``G_min`` and ``G_max`` (from
+    the roots of ``G'`` in ``cos omega``) give the power response
     ``|B|^2 = (G - G_min) / (G_max - G_min)`` in ``[0, 1]``, which touches 0 in
     the stop band and 1 in the pass band (Herrmann & Schuessler, Electron.
-    Lett. 6, 329, 1970). ``B`` and ``A`` are the minimum-phase factors of
-    ``|B|^2`` and ``1 - |B|^2``. Edges are normalized frequencies
+    Lett. 6, 329, 1970). Usually ``G_min < 0 < 1 < G_max``; for low degrees,
+    narrow pass bands or a heavy ``weight`` the minimax ``G`` may not reach 1
+    (or 0), and the same affine map still yields a valid ``[0, 1]`` response
+    (with a correspondingly larger pass-band ripple). ``B`` and ``A`` are the
+    minimum-phase factors of ``|B|^2`` and ``1 - |B|^2``; for half-band
+    designs of even degree both top coefficients vanish, which
+    :func:`synthesize_lattice` trims. Edges are normalized frequencies
     ``omega = 2 pi df / FSR`` in ``(0, pi)``.
 
     Examples
@@ -439,8 +491,8 @@ def equiripple_lowpass(degree: int, passband_edge: float, stopband_edge: float, 
               fs=2 * math.pi, maxiter=200)
     g = 0.5 * (g + g[::-1])
     lo, hi = _cheb_extremes(g)
-    if not (lo < 0.0 and hi > 1.0):                           # pragma: no cover - remez always overshoots
-        raise RuntimeError("the minimax response does not ripple about 0 and 1")
+    if not hi > lo:
+        raise ValueError("the minimax response is constant; widen the transition band or raise the degree")
     rb = g / (hi - lo)
     rb[n] -= lo / (hi - lo)
     ra = -rb
@@ -608,6 +660,14 @@ def synthesize_lattice(cross, bar=None, *, fsr_hz: float | None = None, delta_le
     ``theta < merge_tol`` are removed and their stages merged. ``ValueError``
     if the pair is not power complementary to ``tol``.
 
+    Coefficients that vanish in *both* arrays (``|a_k| + |b_k|`` below 1e-14
+    of the largest) are trimmed first: trailing ones lower the degree (e.g.
+    the even-degree half-band designs of :func:`equiripple_lowpass`), leading
+    ones are a delay common to both arms, which -- like the common arm length
+    -- the lattice response leaves out. ``cross``/``bar`` of the design and
+    ``max_error`` refer to the trimmed pair (the trimmed magnitudes are added
+    to ``max_error``).
+
     Examples
     --------
     >>> import numpy as np
@@ -630,8 +690,16 @@ def synthesize_lattice(cross, bar=None, *, fsr_hz: float | None = None, delta_le
     mismatch = float(np.sum(np.abs(unit)))
     if mismatch > tol:
         raise ValueError(f"cross and bar are not power complementary: | |A|^2 + |B|^2 - 1 | up to {mismatch:.3g}")
-    if abs(a[-1]) + abs(b[-1]) < 1e-14:
-        raise ValueError("the top coefficients of cross and bar both vanish; trim the arrays to the true degree")
+    # Trim common vanishing end coefficients: trailing ones lower the degree, leading
+    # ones are a delay common to both arms (left out, like the common arm length).
+    ends = np.abs(a) + np.abs(b)
+    live = np.flatnonzero(ends >= _TRIM_TOL * float(np.max(ends)))
+    first, last = int(live[0]), int(live[-1])
+    trimmed = float(np.sum(ends[:first]) + np.sum(ends[last + 1:]))
+    a, b = a[first: last + 1], b[first: last + 1]
+    if a.size < 2:
+        raise ValueError("cross and bar have degree 0 after trimming vanishing coefficients: a single coupler, "
+                         "no lattice stage")
     thetas, phis, alpha, common = _peel(a, b)
     keep, delays, phases = [0], [], []                         # merge null interior couplers:
     run, acc = 0, 0.0                                           # C(0) = I joins two stages exactly
@@ -646,7 +714,7 @@ def synthesize_lattice(cross, bar=None, *, fsr_hz: float | None = None, delta_le
     couplings = np.sin(thetas[keep]) ** 2
     got = lattice_coefficients(couplings, phases, delays=delays)
     err = max(float(np.sum(np.abs(np.exp(-1j * common) * got.cross - b))),
-              float(np.sum(np.abs(np.exp(-1j * (common + alpha)) * got.bar - a))))
+              float(np.sum(np.abs(np.exp(-1j * (common + alpha)) * got.bar - a)))) + trimmed
     return LatticeDesign(
         couplings=tuple(float(v) for v in couplings), phases=tuple(phases), delays=tuple(delays),
         output_phase=float(alpha), common_phase=float(common), delta_length=dl, length=float(length),
