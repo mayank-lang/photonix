@@ -150,8 +150,10 @@ gaps = [sy.coupling_to_gap(k, radius=d.radius, length=6.0) for k in d.couplings]
 
 `coupling_to_gap` inverts the calibrated `evanescent_coupler` model with Brent's
 method, and includes the curved-gap contribution of the ring. It refuses a
-target that the given coupler length cannot reach, or a coupler that is
-over-coupled inside the gap bracket. `refine=False` returns the closed-form
+target that the given coupler length cannot reach. For a long coupler that is
+over-coupled at the small-gap end of the bracket, it solves on the monotone
+large-gap side, and refuses only a target that the over-coupled part also
+reaches. `refine=False` returns the closed-form
 couplings, which shows how far off the narrow-band approximation is. The
 synthesis is lossless. With propagation loss, `d.model(loss_db_cm=...)`
 shows the resulting insertion loss and pass-band rounding.
@@ -196,7 +198,9 @@ wc.beta, wc.yield_linear    # 1.50 sigma to the nearest failing point; ~93 % lin
 ```
 
 * `sensitivity` returns gradients and dimensionless elasticities
-  `(p / f) df/dp`, ranked by magnitude.
+  `(p / f) df/dp`, ranked by magnitude. Finite-difference steps are relative
+  (`fd_step * |p|`, settable per parameter), so tiny parameters such as the
+  ~1e-6 interior couplings of a narrow CROW keep their accuracy.
 * `fosm` propagates a covariance (a matrix, a list of variances or a
   `MonteCarloSpec`) to the metric's mean and standard deviation. With
   `second_order=True` it adds the Hessian mean shift.
@@ -205,7 +209,8 @@ wc.beta, wc.yield_linear    # 1.50 sigma to the nearest failing point; ~93 % lin
   They plug straight into `yield_analysis(..., cases=...)`.
 * `worst_case_distance` finds the most probable failing point (in sigmas) for
   one spec. It runs constrained optimization from several starts in whitened
-  coordinates.
+  coordinates. For a two-sided spec it solves for both bounds and returns
+  the nearer one (`wc.side`).
 * `importance_sampling_yield` centres the samples on that worst-case point,
   with a defensive mixture. It resolves failure rates of 1e-4 and below,
   where crude Monte Carlo with the same budget sees no failures at all.

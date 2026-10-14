@@ -44,7 +44,7 @@ def lowpass_prototype(kind: str, order: int, ripple_db: float | None = None) -> 
         raise ValueError("kind must be 'butterworth' or 'chebyshev'")
     if ripple_db is None or ripple_db <= 0:
         raise ValueError("chebyshev needs a positive ripple_db")
-    beta = math.log(1.0 / math.tanh(ripple_db / 17.37))
+    beta = math.log(1.0 / math.tanh(ripple_db * math.log(10) / 40))     # MYJ's ripple/17.37: 40/ln 10
     gamma = math.sinh(beta / (2 * n))
     b = np.array([gamma**2 + math.sin(k * math.pi / n) ** 2 for k in range(1, n + 1)])
     g[1] = 2 * a[0] / gamma
@@ -64,17 +64,24 @@ def periodic_target(phi, *, kind: str, order: int, phi_c: float, ripple_db: floa
 
     ``phi`` is the round-trip phase detuning (``2 pi df / FSR``) and ``phi_c``
     its value at the band edge (half the bandwidth): the -3 dB edge for
-    Butterworth, the ripple-band edge for Chebyshev.
+    Butterworth, the ripple-band edge for Chebyshev. ``kind`` is
+    ``"butterworth"`` or ``"chebyshev"`` (which needs ``ripple_db > 0``), as
+    in :func:`lowpass_prototype`.
 
     Examples
     --------
     >>> round(float(periodic_target(0.2, kind="butterworth", order=3, phi_c=0.2)), 12)
     0.5
     """
+    if kind not in ("butterworth", "chebyshev"):
+        raise ValueError("kind must be 'butterworth' or 'chebyshev'")
+    if kind == "chebyshev" and (ripple_db is None or not ripple_db > 0):
+        raise ValueError("chebyshev needs a positive ripple_db")
     x = np.sin(np.asarray(phi) / 2) / math.sin(phi_c / 2)
     if kind == "butterworth":
         return 1.0 / (1.0 + x ** (2 * order))
-    eps = chebyshev_epsilon(ripple_db if ripple_db is not None else 0.0)
+    assert ripple_db is not None
+    eps = chebyshev_epsilon(ripple_db)
     cheb = np.where(np.abs(x) <= 1, np.cos(order * np.arccos(np.clip(x, -1, 1))),
                     np.cosh(order * np.arccosh(np.maximum(np.abs(x), 1.0))) * np.sign(x) ** order)
     return 1.0 / (1.0 + eps**2 * cheb**2)

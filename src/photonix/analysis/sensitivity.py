@@ -43,40 +43,106 @@ def _as_vector_fn(fn: Callable, names: Sequence[str]):
     return vec
 
 
-def _fd_gradient(f: Callable, x0: np.ndarray, step: float) -> np.ndarray:
-    """Central differences with one Richardson step (O(h^4))."""
-    g = np.zeros_like(x0)
+_DEFAULT_FD_STEP = 1e-5
+
+
+def _fd_steps(x0: np.ndarray, step: float | Mapping[str, float], names: Sequence[str] | None = None, *,
+              relative: bool = True) -> np.ndarray:
+    """Per-parameter finite-difference step sizes.
+
+    ``step`` is a scalar or a mapping ``{name: step}`` (parameters missing from
+    the mapping use the default ``1e-5``). With ``relative=True`` the step
+    actually taken is ``step * |x|`` for ``x != 0`` and ``step`` at ``x == 0``,
+    so a parameter of size ``1e-6`` (a weak coupling, a length in metres) is
+    perturbed by a fraction of itself instead of by an absolute ``1e-5``.
+    """
+    if isinstance(step, Mapping):
+        if names is None:
+            raise ValueError("a per-parameter fd_step mapping needs parameter names")
+        unknown = set(step) - set(names)
+        if unknown:
+            raise KeyError(f"fd_step for unknown parameters: {sorted(unknown)}")
+        base = np.array([float(step.get(k, _DEFAULT_FD_STEP)) for k in names])
+    else:
+        base = np.full(x0.size, float(step))
+    if not np.all(np.isfinite(base) & (base > 0)):
+        raise ValueError("fd_step must be positive")
+    if not relative:
+        return base
+    ax = np.abs(np.asarray(x0, dtype=float))
+    return np.where(ax > 0, base * ax, base)
+
+
+def _real(v) -> float:
+    return float(np.real(np.asarray(v)))
+
+
+def _fd_gradient(f: Callable, x0: np.ndarray, step: float | Mapping[str, float],
+                 names: Sequence[str] | None = None, *, relative: bool = True) -> np.ndarray:
+    """Central differences with one Richardson step (O(h^4)).
+
+    Where ``f`` is not finite on one side of the point (e.g. ``sqrt`` of a
+    parameter that the step would push below zero) a second-order one-sided
+    difference on the finite side is used instead, with a warning.
+    """
+    import warnings
+
+    hs = _fd_steps(x0, step, names, relative=relative)
+    g = np.zeros(x0.size)
+    f0 = _real(f(x0))
     for i in range(x0.size):
-        h = step * max(1.0, abs(x0[i]))
-        e = np.zeros_like(x0)
+        h = hs[i]
+        e = np.zeros(x0.size)
         e[i] = 1.0
-
-        def d(hh, e=e):
-            return (float(f(x0 + hh * e)) - float(f(x0 - hh * e))) / (2 * hh)
-
-        g[i] = (4 * d(h / 2) - d(h)) / 3
+        fp1, fp2 = _real(f(x0 + 0.5 * h * e)), _real(f(x0 + h * e))
+        fm1, fm2 = _real(f(x0 - 0.5 * h * e)), _real(f(x0 - h * e))
+        fwd_ok = bool(np.all(np.isfinite((f0, fp1, fp2))))
+        bwd_ok = bool(np.all(np.isfinite((f0, fm1, fm2))))
+        if fwd_ok and bwd_ok:
+            # Richardson extrapolation of the central differences with steps h/2 and h.
+            g[i] = (4 * (fp1 - fm1) / h - (fp2 - fm2) / (2 * h)) / 3
+            continue
+        label = repr(names[i]) if names is not None else f"#{i}"
+        if fwd_ok or bwd_ok:
+            warnings.warn(f"finite-difference gradient: f is not finite on the {'-' if fwd_ok else '+'} side of "
+                          f"parameter {label} (step {h:.3g}); using a one-sided difference", RuntimeWarning,
+                          stacklevel=4)
+            # Second-order one-sided difference on the points 0, h/2, h.
+            g[i] = (-3 * f0 + 4 * fp1 - fp2) / h if fwd_ok else (3 * f0 - 4 * fm1 + fm2) / h
+        else:
+            warnings.warn(f"finite-difference gradient: f is not finite around parameter {label} "
+                          f"(step {h:.3g}); the gradient is nan", RuntimeWarning, stacklevel=4)
+            g[i] = np.nan
     return g
 
 
-def _fd_hessian(f: Callable, x0: np.ndarray, step: float) -> np.ndarray:
+def _fd_hessian(f: Callable, x0: np.ndarray, step: float | Mapping[str, float],
+                names: Sequence[str] | None = None) -> np.ndarray:
+    import warnings
+
     n = x0.size
     hess = np.zeros((n, n))
-    hs = [step * max(1.0, abs(v)) for v in x0]
-    f0 = float(f(x0))
+    hs = _fd_steps(x0, step, names)
+    f0 = _real(f(x0))
     for i in range(n):
         ei = np.zeros(n)
         ei[i] = hs[i]
-        hess[i, i] = (float(f(x0 + ei)) - 2 * f0 + float(f(x0 - ei))) / hs[i] ** 2
+        hess[i, i] = (_real(f(x0 + ei)) - 2 * f0 + _real(f(x0 - ei))) / hs[i] ** 2
         for j in range(i + 1, n):
             ej = np.zeros(n)
             ej[j] = hs[j]
-            v = (float(f(x0 + ei + ej)) - float(f(x0 + ei - ej)) - float(f(x0 - ei + ej))
-                 + float(f(x0 - ei - ej))) / (4 * hs[i] * hs[j])
+            v = (_real(f(x0 + ei + ej)) - _real(f(x0 + ei - ej)) - _real(f(x0 - ei + ej))
+                 + _real(f(x0 - ei - ej))) / (4 * hs[i] * hs[j])
             hess[i, j] = hess[j, i] = v
+    if not np.all(np.isfinite(hess)):
+        warnings.warn("finite-difference Hessian: f is not finite at some stencil points, so the Hessian "
+                      "contains nan (pass a smaller fd_step for the affected parameters)", RuntimeWarning,
+                      stacklevel=4)
     return hess
 
 
-def _gradient(f: Callable, x0: np.ndarray, method: str, step: float) -> tuple[np.ndarray, str]:
+def _gradient(f: Callable, x0: np.ndarray, method: str, step: float | Mapping[str, float],
+              names: Sequence[str] | None = None, *, relative: bool = True) -> tuple[np.ndarray, str]:
     from photonix.core.backend import HAS_JAX
 
     if method in ("auto", "ad") and HAS_JAX:
@@ -92,10 +158,11 @@ def _gradient(f: Callable, x0: np.ndarray, method: str, step: float) -> tuple[np
                 raise
     elif method == "ad":
         raise RuntimeError("method='ad' requires JAX")
-    return _fd_gradient(f, x0, step), "fd"
+    return _fd_gradient(f, x0, step, names, relative=relative), "fd"
 
 
-def _hessian(f: Callable, x0: np.ndarray, method: str, step: float) -> np.ndarray:
+def _hessian(f: Callable, x0: np.ndarray, method: str, step: float | Mapping[str, float],
+             names: Sequence[str] | None = None) -> np.ndarray:
     from photonix.core.backend import HAS_JAX
 
     if method in ("auto", "ad") and HAS_JAX:
@@ -109,7 +176,7 @@ def _hessian(f: Callable, x0: np.ndarray, method: str, step: float) -> np.ndarra
         except Exception:  # noqa: BLE001
             if method == "ad":
                 raise
-    return _fd_hessian(f, x0, step)
+    return _fd_hessian(f, x0, step, names)
 
 
 def _covariance(names: Sequence[str], covariance) -> np.ndarray:
@@ -169,8 +236,22 @@ class SensitivityTable:
 
 
 def sensitivity(fn: Callable[[dict], float], params: Mapping[str, float], *, method: str = "auto",
-                fd_step: float = 1e-5) -> SensitivityTable:
+                fd_step: float | Mapping[str, float] = 1e-5) -> SensitivityTable:
     """Gradient of a scalar ``fn(params_dict)`` at ``params``.
+
+    Parameters
+    ----------
+    method
+        ``"auto"`` (JAX autodiff when available and the function is
+        traceable, else finite differences), ``"ad"`` or ``"fd"``.
+    fd_step
+        Relative finite-difference step: parameter ``x`` is perturbed by
+        ``fd_step * |x|`` (by ``fd_step`` itself when ``x == 0``), so tiny
+        parameters such as weak couplings or lengths in metres keep their
+        accuracy. A mapping ``{name: step}`` sets it per parameter (missing
+        names use ``1e-5``). Where ``fn`` is not finite on one side of a
+        parameter (e.g. a coupling that must stay positive) a one-sided
+        difference is used with a :class:`RuntimeWarning`.
 
     Examples
     --------
@@ -186,9 +267,11 @@ def sensitivity(fn: Callable[[dict], float], params: Mapping[str, float], *, met
         raise ValueError("method must be 'auto', 'ad' or 'fd'")
     names = tuple(params)
     x0 = np.array([float(params[k]) for k in names])
+    _fd_steps(x0, fd_step, names)                                   # validate fd_step up front
     f = _as_vector_fn(fn, names)
     value = float(np.real(f(x0)))
-    g, used = _gradient(f, x0, method, fd_step) if method != "fd" else (_fd_gradient(f, x0, fd_step), "fd")
+    g, used = (_gradient(f, x0, method, fd_step, names) if method != "fd"
+               else (_fd_gradient(f, x0, fd_step, names), "fd"))
     with np.errstate(divide="ignore", invalid="ignore"):
         norm = np.where((x0 != 0) & (value != 0), g * x0 / value, np.nan)
     return SensitivityTable(names, x0, value, g, norm, used)
@@ -213,27 +296,31 @@ class MomentEstimate:
 
 
 def fosm(fn: Callable[[dict], float], nominal: Mapping[str, float], covariance, *, second_order: bool = False,
-         method: str = "auto", fd_step: float = 1e-5) -> MomentEstimate:
+         method: str = "auto", fd_step: float | Mapping[str, float] = 1e-5) -> MomentEstimate:
     """First-order second-moment estimate ``(f(p0), sqrt(g^T Sigma g))``.
 
     ``covariance`` is a matrix, a vector of variances, or a
     :class:`~photonix.pdk.MonteCarloSpec`. With ``second_order=True`` the mean
-    shift ``tr(H Sigma) / 2`` from the Hessian is also returned.
+    shift ``tr(H Sigma) / 2`` from the Hessian is also returned. ``method``
+    and ``fd_step`` (relative step, scalar or per-parameter mapping) are as in
+    :func:`sensitivity`.
 
     Examples
     --------
     >>> m = fosm(lambda p: 2 * p["a"] - 3 * p["b"], {"a": 1.0, "b": 0.5}, [0.01, 0.04])
-    >>> round(m.mean, 12), round(m.std, 12)
-    (0.5, 0.632455532034)
+    >>> round(m.mean, 12), round(m.std, 9)       # exact with JAX; FD (NumPy backend) to ~1e-10
+    (0.5, 0.632455532)
     """
     names = tuple(nominal)
     x0 = np.array([float(nominal[k]) for k in names])
     cov = _covariance(names, covariance)
+    _fd_steps(x0, fd_step, names)                                   # validate fd_step up front
     f = _as_vector_fn(fn, names)
-    g, _ = _gradient(f, x0, method, fd_step) if method != "fd" else (_fd_gradient(f, x0, fd_step), "fd")
+    g, _ = (_gradient(f, x0, method, fd_step, names) if method != "fd"
+            else (_fd_gradient(f, x0, fd_step, names), "fd"))
     shift = 0.0
     if second_order:
-        h = _hessian(f, x0, method, fd_step)
+        h = _hessian(f, x0, method, fd_step, names)
         shift = 0.5 * float(np.trace(h @ cov))
     return MomentEstimate(float(np.real(f(x0))), float(math.sqrt(max(g @ cov @ g, 0.0))), shift, g)
 
@@ -353,7 +440,11 @@ def worst_case_distance(fn: Callable[[dict], object], spec, nominal: Mapping[str
     whitened coordinates ``z = L^-1 (p - p0)`` with ``Sigma = L L^T`` the
     worst-case point minimizes ``|z|`` subject to ``f(p) = bound``; ``beta`` is
     that distance, signed by whether the nominal passes. For a spec with both
-    bounds, the bound the nominal is closer to (in ``f``) is used.
+    bounds the problem is solved for each bound and the one with the smallest
+    distance is returned (``side`` says which); when the nominal fails, the
+    bound it violates is used. Under finite differences the gradient is taken
+    in the whitened coordinates (a step of ``1e-6`` standard deviations), so
+    it is independent of the parameters' units.
 
     Examples
     --------
@@ -372,37 +463,50 @@ def worst_case_distance(fn: Callable[[dict], object], spec, nominal: Mapping[str
     chol = np.linalg.cholesky(cov + 1e-15 * np.eye(len(names)) * max(1.0, float(np.max(np.abs(cov)))))
     f = _as_vector_fn(lambda p: spec.metric(fn(p)), names)
     f0 = float(np.real(f(x0)))
-    bounds = [b for b in (spec.minimum, spec.maximum) if b is not None]
-    bound = min(bounds, key=lambda b: abs(b - f0))
-    side = "max" if bound == spec.maximum else "min"
     passes = spec.passes(f0)
+    n = len(names)
 
-    def g(z):
-        return float(np.real(f(x0 + chol @ z))) - bound
+    def fz(z):
+        return f(x0 + chol @ z)
 
     def grad_g(z):
-        gp, _ = _gradient(f, x0 + chol @ z, method, 1e-6)
-        return chol.T @ gp
+        # Gradient in whitened coordinates; FD steps of 1e-6 sigma (absolute in z).
+        gz, _ = _gradient(fz, np.asarray(z, dtype=float), method, 1e-6, relative=False)
+        return gz
 
-    rng = np.random.default_rng(seed)
-    gz0 = grad_g(np.zeros(len(names)))
-    best = None
-    starts = [np.zeros(len(names))]
-    if np.linalg.norm(gz0) > 0:
-        starts[0] = -g(np.zeros(len(names))) * gz0 / float(gz0 @ gz0)   # linear guess
-    starts += [rng.standard_normal(len(names)) for _ in range(max(0, n_starts - 1))]
-    for z_start in starts:
-        res = minimize(lambda z: 0.5 * float(z @ z), z_start, jac=lambda z: z, method="SLSQP",
-                       constraints=[{"type": "eq", "fun": g, "jac": grad_g}],
-                       options={"maxiter": 200, "ftol": 1e-14})
-        if res.success and abs(g(res.x)) < 1e-6 * max(1.0, abs(bound)):
-            if best is None or res.fun < best.fun:
-                best = res
-    converged = best is not None
-    z = best.x if best is not None else starts[0]
-    beta = float(np.linalg.norm(z)) * (1.0 if passes else -1.0)
+    gz0 = grad_g(np.zeros(n))
+
+    def solve(bound: float):
+        def g(z):
+            return float(np.real(fz(z))) - bound
+
+        rng = np.random.default_rng(seed)
+        best = None
+        starts = [np.zeros(n)]
+        if np.all(np.isfinite(gz0)) and np.linalg.norm(gz0) > 0:
+            starts[0] = -g(np.zeros(n)) * gz0 / float(gz0 @ gz0)   # linear guess
+        starts += [rng.standard_normal(n) for _ in range(max(0, n_starts - 1))]
+        for z_start in starts:
+            res = minimize(lambda z: 0.5 * float(z @ z), z_start, jac=lambda z: z, method="SLSQP",
+                           constraints=[{"type": "eq", "fun": g, "jac": grad_g}],
+                           options={"maxiter": 200, "ftol": 1e-14})
+            if res.success and abs(g(res.x)) < 1e-6 * max(1.0, abs(bound)):
+                if best is None or res.fun < best.fun:
+                    best = res
+        return (best.x, True) if best is not None else (starts[0], False)
+
+    sides = [(b, s) for b, s in ((spec.minimum, "min"), (spec.maximum, "max")) if b is not None]
+    if not passes:   # only the violated bound is meaningful
+        sides = [(b, s) for b, s in sides if (f0 < b if s == "min" else f0 > b)] or sides
+    results = []
+    for bound, side in sides:
+        z, ok = solve(float(bound))
+        results.append((not ok, float(np.linalg.norm(z)), float(bound), side, z))
+    # converged solutions first, then the smallest distance
+    unconverged, dist, bound, side, z = min(results, key=lambda r: (r[0], r[1]))
+    beta = dist * (1.0 if passes else -1.0)
     point = {k: float(v) for k, v in zip(names, x0 + chol @ z, strict=True)}
-    return WorstCase(beta, point, float(np.real(f(x0 + chol @ z))), float(norm.cdf(beta)), converged, bound, side)
+    return WorstCase(beta, point, float(np.real(fz(z))), float(norm.cdf(beta)), not unconverged, bound, side)
 
 
 # --------------------------------------------------------------------------- #

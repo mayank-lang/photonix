@@ -69,7 +69,9 @@ class CrowDesign:
         Chebyshev: ripple-band width).
     max_error_db
         Largest deviation of the simulated drop response (netlist model) from
-        the target over the full FSR, counted where the target exceeds -40 dB.
+        the target over the full FSR, counted where the target exceeds -40 dB
+        (2001 points over half the FSR plus 2001 over four half-bandwidths,
+        so narrow bands are resolved).
     """
 
     couplings: tuple[float, ...]
@@ -197,7 +199,8 @@ def synthesize_crow(order: int, bandwidth_hz: float, *, kind: str = "butterworth
             k = _solve(order, kind, ripple_db, math.pi * b / fsr, k, n_nodes)
     f0 = _C / (wl0 * 1e-6)
     phi_c = math.pi * bandwidth_hz / fsr
-    check = np.linspace(0.0, math.pi, 2001)
+    # full half-FSR plus a dense in-band grid: a narrow band holds few points of the first
+    check = np.union1d(np.linspace(0.0, math.pi, 2001), np.linspace(0.0, min(math.pi, 4 * phi_c), 2001))
     s = cast(SDict, crow(couplings=tuple(float(v) for v in k), radius=radius_r, neff=neff, ng=ng, loss_db_cm=0.0,
                          wl0=wl0)(wl=_C / (f0 + check / (2 * math.pi) * fsr) * 1e6))
     got = np.asarray(np.abs(np.asarray(s[("o1", "o3")])) ** 2, dtype=float)

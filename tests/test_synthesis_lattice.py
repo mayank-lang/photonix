@@ -140,8 +140,11 @@ def test_synthesis_input_validation():
         sy.synthesize_lattice(cross, 1.01 * bar, delta_length=10.0)
     with pytest.raises(ValueError, match="length >= 2"):
         sy.synthesize_lattice([1.0], [0.0], delta_length=10.0)
-    with pytest.raises(ValueError, match="trim"):
-        sy.synthesize_lattice([0.5, 0.5, 0.0], [0.5, -0.5, 0.0], delta_length=10.0)
+    # common vanishing top coefficients are trimmed (the pair is really of degree 1)
+    d = sy.synthesize_lattice([0.5, 0.5, 0.0], [0.5, -0.5, 0.0], delta_length=10.0)
+    assert d.delays == (1,) and d.couplings == pytest.approx((0.5, 0.5)) and d.max_error < 1e-15
+    with pytest.raises(ValueError, match="degree 0"):
+        sy.synthesize_lattice([0.6, 0.0], [0.8, 0.0], delta_length=10.0)
     with pytest.raises(ValueError, match="positive"):
         sy.synthesize_lattice(cross, bar, delta_length=-5.0)
 
@@ -359,6 +362,62 @@ def test_equiripple_lowpass_is_a_factored_minimax_design(degree, wp, ws, weight)
     assert d.max_error < 1e-12
     sim_cross, _ = _circuit(d, omega[::1000])
     assert np.allclose(np.abs(sim_cross) ** 2, pb[::1000], atol=1e-10)
+
+
+@pytest.mark.parametrize(("degree", "wp", "ws", "weight"), [
+    (1, 0.2, 0.4, 1.0), (2, 0.2, 0.4, 10.0), (3, 0.05, 0.1, 1.0), (5, 0.05, 0.1, 10.0), (8, 0.05, 0.1, 10.0),
+    (1, 0.7, 0.9, 1.0),
+])
+def test_equiripple_lowpass_without_overshoot(degree, wp, ws, weight):
+    # For low degrees, narrow pass bands or heavy weights the minimax G does not ripple
+    # about both 0 and 1 (G_max < 1 or G_min > 0): the affine map still gives a valid
+    # [0, 1] response (it used to raise).
+    from scipy.signal import remez
+
+    g = remez(2 * degree + 1, [0, wp * np.pi, ws * np.pi, np.pi], [1, 0], weight=[1, weight], fs=2 * np.pi,
+              maxiter=200)
+    omega = np.linspace(0, np.pi, 4001)
+    big_g = np.real(np.exp(1j * degree * omega) * _poly(g, omega))
+    assert big_g.max() < 1.0 or big_g.min() > 0.0                     # the case under test
+    cross, bar = sy.equiripple_lowpass(degree, wp * np.pi, ws * np.pi, weight=weight)
+    pb, pa = np.abs(_poly(cross, omega)) ** 2, np.abs(_poly(bar, omega)) ** 2
+    assert np.allclose(pa + pb, 1.0, atol=1e-12)
+    assert pb.min() > -1e-12 and pb.max() < 1 + 1e-12 and pb.max() == pytest.approx(1.0, abs=1e-6)
+    d = sy.synthesize_lattice(cross, bar, delta_length=20.0)
+    assert d.max_error < 1e-10
+
+
+@pytest.mark.parametrize("degree", [2, 4, 14])
+@pytest.mark.parametrize(("wp", "ws"), [(0.4, 0.6), (0.45, 0.55)])
+def test_half_band_equiripple_of_even_degree_synthesizes(degree, wp, ws):
+    # Half-band (wp + ws = pi) designs of even degree have zero top taps in both
+    # cross and bar; synthesize_lattice trims them instead of raising.
+    cross, bar = sy.equiripple_lowpass(degree, wp * np.pi, ws * np.pi)
+    assert abs(cross[-1]) + abs(bar[-1]) < 1e-14
+    d = sy.synthesize_lattice(cross, bar, fsr_hz=100e9)
+    assert sum(d.delays) < degree and d.max_error < 1e-12
+    omega = np.linspace(0, 2 * np.pi, 257)
+    rc, rb = d.response(omega)
+    assert np.allclose(np.abs(rc) ** 2, np.abs(_poly(cross, omega)) ** 2, atol=1e-12)
+    assert np.allclose(np.abs(rb) ** 2, np.abs(_poly(bar, omega)) ** 2, atol=1e-12)
+
+
+@pytest.mark.parametrize("zeros", [
+    [1, 1, 1, 0.98, 0.98],                                            # off-circle pair next to a triple zero
+    [1, 1, 1, 0.9, 0.9],
+    [-1, -1, -1, -0.97],
+    [-1, -1, -1, -0.97, -0.97],
+])
+def test_spectral_factor_is_minimum_phase_next_to_unit_circle_zeros(zeros):
+    # The roots of R scatter into one ring around the high-order unit-circle zero and
+    # swallow the nearby off-circle zeros; the factor used to come back with 1/0.98
+    # in place of 0.98 (right power, wrong phase). Now the unit-circle zeros are
+    # divided out of R exactly and the rest factored separately.
+    h_true = np.real(np.poly(zeros))
+    h, err = sy.spectral_factor(_laurent(h_true))
+    assert err < 1e-10
+    assert h[0] == pytest.approx(1.0, abs=1e-6)                       # |h_0| is largest for minimum phase
+    assert np.allclose(h, h_true, atol=1e-6)
 
 
 def test_equiripple_input_validation():
