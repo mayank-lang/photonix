@@ -266,15 +266,23 @@ def test_labels_round_trip(tmp_path):
     c = lay.LabeledCell.from_cell(lc.straight(10.0))
     c.add_label("opt_in_TE_1550_device_me_wg", (1.0, 2.0), (10, 0), rotation=90.0, magnification=2.0, anchor="sw")
     c.add_label("die A1", (3.0004, -1.0), (66, 3))
+    c.add_label("north", (5.0, 0.5), (10, 0), rotation=45.0, magnification=2.5, anchor="n")
+    want = [("opt_in_TE_1550_device_me_wg", (1.0, 2.0), (10, 0), 90.0, 2.0, "sw"),
+            ("die A1", (3.0, -1.0), (66, 3), 0.0, 1.0, "o"), ("north", (5.0, 0.5), (10, 0), 45.0, 2.5, "n")]
     for fmt in ("gds", "oas"):
         path = os.fspath(tmp_path / f"l.{fmt}")
         lay.write_layout(c, path)
         back = lay.read_layout(path)
-        got = [(lb.text, lb.position, lb.layer) for lb in back.labels]
-        assert got == [("opt_in_TE_1550_device_me_wg", (1.0, 2.0), (10, 0)), ("die A1", (3.0, -1.0), (66, 3))]
-        if fmt == "gds":                       # OASIS TEXT has no presentation transform
-            assert (back.labels[0].rotation, back.labels[0].magnification, back.labels[0].anchor) == (90.0, 2.0, "sw")
+        # OASIS TEXT has no anchor/rotation/magnification: the sidecar restores them
+        got = [(lb.text, lb.position, lb.layer, lb.rotation, lb.magnification, lb.anchor) for lb in back.labels]
+        assert got == want
         assert set(back.ports) == {"o1", "o2"}  # pin name labels were consumed, not left behind
+    # Without a sidecar an OASIS file keeps only text, position and layer.
+    path = os.fspath(tmp_path / "bare.oas")
+    lay.write_layout(c, path, sidecar=False)
+    bare = lay.read_layout(path)
+    assert [(lb.text, lb.rotation, lb.magnification, lb.anchor) for lb in bare.labels if lb.text == "north"] == \
+        [("north", 0.0, 1.0, "sw")]
 
 
 def test_label_markers_with_sidecar_leave_no_stray_labels(tmp_path):
@@ -349,14 +357,69 @@ def test_edited_structure_invalidates_only_its_sidecar_entry(tmp_path):
             cell.add(gdstk.rectangle((0, 3), (1, 4)))
 
     _rewrite(path, edit=stretch)
-    with pytest.warns(lay.StaleSidecarWarning, match=edited.replace("$", r"\$")):
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
         back = lay.read_layout(path)
+    # the edited structure and its ancestors (here the top cell) are stale; its siblings are not
+    assert {str(w.message).split("'")[1] for w in caught if issubclass(w.category, lay.StaleSidecarWarning)} == \
+        {edited, "mzi"}
     split = next(r for r in back.references if r.name == "splitter").cell
     bend = next(r for r in back.references if r.name == "top_b1").cell
     assert split.model == lay.GEOMETRY_ONLY and set(split.ports) == {"o1", "o2", "o3"}   # ports from pins
     assert bend.model == "bend" and bend.model_settings == {"radius": 5.0, "angle": 90.0}
     with pytest.raises(ValueError, match="splitter"):
         lay.extract_netlist(back)
+
+
+@pytest.mark.parametrize("fmt", ["gds", "oas"])
+def test_editing_a_sub_structure_invalidates_every_structure_above_it(tmp_path, fmt):
+    """A model describing geometry drawn in a sub-cell must not survive an edit of that sub-cell."""
+    core = lay.Cell("wg_core").add_polygon([(0, -0.25), (10, -0.25), (10, 0.25), (0, 0.25)], (1, 0))
+    dev = lay.Cell("wg10", model="straight", model_settings={"length": 10.0})
+    dev.add_ref(core, name="core")
+    dev.add_port("o1", (0, 0), 180, 0.5, (1, 0))
+    dev.add_port("o2", (10, 0), 0, 0.5, (1, 0))
+    top = lay.Cell("top")
+    top.add_ref(dev, name="u1")
+    other = lay.Cell("other", model="straight", model_settings={"length": 5.0})
+    other.add_polygon([(0, -0.25), (5, -0.25), (5, 0.25), (0, 0.25)], (1, 0))
+    other.add_port("o1", (0, 0), 180, 0.5, (1, 0))
+    other.add_port("o2", (5, 0), 0, 0.5, (1, 0))
+    top.add_ref(other, origin=(0, 20), name="u2")
+    path = os.fspath(tmp_path / f"chip.{fmt}")
+    lay.write_layout(top, path)
+    lib = gdstk.read_gds(path) if fmt == "gds" else gdstk.read_oas(path)
+    c = next(c for c in lib.cells if c.name == "wg_core")
+    c.remove(*c.polygons)
+    c.add(gdstk.rectangle((0, -0.25), (30, 0.25), layer=1, datatype=0))     # stretched to 30 um
+    lib.write_gds(path) if fmt == "gds" else lib.write_oas(path)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        back = lay.read_layout(path)
+    stale = {str(w.message).split("'")[1] for w in caught if issubclass(w.category, lay.StaleSidecarWarning)}
+    assert stale == {"wg_core", "wg10", "top"}
+    u1 = next(r for r in back.references if r.name == "u1").cell
+    u2 = next(r for r in back.references if r.name == "u2").cell
+    assert u1.model != "straight" and u1.model_settings == {}               # the stale length is not applied
+    assert u2.model == "straight" and u2.model_settings == {"length": 5.0}   # untouched siblings keep theirs
+
+
+def test_content_hash_covers_the_hierarchy_below():
+    def make(child_width):
+        lib = gdstk.Library()
+        leaf = lib.new_cell("leaf")
+        leaf.add(gdstk.rectangle((0, 0), (child_width, 1)))
+        mid = lib.new_cell("mid")
+        mid.add(gdstk.Reference(leaf, (5, 0)))
+        top = lib.new_cell("top")
+        top.add(gdstk.Reference(mid, (0, 3)))
+        return top, mid
+
+    (t1, m1), (t2, _m2) = make(1.0), make(1.0)
+    assert _content_hash(t1, 1e-3) == _content_hash(t2, 1e-3)
+    t3, m3 = make(2.0)
+    assert _content_hash(m3, 1e-3) != _content_hash(m1, 1e-3)
+    assert _content_hash(t3, 1e-3) != _content_hash(t1, 1e-3)
 
 
 def test_content_hash_ignores_text_and_order_but_not_geometry():

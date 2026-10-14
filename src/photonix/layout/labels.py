@@ -64,12 +64,13 @@ class Label:
         GDS ``(layer, texttype)``.
     rotation
         Presentation rotation in degrees (GDSII only; OASIS ``TEXT`` records
-        have no rotation and drop it).
+        have no rotation, so an ``.oas`` round trip keeps it only through the
+        layout sidecar).
     magnification
         Presentation magnification (GDSII only, as ``rotation``).
     anchor
         gdstk anchor: ``"o"`` (origin), ``"n"``, ``"s"``, ``"e"``, ``"w"``,
-        ``"ne"``, ``"nw"``, ``"se"`` or ``"sw"``.
+        ``"ne"``, ``"nw"``, ``"se"`` or ``"sw"`` (OASIS: as ``rotation``).
 
     Examples
     --------
