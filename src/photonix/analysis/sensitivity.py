@@ -308,8 +308,8 @@ def fosm(fn: Callable[[dict], float], nominal: Mapping[str, float], covariance, 
     Examples
     --------
     >>> m = fosm(lambda p: 2 * p["a"] - 3 * p["b"], {"a": 1.0, "b": 0.5}, [0.01, 0.04])
-    >>> round(m.mean, 12), round(m.std, 12)
-    (0.5, 0.632455532034)
+    >>> round(m.mean, 12), round(m.std, 9)       # exact with JAX; FD (NumPy backend) to ~1e-10
+    (0.5, 0.632455532)
     """
     names = tuple(nominal)
     x0 = np.array([float(nominal[k]) for k in names])

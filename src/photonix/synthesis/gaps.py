@@ -17,8 +17,11 @@ def coupling_to_gap(target: float, *, wl0: float = 1.55, length: float = 0.0, ra
     (calibrated for 500 x 220 nm SOI strips); ``radius`` adds the curved-gap
     contribution of a ring or racetrack (``length`` is its straight coupling
     section). Root finding uses Brent's method on the monotone part of the
-    coupling curve inside ``bracket``; a target outside the bracketed range
-    raises ``ValueError``.
+    coupling curve inside ``bracket``: for a long coupler, whose ``k(gap)``
+    is over-coupled (rises to a maximum) at small gaps, that is the segment
+    from the last maximum to ``bracket[1]``. ``ValueError`` if the target is
+    outside that segment's range, or is also reached in the over-coupled
+    part (the gap would be ambiguous).
 
     Examples
     --------
@@ -28,7 +31,7 @@ def coupling_to_gap(target: float, *, wl0: float = 1.55, length: float = 0.0, ra
     >>> abs(float(k) - 0.05) < 1e-10
     True
     """
-    from scipy.optimize import brentq
+    from scipy.optimize import brentq, minimize_scalar
 
     if coupler is None:
         from photonix.components import evanescent_coupler as coupler
@@ -43,11 +46,26 @@ def coupling_to_gap(target: float, *, wl0: float = 1.55, length: float = 0.0, ra
         return float(np.abs(np.asarray(s[("o1", "o3")])) ** 2)
 
     lo, hi = bracket
-    k_lo, k_hi = k_of(lo), k_of(hi)
     gaps = np.linspace(lo, hi, 64)
     ks = np.array([k_of(g) for g in gaps])
-    if np.any(np.diff(ks) > 0):
-        raise ValueError("coupling is not monotone in gap over the bracket (over-coupled section); shorten the coupler")
-    if not (min(k_lo, k_hi) <= target <= max(k_lo, k_hi)):
-        raise ValueError(f"target {target} outside the achievable range {k_hi:.4g}..{k_lo:.4g} for gaps {bracket} um")
-    return float(brentq(lambda g: k_of(g) - target, lo, hi, xtol=1e-14, rtol=1e-14, maxiter=200))
+    rising = np.flatnonzero(np.diff(ks) > 0)
+    seg_lo, k_top = lo, float(ks[0])
+    if rising.size:
+        # over-coupled small gaps: k(gap) peaks, then falls monotonically up to hi.
+        # Solve on that monotone large-gap segment, starting at the last maximum.
+        j = int(rising[-1])
+        a, b = gaps[max(j - 1, 0)], gaps[min(j + 2, gaps.size - 1)]
+        peak = minimize_scalar(lambda g: -k_of(g), bounds=(a, b), method="bounded", options={"xatol": 1e-12})
+        seg_lo, k_top = float(peak.x), float(-peak.fun)
+        if k_top < ks[j + 1]:                                     # keep the best sampled maximum
+            seg_lo, k_top = float(gaps[j + 1]), float(ks[j + 1])
+    k_hi = k_of(hi)
+    if not k_hi <= target <= k_top:
+        raise ValueError(f"target {target} outside the monotone achievable range {k_hi:.4g}..{k_top:.4g} for gaps "
+                         f"{seg_lo:.4g}..{hi} um")
+    if rising.size and float(np.min(ks[gaps <= seg_lo], initial=k_top)) <= target:
+        raise ValueError(f"target {target} is also reached in the over-coupled section (gaps below {seg_lo:.4g} um); "
+                         "shorten the coupler or narrow the bracket")
+    if target == k_top:
+        return seg_lo
+    return float(brentq(lambda g: k_of(g) - target, seg_lo, hi, xtol=1e-14, rtol=1e-14, maxiter=200))

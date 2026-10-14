@@ -109,6 +109,11 @@ Interior couplers that come out as `K = 0` (to 1e-12 rad) are identity
 matrices, so their two stages merge exactly into one longer delay. This is how
 the half-band designs get their `2 dL` stages.
 
+Top coefficients that vanish in both the cross and the bar (below 1e-14 of the
+largest) are trimmed before peeling, so a pair given with a padded degree
+synthesizes at its true degree. The even-degree half-band designs of
+`equiripple_lowpass` are an example.
+
 The target's two output phases are not realizable by the lattice. They are
 reported as a gauge:
 
@@ -136,6 +141,18 @@ clustering radius is chosen by the smallest reconstruction error. A
 Levenberg-Marquardt polish of the autocorrelation equations then finishes the
 job.
 
+A high-order unit-circle zero can swallow nearby off-circle zeros into its
+ring, and the factor would then come back with some of them reflected outside
+the circle: the power is right, the phase is not minimum. So the unit-circle
+zeros are also located from the derivatives of `R`, which, unlike its roots,
+are well conditioned. Newton's method on `R^(2q-1)` refines each angle, and
+the order `2q` is the number of Taylor coefficients that vanish to rounding.
+These zeros are divided out of `R` exactly and the rest is factored on its
+own. Reflecting a zero `rho` to `1 / rho*` scales `|h_0|` by `|rho|`, so the
+minimum-phase factor is the accurate candidate with the largest `|h_0|`. Zeros
+whose off-circle position `R` does not resolve in double precision stay
+ambiguous; the power error bound holds either way.
+
 The returned error `sum_k |r_k - r_k(h)|` is a rigorous bound on
 `max |R - |H|^2|`. A factor whose error exceeds `tol * max R` raises an error
 rather than being returned.
@@ -149,8 +166,12 @@ rather than being returned.
 1. Design a zero-phase minimax FIR `G` with `scipy.signal.remez`.
 2. Find its exact extremes from the roots of `G'` in `cos omega`.
 3. Map it to `|B|^2 = (G - G_min) / (G_max - G_min)`, following Herrmann &
-   Schuessler, Electron. Lett. 6, 329, 1970.
-4. Factor both `|B|^2` and `1 - |B|^2`.
+   Schuessler, Electron. Lett. 6, 329, 1970. Usually `G_min < 0` and
+   `G_max > 1`. For low degrees, narrow pass bands or a heavy stop-band weight,
+   `G` may not reach 1 (or 0). The same map still gives a valid response in
+   `[0, 1]`, with a larger pass-band ripple.
+4. Factor both `|B|^2` and `1 - |B|^2`. Half-band designs of even degree have
+   zero top coefficients, which `synthesize_lattice` trims.
 
 ### Validation evidence
 
@@ -167,7 +188,9 @@ All of these checks are in `tests/test_synthesis_lattice.py`.
 | Interleaver through the netlist: crosstalk equals `x^N P(1 - x)`; the MZI's equals `sin^2(pi df / FSR)` | Analytic | 1e-13 |
 | `spectral_factor` on random minimum-phase filters (real and complex, `n` up to 15) | Known factor | 1e-10 coefficients |
 | `spectral_factor` with 2- and 4-fold unit-circle zeros, and the max-flat complements (up to 16-fold) | Known factor | 1e-12 reconstruction |
+| `spectral_factor` with off-circle zeros (`0.9`, `0.97`, `0.98`) next to 6-fold unit-circle zeros | Known minimum-phase factor | 1e-6 coefficients |
 | `equiripple_lowpass`: complementarity; affine image of an independent `remez` run; Chebyshev alternation at `>= degree + 2` points | Analytic and independent run | 1e-12; equal ripple to remez's ~1 % |
+| `equiripple_lowpass` without overshoot (`G_max < 1` or `G_min > 0`) and even-degree half-band designs, synthesized | Complementarity and forward evaluation | 1e-12 |
 | JAX gradient of `lattice_response` in couplings, phases and `omega` | Finite differences | rel 1e-6 |
 
 ### Limits

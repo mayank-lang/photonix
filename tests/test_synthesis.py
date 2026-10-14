@@ -33,6 +33,27 @@ def test_prototype_input_validation():
         sy.lowpass_prototype("chebyshev", 3)
     with pytest.raises(ValueError):
         sy.lowpass_prototype("elliptic", 3)
+    # periodic_target validates like lowpass_prototype (it used to return all ones)
+    with pytest.raises(ValueError, match="ripple_db"):
+        sy.periodic_target(0.1, kind="chebyshev", order=3, phi_c=0.2)
+    with pytest.raises(ValueError, match="ripple_db"):
+        sy.periodic_target(0.1, kind="chebyshev", order=3, phi_c=0.2, ripple_db=0.0)
+    with pytest.raises(ValueError, match="kind"):
+        sy.periodic_target(0.1, kind="chebychev", order=3, phi_c=0.2, ripple_db=0.1)
+    assert float(sy.periodic_target(0.2, kind="chebyshev", order=3, phi_c=0.2, ripple_db=0.5)) == \
+        pytest.approx(10 ** -0.05, rel=1e-12)                                # band edge: -ripple
+
+
+@pytest.mark.parametrize(("order", "ripple"), [(3, 0.1), (4, 0.5), (6, 0.01), (5, 3.0)])
+def test_chebyshev_prototype_uses_the_exact_ripple_constant(order, ripple):
+    # MYJ: beta = ln coth(ripple / 17.37), with 17.37 = 40 / ln 10 rounded; exactly
+    # exp(-beta) = tanh(ripple ln10 / 40) = (10^(ripple/20) - 1) / (10^(ripple/20) + 1).
+    v = 10 ** (ripple / 20)
+    beta = -math.log((v - 1) / (v + 1))
+    gamma = math.sinh(beta / (2 * order))
+    g = sy.lowpass_prototype("chebyshev", order, ripple)
+    assert g[1] == pytest.approx(2 * math.sin(math.pi / (2 * order)) / gamma, rel=1e-13)
+    assert g[order + 1] == pytest.approx(1.0 if order % 2 else 1 / math.tanh(beta / 4) ** 2, rel=1e-13)
 
 
 def test_fast_transfer_matrix_matches_netlist_simulation():
@@ -131,7 +152,42 @@ def test_coupling_to_gap_maps_a_whole_design():
     assert gaps[0] == pytest.approx(gaps[-1]) and gaps[1] > gaps[0]          # weaker inner couplings: wider gaps
     with pytest.raises(ValueError, match="achievable range"):
         sy.coupling_to_gap(0.5, radius=10.0)                                 # point coupler is too weak
-    with pytest.raises(ValueError, match="not monotone"):
-        sy.coupling_to_gap(0.5, radius=10.0, length=30.0)                    # over-coupled at small gaps
+    with pytest.raises(ValueError, match="over-coupled"):
+        sy.coupling_to_gap(0.5, radius=10.0, length=30.0)                    # also reached at small gaps
     with pytest.raises(ValueError):
         sy.coupling_to_gap(1.5)
+
+
+def test_coupling_to_gap_solves_on_the_monotone_segment_of_an_over_coupled_curve():
+    # A 20 um straight coupler is over-coupled below ~0.13 um (k peaks near 1), but
+    # k = 0.3 is reached only once, on the monotone large-gap segment.
+    def k(gap):
+        s = px.components.evanescent_coupler(wl=1.55, gap=gap, length=20.0, bend_radius=0.0, curved_arms=1)
+        return float(px.power(s[("o1", "o3")]))
+
+    gap = sy.coupling_to_gap(0.3, length=20.0)                                # default bracket (0.10, 0.40)
+    assert gap == pytest.approx(0.2406, abs=1e-3)
+    assert k(gap) == pytest.approx(0.3, abs=1e-10)
+    assert gap == pytest.approx(sy.coupling_to_gap(0.3, length=20.0, bracket=(0.15, 0.4)), abs=1e-12)
+    with pytest.raises(ValueError, match="over-coupled"):
+        sy.coupling_to_gap(0.8, length=20.0)                                  # also at gap ~0.105 um
+    with pytest.raises(ValueError, match="monotone achievable range"):
+        sy.coupling_to_gap(0.01, length=20.0)
+
+
+def test_crow_error_check_resolves_narrow_bands(monkeypatch):
+    # B / FSR = 1e-4: a 2001-point half-FSR grid has only phi = 0 inside the band, so
+    # a deviation between the band centre and the band edge went unreported.
+    from photonix.synthesis import crow as crow_mod
+
+    real_target = crow_mod.periodic_target
+
+    def bumped(phi, **kw):            # 1 % (0.043 dB) high between phi_c / 4 and phi_c
+        phi = np.asarray(phi)
+        out = real_target(phi, **kw)
+        return out * np.where((np.abs(phi) > kw["phi_c"] / 4) & (np.abs(phi) < kw["phi_c"]), 1.01, 1.0)
+
+    monkeypatch.setattr(crow_mod, "periodic_target", bumped)
+    d = sy.synthesize_crow(4, 1e8, fsr_hz=1e12, refine=False)                # refine=False: only the check
+    # the bump (0.043 dB) is seen; the closed form alone is off by only ~3e-3 dB here
+    assert 0.9 * 10 * math.log10(1.01) < d.max_error_db < 0.06

@@ -53,7 +53,8 @@ __all__ = [
 ]
 
 _C = 299_792_458.0
-_TRIM_TOL = 1e-14          # relative size below which common end coefficients are trimmed
+_TRIM_TOL = 1e-14          # relative size below which common top coefficients are trimmed
+_VANISH = 64 * np.finfo(float).eps   # relative size of a numerically vanishing derivative of R
 
 
 class CrossBar(NamedTuple):
@@ -230,40 +231,68 @@ def _polish(h: np.ndarray, r: np.ndarray, real: bool) -> np.ndarray:
     return unpack(sol.x)
 
 
-def _clearly_outside(h: np.ndarray, rts: np.ndarray | None = None) -> np.ndarray:
-    """Zeros of ``H(z) = sum h_k z^-k`` that lie clearly outside the unit circle.
+def _unit_circle_zeros(r: np.ndarray, peak: float, real: bool = False) -> list[tuple[complex, int]]:
+    """Unit-circle zeros ``(exp(j theta), q)`` of ``R`` (a ``2q``-fold zero each), found from its derivatives.
 
-    A zero ``rho`` qualifies when ``|rho| - 1`` exceeds 1e-10 and 100 times its
-    first-order uncertainty ``eps sum_k |h_k| |rho|^(m-k) / |p'(rho)|``, and
-    no other zero is closer to it than half its distance to the circle: the
-    scattered roots of a (numerically) multiple unit-circle zero are left
-    alone, since moving them would shift that zero off the circle.
+    Candidate angles are the local minima of ``R`` on a dense grid; each is
+    refined by Newton's method on ``d^(2q-1) R / d omega^(2q-1)`` and kept
+    with the largest ``q`` for which the Taylor coefficients of
+    ``R(theta + x)`` below order ``2q`` vanish (to 64 eps of their scale, the rounding level).
+    Unlike the roots of ``R``, which scatter by ``eps^(1/2q)``, these
+    derivatives are well conditioned: zeros just off the circle that hide
+    in that scatter are not counted.
     """
-    rts = np.roots(h) if rts is None else rts
-    if rts.size == 0:
-        return np.zeros(0, dtype=bool)
-    mod = np.abs(rts)
-    size = np.polyval(np.abs(h), mod)
-    slope = np.abs(np.polyval(np.polyder(h), rts))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        unc = np.where(slope > 0, 100 * np.finfo(float).eps * size / slope, np.inf)
-    gap = np.abs(rts[:, None] - rts[None, :]) + np.diag(np.full(rts.size, np.inf))
-    isolated = np.min(gap, axis=1) > 0.5 * (mod - 1.0)
-    return (mod - 1.0 > np.maximum(unc, 1e-10)) & isolated
+    m = (r.size - 1) // 2
+    k = np.arange(-m, m + 1)
+    size = 64 * (m + 1)
+    grid = 2 * np.pi * np.arange(size) / size
+    vals = np.real(np.exp(1j * np.outer(grid, -k)) @ r)
+    low = (vals <= np.roll(vals, 1)) & (vals <= np.roll(vals, -1)) & (vals < 1e-2 * peak)
 
+    def taylor(theta: float, j: int) -> tuple[float, float]:
+        terms = r * np.exp(-1j * k * theta) * (-1j * k) ** j / math.factorial(j)
+        return float(np.real(np.sum(terms))), float(np.sum(np.abs(terms)))
 
-def _reflect_outside(h: np.ndarray, real: bool) -> np.ndarray:
-    """Multiply ``H`` by the all-pass factors that move its clearly-outside zeros to ``1/rho*``.
+    def vanish(theta: float, q: int) -> bool:
+        return all(abs(c) <= _VANISH * s for c, s in (taylor(theta, j) for j in range(2 * q)))
 
-    ``|H|`` on the circle is unchanged. Each zero ``rho`` is deflated in the
-    stable direction (``w = z^-1``, root ``1/rho`` inside the circle).
-    """
-    rts = np.roots(h)
-    g = np.asarray(h, dtype=complex)
-    for rho in rts[_clearly_outside(h, rts)]:
-        q, _ = np.polydiv(g[::-1], np.array([1.0, -1.0 / rho]))     # H = (w - 1/rho) Q(w)
-        g = np.convolve(-q[::-1] / rho, abs(rho) * np.array([1.0, -1.0 / np.conj(rho)]))
-    return g.real.astype(complex) if real else g
+    cands: list[tuple[int, float, float]] = []
+    for theta0 in grid[low]:
+        best = None
+        theta = float(theta0)
+        for q in range(1, m + 1):
+            if not vanish(theta, q):
+                trial = theta
+                for _ in range(30):                               # Newton on the (2q-1)-th derivative
+                    g, _s = taylor(trial, 2 * q - 1)
+                    dg, _s = taylor(trial, 2 * q)
+                    if dg == 0.0:
+                        break
+                    step = max(-0.05, min(0.05, g / (2 * q * dg)))  # c_j are Taylor coefficients
+                    trial -= step
+                    if abs(step) < 1e-15:
+                        break
+                snapped = round(trial / math.pi) * math.pi       # real R: prefer the symmetric angles 0, pi
+                if real and abs(trial - snapped) < 1e-3 and vanish(snapped, q):
+                    trial = snapped
+                if not vanish(trial, q):
+                    break
+                theta = trial
+            best = (theta, q)
+        if best is not None:
+            theta, q = best
+            c2q, _s = taylor(theta, 2 * q)
+            _c, s0 = taylor(theta, 0)
+            # R stays below the rounding level for |x| < width around a 2q-fold zero
+            width = (_VANISH * s0 / abs(c2q)) ** (1.0 / (2 * q)) if c2q else math.pi
+            cands.append((q, theta, width))
+    found: list[tuple[complex, int]] = []
+    kept: list[tuple[float, float]] = []
+    for q, theta, width in sorted(cands, key=lambda c: -c[0]):      # highest order first
+        if all(abs(math.remainder(theta - t, 2 * math.pi)) > max(w, 1e-3) for t, w in kept):
+            kept.append((theta, width))
+            found.append((complex(np.exp(1j * theta)), q))
+    return found
 
 
 def spectral_factor(power, degree: int | None = None, *, tol: float = 1e-9) -> tuple[np.ndarray, float]:
@@ -284,7 +313,13 @@ def spectral_factor(power, degree: int | None = None, *, tol: float = 1e-9) -> t
     the result is polished by Levenberg-Marquardt on the autocorrelation
     equations. Real ``r`` (a real filter) gives a real ``h``. The polish may
     nudge unit-circle zeros by about the reconstruction error, so "minimum
-    phase" holds to that accuracy.
+    phase" holds to that accuracy. A high-order unit-circle zero can hide
+    nearby off-circle zeros in its numerical ring, which the selection may
+    then put on the wrong side; so the unit-circle zeros are also located
+    from the (well-conditioned) derivatives of ``R``, divided out exactly, and
+    the rest factored separately, and the candidate with the larger ``|h_0|``
+    (the minimum-phase one: reflecting a zero ``rho`` outside scales ``h_0``
+    by ``|rho|``) is kept when it is accurate.
 
     Returns
     -------
@@ -344,15 +379,31 @@ def spectral_factor(power, degree: int | None = None, *, tol: float = 1e-9) -> t
     polished = finish(_polish(h0[: m + 1], sub, real))
     h, err = min((finish(h0[: m + 1]), polished), key=lambda t: t[1])
     # A unit-circle cluster of R swallows nearby off-circle zeros (its roots
-    # scatter by eps^(1/2m)), so the selection or the polish can land on a factor
-    # with a zero clearly outside the circle. The factor's own roots are better
-    # resolved: reflect those clearly outside (an all-pass factor, so the power
-    # is unchanged; no re-polish, which could drift back) and keep the repair if
-    # it is accurate.
-    if m and _clearly_outside(h[: m + 1]).any():
-        repaired = finish(_reflect_outside(h[: m + 1], real))
-        if repaired[1] <= max(tol * peak, err) and not _clearly_outside(repaired[0][: m + 1]).any():
-            h, err = repaired
+    # scatter by eps^(1/2m)), so the selection and the polish can land on a
+    # factor with some of them outside the circle. Second candidate: divide the
+    # unit-circle zeros (found from the well-conditioned derivatives of R) out
+    # of R exactly and factor the well-separated rest. Reflecting a zero rho
+    # outside the circle to 1/rho* multiplies |h_0| by |rho|, so the
+    # minimum-phase factor is the one with the largest |h_0|.
+    zeros = _unit_circle_zeros(sub, peak, real) if m else []
+    if zeros:
+        quo, on_circle, exact = sub, np.ones(1, dtype=complex), True
+        for a, q in zeros:
+            for _ in range(q):
+                quo, rem = np.polydiv(quo, _autocorr(np.array([1.0, -a])))
+                exact = exact and float(np.max(np.abs(rem), initial=0.0)) <= 1e-10 * float(np.sum(np.abs(sub)))
+                on_circle = np.convolve(on_circle, [1.0, -a])
+        rest = None
+        if exact and quo.size < sub.size:
+            try:
+                rest, _e = spectral_factor(quo, tol=tol)
+            except ValueError:
+                pass
+        if rest is not None:
+            prod = np.convolve(rest, on_circle)
+            alt = finish(prod.real.astype(complex) if real else prod)
+            if alt[1] <= tol * peak and (abs(alt[0][0]) > abs(h[0]) * (1.0 + 1e-6) or err > tol * peak):
+                h, err = alt
     if np.real(h[0]) < 0:
         h = -h
     if err > tol * peak:
@@ -660,13 +711,11 @@ def synthesize_lattice(cross, bar=None, *, fsr_hz: float | None = None, delta_le
     ``theta < merge_tol`` are removed and their stages merged. ``ValueError``
     if the pair is not power complementary to ``tol``.
 
-    Coefficients that vanish in *both* arrays (``|a_k| + |b_k|`` below 1e-14
-    of the largest) are trimmed first: trailing ones lower the degree (e.g.
-    the even-degree half-band designs of :func:`equiripple_lowpass`), leading
-    ones are a delay common to both arms, which -- like the common arm length
-    -- the lattice response leaves out. ``cross``/``bar`` of the design and
-    ``max_error`` refer to the trimmed pair (the trimmed magnitudes are added
-    to ``max_error``).
+    Top coefficients that vanish in *both* arrays (``|a_k| + |b_k|`` below
+    1e-14 of the largest) are trimmed first, lowering the degree: e.g. the
+    even-degree half-band designs of :func:`equiripple_lowpass`. ``cross`` and
+    ``bar`` of the design refer to the trimmed pair and ``max_error``
+    includes the trimmed magnitudes.
 
     Examples
     --------
@@ -690,16 +739,15 @@ def synthesize_lattice(cross, bar=None, *, fsr_hz: float | None = None, delta_le
     mismatch = float(np.sum(np.abs(unit)))
     if mismatch > tol:
         raise ValueError(f"cross and bar are not power complementary: | |A|^2 + |B|^2 - 1 | up to {mismatch:.3g}")
-    # Trim common vanishing end coefficients: trailing ones lower the degree, leading
-    # ones are a delay common to both arms (left out, like the common arm length).
+    # Trim common vanishing top coefficients: the pair has a lower degree. (Common
+    # leading zeros need no special case: peeling realizes them with K = 0 couplers.)
     ends = np.abs(a) + np.abs(b)
-    live = np.flatnonzero(ends >= _TRIM_TOL * float(np.max(ends)))
-    first, last = int(live[0]), int(live[-1])
-    trimmed = float(np.sum(ends[:first]) + np.sum(ends[last + 1:]))
-    a, b = a[first: last + 1], b[first: last + 1]
+    last = int(np.flatnonzero(ends >= _TRIM_TOL * float(np.max(ends)))[-1])
+    trimmed = float(np.sum(ends[last + 1:]))
+    a, b = a[: last + 1], b[: last + 1]
     if a.size < 2:
-        raise ValueError("cross and bar have degree 0 after trimming vanishing coefficients: a single coupler, "
-                         "no lattice stage")
+        raise ValueError("cross and bar have degree 0 after trimming vanishing top coefficients: a single "
+                         "coupler, no lattice stage")
     thetas, phis, alpha, common = _peel(a, b)
     keep, delays, phases = [0], [], []                         # merge null interior couplers:
     run, acc = 0, 0.0                                           # C(0) = I joins two stages exactly
