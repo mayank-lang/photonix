@@ -5,7 +5,16 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .._common import CliError, ExitCode, add_json_flag, load_dataset, physicality, schema_id, write_dataset
+from .._common import (
+    CliError,
+    ExitCode,
+    add_json_flag,
+    check_output,
+    load_dataset,
+    physicality,
+    schema_id,
+    write_dataset,
+)
 
 __all__ = ["register", "run_check", "render_check", "run_convert", "render_convert"]
 
@@ -41,6 +50,7 @@ def register(sub: argparse._SubParsersAction) -> None:
                                        "Port names and metadata survive every conversion except to CSV.")
     v.add_argument("input", help="source file (.sNp, .npz or .json)")
     v.add_argument("output", help="destination file (.sNp, .npz, .json or .csv)")
+    v.add_argument("--force", action="store_true", help="overwrite an existing output file")
     v.add_argument("--frequency-unit", default="ghz", choices=("hz", "khz", "mhz", "ghz"),
                    help="Touchstone frequency unit (default ghz)")
     add_json_flag(v)
@@ -102,6 +112,7 @@ def render_check(payload: dict[str, Any]) -> str:
 
 
 def run_convert(args: argparse.Namespace) -> tuple[dict[str, Any], ExitCode]:
+    check_output(args.output, force=args.force)
     ds = load_dataset(args.input)
     fmt = write_dataset(ds, args.output, frequency_unit=args.frequency_unit)
     return {"schema": CONVERT_SCHEMA, "input": str(Path(args.input)), "output": str(Path(args.output)),

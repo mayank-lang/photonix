@@ -651,3 +651,69 @@ def test_parse_wavelengths_and_params():
             parse_params([bad])
     assert jsonable({"x": np.float64("nan"), "y": np.arange(2), "z": (1 + 1j,)}) == {
         "x": "nan", "y": [0, 1], "z": [[1.0, 1.0]]}
+
+
+# --------------------------------------------------------------------------- #
+# Review regressions: input validation, output safety, broken pipes
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("text", ["[1, 2]", '{"format": "photonix.sparameters", "version": null}',
+                                  '{"format": "photonix.sparameters", "version": "1"}',
+                                  '{"format": "photonix.sparameters", "version": 1, "ports": "ab", '
+                                  '"wavelengths_um": [1.55], "s_real": [[[0, 1], [1, 0]]], "s_imag": [[[0, 0], [0, 0]]]}'])
+def test_malformed_dataset_json_is_an_input_error(capsys, tmp_path, text):
+    path = tmp_path / "bad.json"
+    path.write_text(text)
+    code, _, err = run(capsys, "sparams", "check", str(path))
+    assert code == ExitCode.USAGE and "Traceback" not in err
+
+
+@pytest.mark.parametrize("text", ["[1]", '{"rules": {"1/0": {"min_width": 1}}, "version": null}'])
+def test_malformed_netlist_and_rules_are_input_errors(capsys, tmp_path, text):
+    path = tmp_path / "bad.json"
+    path.write_text(text)
+    assert run(capsys, "netlist", "simulate", str(path))[0] == ExitCode.USAGE
+    from photonix.cli.commands.gds import load_rules
+
+    with pytest.raises(CliError):
+        load_rules(path)
+
+
+def test_netlist_path_starting_with_a_brace_is_read_as_a_file(capsys, tmp_path, monkeypatch):
+    nl = px.circuit.Netlist(name="n")
+    nl.add("a", "straight", length=5.0)
+    nl.expose("i", ("a", "o1"))
+    nl.expose("o", ("a", "o2"))
+    monkeypatch.chdir(tmp_path)
+    nl.to_json("{run1}.json")
+    code, _, _ = run(capsys, "netlist", "simulate", "{run1}.json", "--wl", "1.55")
+    assert code == ExitCode.OK
+
+
+def test_existing_outputs_need_force_and_are_checked_before_work(capsys, tmp_path):
+    notes = tmp_path / "notes.json"
+    notes.write_text('{"important": "user data"}')
+    code, _, err = run(capsys, "sweep", "straight", "--wl", "1.55", "-o", str(notes))
+    assert code == ExitCode.USAGE and "--force" in err
+    assert json.loads(notes.read_text()) == {"important": "user data"}
+    assert run(capsys, "sweep", "straight", "--wl", "1.55", "-o", str(notes), "--force")[0] == ExitCode.OK
+    assert json.loads(notes.read_text())["format"] == "photonix.sparameters"
+    # A bad suffix or a missing directory fails before the model is evaluated.
+    assert run(capsys, "sweep", "straight", "-o", str(tmp_path / "out.txt"))[0] == ExitCode.USAGE
+    assert run(capsys, "sweep", "straight", "-o", str(tmp_path / "nodir" / "o.json"))[0] == ExitCode.USAGE
+    src = tmp_path / "a.json"
+    run(capsys, "sweep", "straight", "--wl", "1.55", "-o", str(src))
+    report = tmp_path / "report.csv"
+    report.write_text("precious")
+    assert run(capsys, "sparams", "convert", str(src), str(report))[0] == ExitCode.USAGE
+    assert report.read_text() == "precious"
+    assert run(capsys, "sparams", "convert", str(src), str(report), "--force")[0] == ExitCode.OK
+
+
+def test_json_output_into_a_closed_pipe_exits_quietly():
+    code = (f"import subprocess, sys; p = subprocess.Popen([sys.executable, '-m', 'photonix', 'sweep', 'straight', "
+            f"'--wl', '1.5:1.6:4001', '--json'], stdout=subprocess.PIPE, stderr=subprocess.PIPE); "
+            f"p.stdout.read(10); p.stdout.close(); err = p.stderr.read(); rc = p.wait(); "
+            f"print(rc, b'Traceback' in err)")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, check=True)
+    rc, traceback_seen = out.stdout.split()
+    assert rc in ("141", "-13") and traceback_seen == "False"

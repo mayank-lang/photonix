@@ -6,7 +6,7 @@ from every obstacle polygon, then draws it with
 :func:`~photonix.layout.route_manhattan`.
 
 Search (Hart, Nilsson & Raphael, IEEE Trans. SSC 4, 1968; Lee, IRE Trans. EC 10, 1961)
-------------------------------------------------------------------------------------
+--------------------------------------------------------------------------------------
 * **Graph.** States are ``(node, heading)`` on a rectilinear grid of spacing
   ``grid``. The grid also contains the exact lines of both port axes and the
   lines that hug every obstacle's bounding box, so routes land exactly on

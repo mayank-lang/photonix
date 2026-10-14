@@ -28,10 +28,11 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Any  # noqa: F401  (inherited dataclass field annotations)
 
 import numpy as np
 
-from .cell import Cell, Reference
+from .cell import Cell, Port, Reference  # noqa: F401  (Port: inherited dataclass field annotations)
 from .gds import _gdstk
 
 __all__ = ["Label", "LabeledCell", "text", "TEXT_STROKE_RATIO", "TEXT_LAYER", "ANCHORS"]

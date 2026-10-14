@@ -22,6 +22,7 @@ photonix COMMAND --help          # every option of one command
 | 2 | usage or input error: bad arguments, an unreadable or malformed file, an unknown model or PDK |
 | 3 | an optional dependency the command needs is missing (the message names the `pip install` extra) |
 | 4 | internal error: an unexpected exception, printed with its traceback. Please report it with `photonix info --json` |
+| 141 | stdout was closed early by the reader (for example `photonix ... --json \| head`); the command stops quietly, like a process killed by `SIGPIPE` |
 
 `--json` prints one JSON document (strict JSON, keys sorted) instead of text.
 Its `schema` field is `photonix.cli/<command>/1`: `info`, `models`, `mode`,
@@ -95,7 +96,10 @@ model registry, which binds the cross-section's `neff`, `ng`, `loss_db_cm` and
 dB and a physicality summary (largest singular value, worst reciprocity and
 unitarity errors, and the wavelengths where they occur).
 
-`-o FILE` writes the S-parameters in the format the suffix names:
+`-o FILE` writes the S-parameters in the format the suffix names. The suffix,
+the target directory and whether the file already exists are checked before
+any model is evaluated; an existing file is never replaced unless `--force` is
+given (the same holds for the output of `sparams convert`).
 
 | Suffix | Format |
 |---|---|

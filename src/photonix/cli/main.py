@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import traceback
 from collections.abc import Sequence
@@ -109,6 +110,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         print("photonix: interrupted", file=sys.stderr)
         return 130
+    except BrokenPipeError:
+        # The reader closed stdout early (``photonix ... --json | head``). Point
+        # stdout at /dev/null so the interpreter's final flush cannot fail too,
+        # and exit like a process killed by SIGPIPE.
+        try:
+            devnull = os.open(os.devnull, os.O_WRONLY)
+            os.dup2(devnull, sys.stdout.fileno())
+        except (OSError, ValueError):  # pragma: no cover - stdout already gone
+            pass
+        return 128 + 13
     except Exception as exc:  # an unexpected failure is a bug: keep the traceback
         traceback.print_exc()
         print(f"photonix: internal error ({type(exc).__name__}); please report it with `photonix info --json`",

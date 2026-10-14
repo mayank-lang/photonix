@@ -19,6 +19,7 @@ photonix, so it runs before anything is installed::
 from __future__ import annotations
 
 import argparse
+import datetime
 import re
 import sys
 from collections.abc import Sequence
@@ -30,6 +31,7 @@ _VERSION_RE = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']', re.MULTILINE
 _PEP440_RE = re.compile(r"^(?P<release>\d+\.\d+\.\d+)(?P<pre>(?:a|b|rc)\d+)?$")
 _HEADING_RE = re.compile(r"^## \[(?P<name>[^\]]+)\](?:\s+-\s+(?P<date>.+?))?\s*$", re.MULTILINE)
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_CFF_DATE_RE = re.compile(r"^date-released:\s*['\"]?(\d{4}-\d{2}-\d{2})['\"]?\s*$", re.MULTILINE)
 _CFF_VERSION_RE = re.compile(r"^version:\s*['\"]?([^'\"\s]+)['\"]?\s*$", re.MULTILINE)
 
 __all__ = [
@@ -130,8 +132,10 @@ def check_release(tag: str, root: Path = ROOT) -> list[str]:
         problems.append(f"CHANGELOG.md has no '## [{release}]' section")
     else:
         date, body = sections[release]
-        if date is None or not _DATE_RE.match(date):
-            problems.append(f"CHANGELOG.md section [{release}] must be dated '- YYYY-MM-DD' (found {date!r})")
+        if date is None or not _DATE_RE.match(date) or not _valid_date(date):
+            problems.append(f"CHANGELOG.md section [{release}] must be dated '- YYYY-MM-DD' with a real "
+                            f"calendar date (found {date!r})")
+            date = None
         if not body:
             problems.append(f"CHANGELOG.md section [{release}] is empty")
     cff = (root / "CITATION.cff").read_text(encoding="utf-8")
@@ -139,7 +143,24 @@ def check_release(tag: str, root: Path = ROOT) -> list[str]:
     cff_version = match.group(1) if match else None
     if not pre and cff_version != release:
         problems.append(f"CITATION.cff version is {cff_version!r}, expected {release!r}")
+    if not pre:
+        match = _CFF_DATE_RE.search(cff)
+        cff_date = match.group(1) if match else None
+        changelog_date = sections[release][0] if release in sections else None
+        if cff_date is None or not _valid_date(cff_date):
+            problems.append(f"CITATION.cff needs date-released: YYYY-MM-DD for {release} (found {cff_date!r})")
+        elif changelog_date is not None and _valid_date(changelog_date) and cff_date != changelog_date:
+            problems.append(f"CITATION.cff date-released {cff_date} differs from the CHANGELOG date "
+                            f"{changelog_date}")
     return problems
+
+
+def _valid_date(text: str) -> bool:
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def main(argv: Sequence[str] | None = None) -> int:

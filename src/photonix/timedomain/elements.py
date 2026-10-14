@@ -349,7 +349,7 @@ def tail_support(h, budget: float) -> tuple[int, int]:
 
 
 def window_taps(response, dt: float, n0: int, n_taps: int, band: float = 0.5):
-    """Taps ``h[n0 .. n0 + n_taps - 1]`` of the inverse DFT of ``response * planck_taper``.
+    """Taps ``h[n0:n0 + n_taps]`` of the inverse DFT of ``response * planck_taper``.
 
     ``response`` is sampled on :func:`centered_frequencies` (any length
     ``N >= 2 n_taps``); it may be a traced array -- the taps are linear in it.

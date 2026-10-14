@@ -13,6 +13,7 @@ from .._common import (
     CliError,
     ExitCode,
     add_json_flag,
+    check_output,
     dataset_document,
     jsonable,
     parse_params,
@@ -36,6 +37,7 @@ def add_output_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("-o", "--output", default=None,
                    help="write the S-parameters; the suffix picks the format: .sNp (Touchstone 1.0 RI), .npz, "
                         ".json (photonix.sparameters) or .csv (real/imaginary columns)")
+    p.add_argument("--force", action="store_true", help="overwrite an existing --output file")
     p.add_argument("--frequency-unit", default="ghz", choices=("hz", "khz", "mhz", "ghz"),
                    help="Touchstone frequency unit (default ghz)")
     p.add_argument("--pdk", default=None, help="use a PDK's model registry and cross-section (e.g. demo)")
@@ -128,6 +130,8 @@ def model_registry(args: argparse.Namespace) -> Mapping[str, Callable]:
 def run(args: argparse.Namespace) -> tuple[dict[str, Any], ExitCode]:
     from .models import resolve_model
 
+    if args.output is not None:
+        check_output(args.output, force=args.force)
     fn = resolve_model(args.model, model_registry(args))
     settings = parse_params(args.param, allowed=fn)
     wavelengths = parse_wavelengths(args.wl)

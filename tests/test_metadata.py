@@ -150,11 +150,13 @@ def test_community_files_exist():
 # --------------------------------------------------------------------------- #
 # tools/release.py (used by the release workflow)
 # --------------------------------------------------------------------------- #
-def _fake_repo(tmp_path: Path, *, version: str, changelog: str, cff_version: str) -> Path:
-    (tmp_path / "src" / "photonix").mkdir(parents=True)
+def _fake_repo(tmp_path: Path, *, version: str, changelog: str, cff_version: str,
+               cff_date: str | None = "2026-05-01") -> Path:
+    (tmp_path / "src" / "photonix").mkdir(parents=True, exist_ok=True)
     (tmp_path / "src" / "photonix" / "__init__.py").write_text(f'__version__ = "{version}"\n')
     (tmp_path / "CHANGELOG.md").write_text(changelog)
-    (tmp_path / "CITATION.cff").write_text(f"cff-version: 1.2.0\nversion: {cff_version}\n")
+    dated = "" if cff_date is None else f"date-released: {cff_date}\n"
+    (tmp_path / "CITATION.cff").write_text(f"cff-version: 1.2.0\nversion: {cff_version}\n{dated}")
     return tmp_path
 
 
@@ -184,6 +186,17 @@ def test_release_check_rejects_each_inconsistency(tmp_path):
     assert tool.check_release("1.2.0", root) and tool.check_release("v1.2", root)
 
 
+def test_release_check_rejects_impossible_dates_and_a_mismatched_citation_date(tmp_path):
+    tool = _release_tool()
+    impossible = _DATED.replace("2026-05-01", "2026-13-45")
+    root = _fake_repo(tmp_path, version="1.2.0", changelog=impossible, cff_version="1.2.0")
+    assert any("real calendar date" in p for p in tool.check_release("v1.2.0", root))
+    root = _fake_repo(tmp_path, version="1.2.0", changelog=_DATED, cff_version="1.2.0", cff_date=None)
+    assert any("needs date-released" in p for p in tool.check_release("v1.2.0", root))
+    root = _fake_repo(tmp_path, version="1.2.0", changelog=_DATED, cff_version="1.2.0", cff_date="2019-01-01")
+    assert any("differs from the CHANGELOG date" in p for p in tool.check_release("v1.2.0", root))
+
+
 def test_prereleases_go_to_testpypi_with_unreleased_notes(tmp_path):
     tool = _release_tool()
     changelog = "# C\n\n## [Unreleased]\n\n### Fixed\n\n- pending fix\n\n## [1.1.0] - 2026-01-01\n\n- old\n"
@@ -199,7 +212,8 @@ def test_prereleases_go_to_testpypi_with_unreleased_notes(tmp_path):
 def test_release_check_on_this_repository_is_clean_except_the_release_date():
     tool = _release_tool()
     problems = tool.check_release(f"v{px.__version__}", ROOT)
-    assert [p for p in problems if "must be dated" not in p] == []
+    # Before tagging, only the release date (CHANGELOG heading, CITATION date-released) may be missing.
+    assert [p for p in problems if "must be dated" not in p and "needs date-released" not in p] == []
     notes = tool.release_notes(f"v{px.__version__}", ROOT)
     assert "### Added" in notes and "## [" not in notes
 

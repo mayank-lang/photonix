@@ -221,7 +221,7 @@ def fiber_array(
 # --------------------------------------------------------------------------- #
 def pad_array(n: int = 8, *, pitch: float = 100.0, size: float = 80.0, layer: Sequence[int] = (11, 0),
               orientation: float = 90.0, name: str = "pad_array") -> Cell:
-    """``n`` square bond pads on a row ``pitch`` apart, with electrical ports ``e1 .. en``.
+    """``n`` square bond pads on a row ``pitch`` apart, with electrical ports ``e1`` to ``en``.
 
     Pad ``k`` is centred at ``(k * pitch, 0)``; its port sits at the centre,
     faces ``orientation`` and is ``size`` wide (the probe/bond landing).

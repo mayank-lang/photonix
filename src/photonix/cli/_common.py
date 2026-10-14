@@ -263,16 +263,26 @@ def dataset_document(ds) -> dict[str, Any]:
     }
 
 
-def _from_document(doc: Mapping[str, Any], path: Path):
+def is_version(value: Any, expected: int = 1) -> bool:
+    """True when a document's ``version`` field is the integer ``expected`` (not a bool, string or null)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value == expected
+
+
+def _from_document(doc: Any, path: Path):
     from photonix.core import SParameterDataset
 
-    if doc.get("format") != DATA_FORMAT or int(doc.get("version", 0)) != 1:
+    if not isinstance(doc, Mapping) or doc.get("format") != DATA_FORMAT or not is_version(doc.get("version")):
         raise CliError(f"{path}: not a {DATA_FORMAT} version 1 JSON document")
+    ports = doc.get("ports")
+    if not isinstance(ports, list) or not all(isinstance(p, str) for p in ports):
+        raise CliError(f"{path}: malformed {DATA_FORMAT} document ('ports' must be a list of port names)")
+    metadata = doc.get("metadata") or {}
+    if not isinstance(metadata, Mapping):
+        raise CliError(f"{path}: malformed {DATA_FORMAT} document ('metadata' must be an object)")
     try:
         s = np.asarray(doc["s_real"], dtype=float) + 1j * np.asarray(doc["s_imag"], dtype=float)
-        return SParameterDataset(np.asarray(doc["wavelengths_um"], dtype=float), tuple(doc["ports"]), s,
-                                 dict(doc.get("metadata") or {}))
-    except (KeyError, TypeError) as exc:
+        return SParameterDataset(np.asarray(doc["wavelengths_um"], dtype=float), tuple(ports), s, dict(metadata))
+    except (KeyError, TypeError, ValueError) as exc:
         raise CliError(f"{path}: malformed {DATA_FORMAT} document ({exc})") from exc
 
 
@@ -291,9 +301,27 @@ def load_dataset(path: str | Path):
             return SParameterDataset.load_npz(source)
         if kind == "json":
             return _from_document(json.loads(source.read_text(encoding="utf-8")), source)
-    except (ValueError, KeyError, OSError) as exc:
+    except (ValueError, KeyError, OSError, UnicodeDecodeError) as exc:
         raise CliError(f"{source}: {exc}") from exc
     raise CliError(f"{source}: CSV is an output-only format")
+
+
+def check_output(path: str | Path, *, force: bool = False) -> str:
+    """Validate an output path before any work is done; returns the format its suffix names.
+
+    Raises :class:`CliError` (exit 2) for an unsupported suffix, a missing
+    directory, or an existing file unless ``force`` is set. The Touchstone
+    port count is checked when the data are written.
+    """
+    target = Path(path)
+    kind = _kind(target)
+    if not target.parent.exists():
+        raise CliError(f"{target}: directory {target.parent} does not exist")
+    if target.exists() and not force:
+        raise CliError(f"{target}: file exists", hint="pass --force to overwrite it")
+    if target.exists() and not target.is_file():
+        raise CliError(f"{target}: not a regular file")
+    return kind
 
 
 def _write_csv(ds, target: Path) -> None:
@@ -319,6 +347,8 @@ def write_dataset(ds, path: str | Path, *, frequency_unit: str = "ghz") -> str:
                            f"{len(ds.ports)} ({', '.join(ds.ports)}); use the suffix .s{len(ds.ports)}p")
     if not target.parent.exists():
         raise CliError(f"{target}: directory {target.parent} does not exist")
+    if target.exists() and not target.is_file():
+        raise CliError(f"{target}: not a regular file")
     try:
         if kind == "touchstone":
             ds.save_touchstone(target, frequency_unit=frequency_unit)

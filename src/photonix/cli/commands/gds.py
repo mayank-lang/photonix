@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 
-from .._common import CliError, ExitCode, add_json_flag, require, schema_id, sort_ports
+from .._common import CliError, ExitCode, add_json_flag, is_version, require, schema_id, sort_ports
 
 __all__ = ["register", "run_inspect", "render_inspect", "run_precheck", "render_precheck", "load_rules",
            "read_cell"]
@@ -195,7 +195,7 @@ def load_rules(path: str) -> dict[tuple[int, int], dict[str, float]]:
     except (OSError, json.JSONDecodeError) as exc:
         raise CliError(f"{source}: not valid JSON ({exc})") from exc
     if isinstance(data, Mapping) and "rules" in data:
-        if data.get("format", RULES_FORMAT) != RULES_FORMAT or int(data.get("version", 1)) != 1:
+        if data.get("format", RULES_FORMAT) != RULES_FORMAT or not is_version(data.get("version", 1)):
             raise CliError(f"{source}: expected format {RULES_FORMAT!r} version 1")
         data = data["rules"]
     if not isinstance(data, Mapping) or not data:

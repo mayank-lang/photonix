@@ -22,12 +22,12 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal  # noqa: F401  (Any: inherited dataclass field annotations)
 
 import numpy as np
 
 from .cell import OPTICAL, Cell, Port, Reference
-from .labels import ANCHORS, LabeledCell
+from .labels import ANCHORS, Label, LabeledCell  # noqa: F401  (Label: inherited dataclass field annotations)
 
 __all__ = [
     "grid", "pack", "align", "distribute", "reference_bbox", "DieCell", "FloorplanIssue",

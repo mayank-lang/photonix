@@ -130,3 +130,12 @@ def test_built_site_contains_every_documented_object(pages, documented):
     names = _inventory(inv)
     missing = sorted((documented | set(pages)) - names)
     assert not missing, f"planned but not rendered: {missing[:20]} ({len(missing)} total)"
+
+
+def test_every_docs_page_is_in_a_toctree():
+    """Each top-level docs/*.md page is reachable from docs/index.md (else sphinx -W fails)."""
+    index = (DOCS / "index.md").read_text(encoding="utf-8")
+    listed = set(re.findall(r"^([A-Za-z0-9_./-]+)$", index, flags=re.MULTILINE))
+    pages = {p.stem for p in DOCS.glob("*.md")} - {"index", "changelog", "examples"}
+    missing = sorted(p for p in pages if p not in listed)
+    assert not missing, f"docs pages missing from the docs/index.md toctrees: {missing}"

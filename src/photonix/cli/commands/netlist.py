@@ -5,7 +5,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .._common import CliError, ExitCode, parse_params, parse_wavelengths, schema_id
+from .._common import CliError, ExitCode, check_output, parse_params, parse_wavelengths, schema_id
 from .sweep import add_output_options, evaluate, render_spectrum, spectrum_payload
 
 __all__ = ["register", "run_simulate", "render_simulate"]
@@ -53,9 +53,13 @@ def run_simulate(args: argparse.Namespace) -> tuple[dict[str, Any], ExitCode]:
     source = Path(args.file)
     if not source.is_file():
         raise CliError(f"{source}: no such file")
+    if args.output is not None:
+        check_output(args.output, force=args.force)
     try:
-        netlist = Netlist.from_json(source)
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        # Read the file ourselves: Netlist.from_json treats a string starting
+        # with "{" as JSON text, so a path such as "{run1}.json" would break.
+        netlist = Netlist.from_dict(json.loads(source.read_text(encoding="utf-8")))
+    except (ValueError, TypeError, KeyError, AttributeError, UnicodeDecodeError) as exc:
         raise CliError(f"{source}: not a valid photonix netlist ({exc})") from exc
     models = model_registry(args)
     missing = sorted({m for m in netlist.instances.values() if m not in models})
