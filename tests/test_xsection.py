@@ -346,6 +346,45 @@ def test_material_resolution_protocols():
         rect(0, 1, 0, 1, "silicon")
 
 
+def test_photonix_materials_physics_sign_becomes_engineering_loss():
+    """photonix.materials returns n + i k (k >= 0 loss); xsection treats Im(n) < 0 as loss.  A lossy
+    material object must stay lossy: MaterialSpec.index is called with convention="engineering",
+    other photonix.materials objects (LorentzFit, bound methods) are conjugated, and plain numbers /
+    callables / foreign objects keep the xsection engineering convention unchanged."""
+    from photonix.materials import DrudeTerm, LorentzFit, doped_si, get_material
+
+    dsi = doped_si(electrons_cm3=1e19)
+    phys = complex(np.asarray(dsi.index(1.55)))
+    assert phys.imag > 0                                                   # physics sign: k >= 0
+    assert complex(resolve_index(dsi, 1.55)) == pytest.approx(phys.conjugate(), abs=1e-15)
+    assert complex(resolve_index(dsi.index, 1.55)) == pytest.approx(phys.conjugate(), abs=1e-15)
+    si = get_material("Si")
+    assert complex(resolve_index(si, 1.55, 300.0)) == pytest.approx(
+        complex(si.index(1.55, 300.0, convention="engineering")), abs=1e-15)
+    fit = LorentzFit(eps_inf=1.0, poles=(), drude=DrudeTerm(plasma_frequency=5.0, gamma=0.1),
+                     wl_range_um=(1.0, 2.0), max_abs_error=0.0, max_rel_error=0.0)
+    n_fit = complex(np.asarray(fit.index(1.55)))
+    assert n_fit.imag > 0
+    assert complex(resolve_index(fit, 1.55)) == pytest.approx(n_fit.conjugate(), abs=1e-15)
+    assert complex(resolve_index(fit.index, 1.55)) == pytest.approx(n_fit.conjugate(), abs=1e-15)
+    aniso = resolve_index((dsi, fit, 2.0 - 0.1j), 1.55)
+    assert np.all(aniso.imag < 0)
+    # Numbers, plain callables and foreign objects: already engineering sign, untouched.
+    assert complex(resolve_index(2.0 - 0.1j, 1.55)) == 2.0 - 0.1j
+    assert complex(resolve_index(lambda wl: 2.0 - 0.1j, 1.55)) == 2.0 - 0.1j
+    assert complex(resolve_index(em.Material("m", lambda wl: 2.0 - 0.1j), 1.55)) == 2.0 - 0.1j
+
+    class Aware:                                       # any convention-aware index gets "engineering"
+        def index(self, wl, *, convention="physics"):
+            return 2.0 + (0.1j if convention == "physics" else -0.1j)
+
+    assert complex(resolve_index(Aware(), 1.55)) == 2.0 - 0.1j
+    # End to end: a doped-Si core gives a decaying mode (Im n_eff < 0).
+    m = solve_modes(XSection([rect(-0.25, 0.25, 0.0, 0.22, dsi)], background=N_OX), resolution=15,
+                    margin=0.8, smoothing="arithmetic")
+    assert m.n_eff[0].imag < 0
+
+
 def test_region_validation():
     with pytest.raises(ValueError, match="not simple"):
         polygon([(0, 0), (2, 2), (2, 0), (0, 1)], 2.0)                      # crossed edges

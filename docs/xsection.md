@@ -36,7 +36,25 @@ cs = xs.strip(0.5, 0.22).to_em(resolution=40)                    # drop-in em.Cr
 | `from_layer_stack(stack, features)` | Adapter from `photonix.pdk.LayerStack`: unpatterned levels become bands, each `(layer, x_center, width[, sidewall_deg])` feature a trapezoid, painted in stack order. Accepts the `{layer: width}` mapping of `LayerStack.cross_section`. |
 | `solve_modes`, `n_eff`, `yee_permittivity` | Full-vector Yee-grid modes with per-component (staggered) tensor smoothing including `eps_xy`; anisotropic and lossy media; `n_eff` is differentiable through the geometry under JAX. |
 | `n_eff_convergence` | Grid-refinement study (`photonix.em.estimate_convergence`) of `n_eff`, by default with the tent kernel. |
-| `resolve_index`, `resolve_property` | Duck-typed materials: a number, a callable `n(wl)`, any object with `index(wl[, temperature])`, or a 3-tuple `(n_x, n_y, n_z)` for diagonal anisotropy. No material database is imported. |
+| `resolve_index`, `resolve_property` | Duck-typed materials: a number, a callable `n(wl)`, any object with `index(wl[, temperature])`, or a 3-tuple `(n_x, n_y, n_z)` for diagonal anisotropy. No material database is imported. Sign: see [Loss sign convention](#loss-sign-convention). |
+
+## Loss sign convention
+
+`photonix.xsection` and the `photonix.em` solvers use the engineering sign
+(`exp(-j beta z)`): **`Im(n) < 0` is loss**, and a lossy mode has
+`Im(n_eff) < 0`. `photonix.materials` returns the physics sign `n + i k`
+(`k >= 0` is loss). `resolve_index` converts automatically:
+
+1. an `index` method or callable with a `convention` keyword
+   (`MaterialSpec.index`, i.e. everything from `get_material`, `doped_si`, ...)
+   is called with `convention="engineering"`;
+2. any other object or bound method defined in `photonix.materials` (e.g. a
+   `LorentzFit`) is complex-conjugated;
+3. numbers, plain callables and other objects are used as they are -- they
+   must already follow the engineering sign (write `3.48 - 0.01j`, not
+   `3.48 + 0.01j`, for an absorbing medium).
+
+The rule applies to each entry of an anisotropic 3-tuple.
 
 ## Algorithms
 
