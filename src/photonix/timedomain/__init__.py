@@ -46,6 +46,7 @@ from .elements import (
     centered_frequencies,
     design_fir,
     fir_response,
+    lagrange_layout,
     lagrange_taps,
     parse_interp,
     planck_taper,
@@ -89,7 +90,7 @@ __all__ = [
     "Waveform", "cw", "gaussian_pulse", "carrier_frequency",
     # elements and FIR design
     "TDElement", "CompiledTD", "Channel", "MemorylessTD", "DelayLineTD", "FIRTD", "PoleResidueTD",
-    "TimeVaryingTD", "CompositeTD", "lagrange_taps", "thiran_coefficients", "split_instantaneous",
+    "TimeVaryingTD", "CompositeTD", "lagrange_taps", "lagrange_layout", "thiran_coefficients", "split_instantaneous",
     "design_fir", "window_taps", "fir_response", "planck_taper", "tail_support", "centered_frequencies",
     "parse_interp",
     # conversion and network

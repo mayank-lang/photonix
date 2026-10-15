@@ -32,6 +32,7 @@ from photonix.timedomain import (
     design_fir,
     fir_from_model,
     gaussian_pulse,
+    lagrange_layout,
     lagrange_taps,
     thiran_coefficients,
     to_td,
@@ -552,3 +553,264 @@ def test_inputs_are_validated():
         tdc.simulate({"in": cw(1e-3, 10, 0.1e-12, carrier_wl=1.31)})
     recs = tdc.simulate({"in": cw(1e-3, 50, 0.1e-12)}, record="all")
     assert set(recs) == {"x,o1", "x,o2"}
+
+
+# --------------------------------------------------------------------------- #
+# Review regressions: causality of generic fits, structural rules, passivity of short delays,
+# chirp convention, singular loops through time-varying elements
+# --------------------------------------------------------------------------- #
+def _one_pole(*, wl=1.55, bw=100e9):
+    """A causal single-pole low-pass, ``h(t) = 2 pi bw exp(-2 pi bw t) u(t)``."""
+    h = 1.0 / (1.0 + 1j * (C0_UM_S / np.asarray(wl) - FC) / bw)
+    return {("o1", "o2"): h, ("o2", "o1"): h}
+
+
+def _channel_response(el, dt, nu):
+    """``o1 -> o2`` response of a compiled two-port element on frequency offsets ``nu``."""
+    c = el.compile(dt)
+    z = np.exp(2j * np.pi * nu * dt)
+    i1, i2 = c.ports.index("o1"), c.ports.index("o2")
+    h = np.full(nu.shape, complex(np.asarray(c.D)[i2, i1]))
+    for ch in c.channels:
+        if (ch.src, ch.dst) == ("o1", "o2"):
+            b = np.asarray(ch.b, dtype=complex)
+            num = sum(b[m] * z ** (-(ch.n0 + m)) for m in range(b.size))
+            den = 1.0 if ch.a is None else 1.0 + sum(complex(a) * z ** (-(p + 1)) for p, a in enumerate(ch.a))
+            h = h + num / den
+    return h
+
+
+def test_causal_models_get_causal_fits_without_latency():
+    dt = 0.1e-12
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")                   # no latency warning, no fit-error warning
+        el = fir_from_model(_one_pole, dt=dt)
+    assert el.added_delay_s == 0.0 and el.fit_error < 1e-4
+    assert all(n0 >= 0 for n0, _ in el.taps.values())
+    nu = centered_frequencies(2048, dt)
+    tdc = TimeDomainCircuit({"f": el}, {}, {"a": ("f", "o1"), "b": ("f", "o2")}, dt=dt)
+    resp = np.asarray(tdc.discrete_response(nu)[("a", "b")])
+    inband = np.abs(nu) * 2 * dt <= 0.5
+    assert np.max(np.abs(resp - np.asarray(_one_pole(wl=_wl(nu))[("o1", "o2")]))[inband]) < 1e-4
+    assert np.max(np.abs(resp)) <= 1.0 + 1e-12                  # strictly passive
+    # a 1 mm pn phase shifter (plasma dispersion: not quite a pure delay) is causal too
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        pn = to_td(px.components.pn_phase_shifter, {"length": 1000.0}, dt=0.5e-12)
+    assert isinstance(pn, FIRTD) and pn.added_delay_s == 0.0 and pn.fit_error < 1e-4
+
+
+def test_causal_filter_in_one_mzi_arm_matches_the_frequency_domain():
+    dt = 0.1e-12
+    nl = Netlist(name="mzi")
+    nl.add("s", "mmi1x2").add("j", "mmi1x2").add("f", "onepole").add("w", "straight", length=0.0001)
+    nl.connect(("s", "o2"), ("f", "o1")).connect(("f", "o2"), ("j", "o2"))
+    nl.connect(("s", "o3"), ("w", "o1")).connect(("w", "o2"), ("j", "o3"))
+    nl.expose("in", ("s", "o1")).expose("out", ("j", "o1"))
+    models = dict(px.components.MODELS)
+    models["onepole"] = _one_pole
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")                  # the 0.1 nm arm is shorter than a step
+        tdc = TimeDomainCircuit.from_netlist(nl, models, carrier_wl=1.55, dt=dt)
+    nu = np.array([0.0, 100e9, 300e9, 1e12])
+    td = np.asarray(tdc.discrete_response(nu)[("in", "out")])
+    fd = np.asarray(px.circuit.circuit_from_netlist(nl, models)(wl=_wl(nu))[("in", "out")])
+    assert np.max(np.abs(td - fd)) < 1e-4                # was 0.34 at 100 GHz with 1.6 ps of latency
+
+
+def test_ring_containing_an_mzi_keeps_its_fsr():
+    dt = 0.1e-12
+    nl = Netlist(name="ring_mzi")
+    nl.add("c", "directional_coupler", coupling=0.2).add("rw", "straight", length=200.0)
+    nl.add("m", "mzi", delta_length=20.0)
+    nl.connect(("c", "o3"), ("rw", "o1")).connect(("rw", "o2"), ("m", "o1")).connect(("m", "o2"), ("c", "o2"))
+    nl.expose("in", ("c", "o1")).expose("out", ("c", "o4"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tdc = TimeDomainCircuit.from_netlist(nl, carrier_wl=1.55, dt=dt)
+    assert isinstance(tdc.elements["m"], CompositeTD)
+    nu = np.linspace(-200e9, 200e9, 2001)
+    td = np.abs(np.asarray(tdc.discrete_response(nu)[("in", "out")])) ** 2
+    fd = np.abs(np.asarray(px.circuit.circuit_from_netlist(nl)(wl=_wl(nu))[("in", "out")])) ** 2
+    assert np.max(np.abs(td - fd)) < 1e-5                # was 0.17 (resonances moved) with 3 ps of latency
+
+
+@pytest.mark.parametrize("model, settings, pairs, tol", [
+    ("ring_single", {"gap": 0.2}, [("o1", "o2")], 1e-4),
+    ("ring_single", {"gap": 0.25, "length_x": 5.0, "loss_db_cm": 20.0}, [("o1", "o2")], 1e-4),
+    ("ring_double", {"gap": 0.2, "gap2": 0.25}, [("o1", "o2"), ("o1", "o3"), ("o4", "o3"), ("o4", "o2")], 1e-4),
+    ("mzi", {"delta_length": 20.0}, [("o1", "o2"), ("o1", "o3")], 1e-6),
+    ("mzi", {"delta_length": 200.0, "coupling": 0.3, "loss_db_cm": 10.0}, [("o1", "o2"), ("o1", "o3")], 1e-6),
+])
+def test_structural_rules_for_ring_single_ring_double_and_mzi(model, settings, pairs, tol):
+    fn = getattr(px.components, model)
+    dt = 0.05e-12
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")                  # length_x / 2 bus sections are shorter than a step
+        el = to_td(fn, settings, dt=dt)
+        tdc = TimeDomainCircuit({"r": el}, {}, {p: ("r", p) for p in el.ports}, dt=dt)
+    assert isinstance(el, CompositeTD)
+    assert not any(isinstance(sub, FIRTD) for sub in el.elements.values())
+    nu = np.linspace(-20e9, 20e9, 401)
+    resp = tdc.discrete_response(nu)
+    ref = fn(wl=_wl(nu), **settings)
+    for pair in pairs:
+        r, f = np.asarray(resp[pair]), np.asarray(ref[pair])
+        assert abs(r[200] - f[200]) < 1e-12              # exact at the carrier
+        # Lagrange interpolation and (rings) the coupling dispersion neglected by the memoryless bus coupler
+        assert np.max(np.abs(r - f)) < tol
+
+
+def test_mzi_with_a_longer_bottom_arm_is_non_causal_and_rejected_in_loops():
+    dt = 0.1e-12
+    with pytest.warns(UserWarning, match="no causal FIR"):
+        el = to_td(px.components.mzi, {"delta_length": -35.0}, dt=dt)
+    assert isinstance(el, FIRTD) and el.added_delay_s > 0     # the closed form advances the response
+    nl = Netlist(name="ring_mzi")
+    nl.add("c", "directional_coupler", coupling=0.2).add("rw", "straight", length=200.0)
+    nl.add("m", "mzi", delta_length=-35.0)
+    nl.connect(("c", "o3"), ("rw", "o1")).connect(("rw", "o2"), ("m", "o1")).connect(("m", "o2"), ("c", "o2"))
+    nl.expose("in", ("c", "o1")).expose("out", ("c", "o4"))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(ValueError, match="added latency"):
+            TimeDomainCircuit.from_netlist(nl, carrier_wl=1.55, dt=dt)
+
+
+def test_latency_is_rejected_in_loops_and_parallel_paths_but_not_in_series():
+    dt = 0.1e-12
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        gc = fir_from_model(px.components.grating_coupler, {"bandwidth": 0.004}, dt=dt)
+    assert gc.added_delay_s > 0
+    cpl = MemorylessTD.from_sdict(px.components.directional_coupler(coupling=0.3))
+    wg = DelayLineTD(tau_s=5e-12)
+    # in a ring loop
+    with pytest.raises(ValueError, match="feedback loop or between parallel paths"):
+        TimeDomainCircuit({"c": cpl, "g": gc, "w": wg}, {("c", "o3"): ("g", "o1"), ("g", "o2"): ("w", "o1"),
+                                                          ("w", "o2"): ("c", "o2")},
+                          {"in": ("c", "o1"), "out": ("c", "o4")}, dt=dt)
+    # in one arm of an interferometer
+    c2 = MemorylessTD.from_sdict(px.components.directional_coupler(coupling=0.5))
+    with pytest.raises(ValueError, match="added latency"):
+        TimeDomainCircuit({"a": cpl, "b": c2, "g": gc, "w": wg},
+                          {("a", "o4"): ("g", "o1"), ("g", "o2"): ("b", "o1"),
+                           ("a", "o3"): ("w", "o1"), ("w", "o2"): ("b", "o2")},
+                          {"in": ("a", "o1"), "out": ("b", "o4")}, dt=dt)
+    # in series (edge of the circuit): accepted
+    TimeDomainCircuit({"g": gc, "w": wg}, {("g", "o2"): ("w", "o1")}, {"in": ("g", "o1"), "out": ("w", "o2")}, dt=dt)
+
+
+def test_non_causal_latency_warning_is_worded_correctly():
+    with pytest.warns(UserWarning, match=r"no causal FIR reproduces .*best causal in-band error"):
+        fir_from_model(px.components.grating_coupler, {"bandwidth": 0.004}, dt=0.1e-12)
+
+
+def test_causal_fit_can_be_rebuilt_from_new_settings():
+    dt = 0.1e-12
+    el = fir_from_model(_one_pole, dt=dt)
+    assert any(spec[0] == "lsq" for spec in el.design.pairs.values())
+    el2 = fir_from_model(_one_pole, {"bw": 105e9}, dt=dt, like=el)
+    assert el2.added_delay_s == 0.0 and el2.fit_error < 1e-3
+    assert {k: (n0, len(h)) for k, (n0, h) in el2.taps.items()} == {k: (n0, len(h)) for k, (n0, h) in el.taps.items()}
+
+
+@requires_jax
+def test_gradient_through_a_causal_least_squares_fit():
+    dt = 0.1e-12
+    el = fir_from_model(_one_pole, dt=dt)
+
+    def energy(bw):
+        new = fir_from_model(_one_pole, {"bw": bw}, dt=dt, like=el)
+        return sum(px.xp.sum(px.xp.abs(h) ** 2) for _, h in new.taps.values())
+
+    g = float(px.grad(energy)(100e9))
+    fd = float(finite_diff(lambda b: float(energy(b)), 100e9, h=1e6))
+    assert abs(g - fd) <= 1e-4 * abs(fd)
+
+
+def test_every_delay_line_design_is_passive_even_for_sub_step_delays():
+    dt = 1e-12
+    nu = np.linspace(-0.5, 0.5, 801) / dt
+    for order in (1, 3, 5, 7, 15):
+        for d in np.linspace(0.0, 6.0, 49):
+            n0, o = lagrange_layout(d, order)
+            assert o <= order and o % 2 == 1
+            assert (o - 1) / 2 - 1e-12 <= d - n0 <= (o + 1) / 2 + 1e-12      # centred
+            el = DelayLineTD(tau_s=d * dt, interp=f"lagrange{order}")
+            assert np.max(np.abs(_channel_response(el, dt, nu))) <= 1.0 + 1e-12
+    for d in np.linspace(0.0, 6.0, 25):
+        assert np.max(np.abs(_channel_response(DelayLineTD(tau_s=d * dt, interp="nearest"), dt, nu))) <= 1 + 1e-12
+        if d >= 2.5:
+            el = DelayLineTD(tau_s=d * dt, interp="thiran3")
+            assert np.max(np.abs(_channel_response(el, dt, nu))) <= 1.0 + 1e-12
+    # the pure-delay pairs of a sampled FIR element use the same centred layout
+    tau = 0.4 * dt
+
+    def short_delay(*, wl=1.55):
+        h = 0.9 * np.exp(-2j * np.pi * (C0_UM_S / np.asarray(wl) - FC) * tau)
+        return {("o1", "o2"): h, ("o2", "o1"): h}
+
+    el = fir_from_model(short_delay, dt=dt)
+    spec = el.design.pairs[("o1", "o2")]
+    assert spec[0] == "delay" and spec[2] == 1 and el.added_delay_s == 0.0
+    tdc = TimeDomainCircuit({"x": el}, {}, {"a": ("x", "o1"), "b": ("x", "o2")}, dt=dt)
+    assert np.max(np.abs(np.asarray(tdc.discrete_response(nu)[("a", "b")]))) <= 0.9 + 1e-12
+
+
+def test_lossless_ring_with_a_round_trip_shorter_than_a_step_is_stable():
+    dt = 1.0e-12                                         # ring round trip n_g L / c = 0.88 ps < dt
+    nl = Netlist(name="ring")
+    nl.add("c", "directional_coupler", coupling=0.05).add("rw", "straight", length=2 * np.pi * 10.0, loss_db_cm=0.0)
+    nl.connect(("c", "o3"), ("rw", "o1")).connect(("rw", "o2"), ("c", "o2"))
+    nl.expose("o1", ("c", "o1")).expose("o2", ("c", "o4"))
+    with pytest.warns(UserWarning, match="shorter than one time step"):
+        tdc = TimeDomainCircuit.from_netlist(nl, carrier_wl=1.55, dt=dt)
+    nu = np.linspace(-0.5 / dt, 0.5 / dt, 1001)
+    assert np.max(np.abs(np.asarray(tdc.discrete_response(nu)[("o1", "o2")]))) <= 1.0 + 1e-12   # was 2.30
+    out = tdc.simulate({"o1": cw(1e-3, 3000, dt)})
+    p = np.abs(np.asarray(out["o2"].samples)) ** 2
+    assert np.max(np.abs(p[100:] - 1e-3)) < 1e-9        # was 2.4e92 W after 3000 steps
+
+
+@pytest.mark.parametrize("chirp", [2.0, -2.0, 0.7])
+@pytest.mark.parametrize("b2_over_t0sq", [0.5, -0.5])
+def test_chirped_gaussian_broadening_follows_agrawal(chirp, b2_over_t0sq):
+    dt, n, fwhm = 0.02e-12, 6000, 1e-12
+    T0 = fwhm / (2 * math.sqrt(math.log(2)))
+    el = DelayLineTD(tau_s=40e-12, beta2_l_s2=b2_over_t0sq * T0 ** 2)
+    tdc = TimeDomainCircuit({"w": el}, {}, {"a": ("w", "o1"), "b": ("w", "o2")}, dt=dt)
+    x = gaussian_pulse(fwhm, n, dt, chirp=chirp, t_center=10e-12)
+    y = tdc.simulate({"a": x})["b"]
+
+    def rms(w):
+        p = np.abs(np.asarray(w.samples)) ** 2
+        t = np.arange(p.size) * dt
+        m = np.sum(p * t) / np.sum(p)
+        return math.sqrt(np.sum(p * (t - m) ** 2) / np.sum(p))
+
+    b = b2_over_t0sq
+    assert abs(rms(y) / rms(x) - math.sqrt((1 + chirp * b) ** 2 + b ** 2)) < 1e-4
+    # Agrawal's C > 0 is an up-chirp: the instantaneous frequency rises through the pulse
+    e = np.asarray(x.samples)
+    f_inst = np.gradient(np.unwrap(np.angle(e)), dt) / (2 * np.pi)
+    k = int(round(10e-12 / dt))
+    assert f_inst[k + 10] - f_inst[k - 10] == pytest.approx(chirp * 20 * dt / (2 * np.pi * T0 ** 2), rel=1e-3)
+
+
+def test_singular_zero_delay_loop_through_a_time_varying_element_is_rejected():
+    dt = 0.1e-12
+    cpl = MemorylessTD.from_sdict(px.components.directional_coupler(coupling=0.0))
+    pm = TimeVaryingTD(("o1", "o2"), lambda t, v: {("o1", "o2"): np.exp(-1j * v), ("o2", "o1"): np.exp(-1j * v)},
+                       ("v",))
+    tdc = TimeDomainCircuit({"c": cpl, "p": pm}, {("c", "o3"): ("p", "o1"), ("p", "o2"): ("c", "o2")},
+                            {"in": ("c", "o1"), "out": ("c", "o4")}, dt=dt)
+    with pytest.raises(ValueError, match="zero-delay"):            # was a silent NaN output
+        tdc.simulate({"in": cw(1e-3, 50, dt)}, controls={"v": np.zeros(50)})
+    # the same loop with a partially transmitting modulator is regular and is solved exactly
+    pm_half = TimeVaryingTD(("o1", "o2"), lambda t, v: {("o1", "o2"): 0.5 * np.exp(-1j * v),
+                                                        ("o2", "o1"): 0.5 * np.exp(-1j * v)}, ("v",))
+    tdc = TimeDomainCircuit({"c": cpl, "p": pm_half}, {("c", "o3"): ("p", "o1"), ("p", "o2"): ("c", "o2")},
+                            {"in": ("c", "o1"), "out": ("c", "o4")}, dt=dt)
+    out = tdc.simulate({"in": cw(1e-3, 50, dt)}, controls={"v": np.zeros(50)})
+    assert np.all(np.isfinite(np.asarray(out["out"].samples)))
