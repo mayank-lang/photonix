@@ -30,12 +30,9 @@ def plot_mode(field, x=None, y=None, *, ax=None, cmap: str = "RdBu_r"):
     >>> ax.get_xlabel()
     'x (µm)'
     """
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
-    import matplotlib.pyplot as plt
-
     if ax is None:
+        import matplotlib.pyplot as plt
+
         _, ax = plt.subplots(figsize=(5, 4))
     f = to_numpy(field)
     if f.ndim != 2 or f.size == 0:

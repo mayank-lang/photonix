@@ -16,12 +16,9 @@ def plot_netlist(netlist, *, ax=None):
     """
     import math
 
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
-    import matplotlib.pyplot as plt
-
     if ax is None:
+        import matplotlib.pyplot as plt
+
         _, ax = plt.subplots(figsize=(6, 5))
 
     insts = list(netlist.instances)

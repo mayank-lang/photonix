@@ -1,7 +1,9 @@
-"""photonix visualization subpackage (matplotlib, Agg-safe).
+"""photonix visualization subpackage (matplotlib).
 
 Every function returns a matplotlib ``Axes`` and never calls ``plt.show()`` so it
-composes into larger figures and runs headless.
+composes into larger figures and runs headless. The helpers never select a
+matplotlib backend: the caller's backend (svg, inline, Qt, ...) is left as is,
+and ``matplotlib.pyplot`` is only imported when no ``ax`` is passed.
 """
 from __future__ import annotations
 

@@ -15,14 +15,12 @@ def plot_cell(cell, *, ax=None, show_ports: bool = True):
     -------
     matplotlib.axes.Axes
     """
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
-    import matplotlib.pyplot as plt
     import numpy as np
     from matplotlib.patches import Polygon as MplPolygon
 
     if ax is None:
+        import matplotlib.pyplot as plt
+
         _, ax = plt.subplots(figsize=(6, 4))
 
     get_polygons = getattr(cell, "get_polygons", None)
