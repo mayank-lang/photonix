@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import warnings
 
 import numpy as np
 import pytest
@@ -25,7 +26,7 @@ from scipy.optimize import linear_sum_assignment
 import photonix as px
 from photonix import macromodel as mm
 from photonix.analysis import find_resonances, impulse_response, pulse_response
-from photonix.macromodel.passivity import _band_gram
+from photonix.macromodel.passivity import _band_gram, _energy_gram
 
 C_UM = 299792458e6  # um/s
 
@@ -468,6 +469,133 @@ def test_enforcement_clips_an_active_direct_term():
     fixed = mm.enforce_passivity(m, margin=1e-6)
     assert np.linalg.svd(fixed.d, compute_uv=False).max() == pytest.approx(1 - 1e-6)
     assert mm.passivity_report(fixed).passive
+
+
+def _quiet_fit(wl, sdict):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return mm.vector_fit(wl, {k: px.to_numpy(v) for k, v in sdict.items()})
+
+
+def test_damped_enforcement_converges_where_the_full_step_diverged():
+    """Regression: the undamped first-order step overshot and diverged (max_sigma 1.1e4 after 50 iterations
+    for residues x 1.05, 5.5e5 for a 1 % gain on the data), and the diverged iterate was returned."""
+    wl = np.linspace(1.54, 1.56, 801)
+    ring = px.components.add_drop_ring(wl=wl, coupling1=0.1, coupling2=0.1)
+    fit = _quiet_fit(wl, ring)
+    bad = fit.replace(residues=fit.residues * 1.05)
+    assert mm.passivity_report(bad).max_sigma > 1.07
+    fixed = mm.enforce_passivity(bad)
+    info = fixed.metadata["passivity_enforcement"]
+    report = mm.passivity_report(fixed)
+    assert info["passive"] and info["certified"] and report.passive and report.certified
+    assert report.max_sigma <= 1.0 and info["relative_rms_change"] < 0.02
+    # A 1 % gain on the data: sigma_max(D) > 1 is clipped first, and the 4-port's degenerate singular-value
+    # pairs need the cluster (off-diagonal) constraints for the step to be a descent direction.
+    gain = _quiet_fit(wl, {k: 1.01 * px.to_numpy(v) for k, v in ring.items()})
+    assert mm.passivity_report(gain).sigma_max_d > 1.0
+    fixed = mm.enforce_passivity(gain)
+    assert fixed.metadata["passivity_enforcement"]["passive"] and mm.passivity_report(fixed).passive
+    assert fixed.metadata["passivity_enforcement"]["relative_rms_change"] < 0.1
+
+
+def test_failed_enforcement_never_returns_a_worse_model():
+    wl = np.linspace(1.54, 1.56, 801)
+    ring = px.components.add_drop_ring(wl=wl, coupling1=0.1, coupling2=0.1)
+    bad = _quiet_fit(wl, ring)
+    bad = bad.replace(residues=bad.residues * 1.05)
+    before = mm.passivity_report(bad).max_sigma
+    with pytest.warns(RuntimeWarning, match="least-violating"):
+        partial = mm.enforce_passivity(bad, max_iter=1)
+    info = partial.metadata["passivity_enforcement"]
+    assert not info["passive"] and not info["returned_input"]
+    assert mm.passivity_report(partial).max_sigma == pytest.approx(info["max_sigma"])
+    assert info["max_sigma"] < before
+    # Clipping sigma_max(D) of a 1 % gain fit raises the peak; with no iterations left the input is returned.
+    gain = _quiet_fit(wl, {k: 1.01 * px.to_numpy(v) for k, v in ring.items()})
+    with pytest.warns(RuntimeWarning, match="input model unchanged"):
+        same = mm.enforce_passivity(gain, max_iter=0)
+    assert same.metadata["passivity_enforcement"]["returned_input"]
+    assert np.array_equal(same.residues, gain.residues) and np.array_equal(same.d, gain.d)
+
+
+def _rf_two_port(scale):
+    rng = np.random.default_rng(3)
+    pp = -rng.uniform(0.2e9, 1e9, 3) + 2j * np.pi * rng.uniform(2e9, 15e9, 3)
+    poles = np.concatenate([pp, pp.conj(), [-3e9 + 0j]])
+    r = (rng.normal(size=(3, 2, 2)) + 1j * rng.normal(size=(3, 2, 2))) * 1.5e9
+    r = r + np.swapaxes(r, 1, 2)
+    rr = rng.normal(size=(1, 2, 2))
+    rr = (rr + np.swapaxes(rr, 1, 2)) * 2e9
+    res = np.concatenate([r, r.conj(), rr.astype(complex)]) * scale
+    d = np.array([[0.35, 0.4], [0.4, 0.1]])
+    return mm.RationalModel(("o1", "o2"), 0.0, poles, res, d, metadata={"fit_band_hz": [1e9, 20e9]})
+
+
+def test_real_system_energy_covers_the_mirror_band():
+    """Regression: with the energy Gram on the positive band only, the poles with Im < 0 were nearly free
+    and enforcement of a mildly active RF two-port diverged (max_sigma 7.8e72)."""
+    a = np.array([-0.05 + 0.3j, -0.05 - 0.3j, -0.2 + 0j])
+    G, h = _energy_gram(a, 0.1, 0.9, mirrored=True)
+    G1, h1 = _band_gram(a, 0.1, 0.9)
+    G2, h2 = _band_gram(a, -0.9, -0.1)
+    assert np.allclose(G, 0.5 * (G1 + G2)) and np.allclose(h, 0.5 * (h1 + h2))
+    assert np.allclose(_energy_gram(a, -0.2, 0.9, mirrored=True)[0], _band_gram(a, -0.9, 0.9)[0])
+    for scale in (0.021, 0.03):
+        m = _rf_two_port(scale)
+        assert not mm.passivity_report(m).passive
+        fixed = mm.enforce_passivity(m)
+        info = fixed.metadata["passivity_enforcement"]
+        assert info["passive"] and mm.passivity_report(fixed).passive
+        assert fixed.is_real_system and info["relative_rms_change"] < 0.05
+
+
+def test_direct_term_clipping_keeps_a_real_system_real():
+    """Regression: the D-clipping compensation was not conjugate-symmetrized, so the output was no longer a
+    real system and ``to_statespace(real=True)`` raised."""
+    p = -1e9 + 2j * np.pi * 8e9
+    m = mm.RationalModel(("o1",), 0.0, np.array([p, np.conj(p)]),
+                         np.array([[[-0.3e9 + 0.1e9j]], [[-0.3e9 - 0.1e9j]]]), np.array([[1.02]]),
+                         metadata={"fit_band_hz": [1e9, 20e9]})
+    assert m.is_real_system
+    fixed = mm.enforce_passivity(m)
+    assert fixed.metadata["passivity_enforcement"]["d_clipped"]
+    assert fixed.is_real_system and mm.passivity_report(fixed).passive
+    f = np.linspace(1e9, 20e9, 7)
+    assert np.allclose(fixed.response(-f), np.conj(fixed.response(f)))
+    assert np.allclose(fixed.to_statespace(real=True).response(f), fixed.response(f))
+
+
+def test_nearly_unitary_direct_term_is_not_certified_falsely():
+    """Regression: with sigma_max(D) = 1 + 5e-12 (a lossless all-pass fit) the ill-conditioned Hamiltonian
+    missed the crossings and the model was certified passive although sigma_max - 1 = 1.3e-8 > tol."""
+    # Two all-pass sections -(s + conj p) / (s - p) = -1 - 2 Re(p) / (s - p), |S| = 1 on the axis, with
+    # sigma_max(D) = 1 + 5e-12 and residues x (1 + 1e-8): sigma_max = 1 + 2e-8 at the resonances.
+    p = np.array([-0.02 + 0.3j, -0.05 - 0.4j])
+    res = np.zeros((2, 2, 2), complex)
+    res[0, 0, 0], res[1, 1, 1] = -2 * p.real * (1 + 1e-8)
+    m = mm.RationalModel(("o1", "o2"), 0.0, p, res, -np.eye(2) * (1 + 5e-12) + 0j,
+                         metadata={"fit_band_hz": [-0.1, 0.1]})
+    report = mm.passivity_report(m)
+    assert not report.passive and not report.certified
+    assert report.max_sigma == pytest.approx(1 + 2e-8, abs=1e-10)
+    x = np.linspace(-1, 1, 20001) / (2 * np.pi)
+    over = np.linalg.svd(m.response(x), compute_uv=False)[:, 0] > 1 + 1e-9
+    inside = np.zeros(x.size, bool)
+    for lo, hi in report.violation_bands_hz:
+        inside |= (x >= lo) & (x <= hi)
+    assert over.any() and np.all(inside[over])  # every swept violation lies in a reported band
+    # A real lossless fit (D unitary to ~1e-11): the verdict agrees with max_sigma but is not certified,
+    # and enforcement (which clips D to 1 - margin) yields a certified passive model at negligible cost.
+    wl = np.linspace(1.54, 1.56, 801)
+    fit = _quiet_fit(wl, px.components.all_pass_ring(wl=wl, coupling=0.1, loss_db_cm=0.0))
+    report = mm.passivity_report(fit)
+    assert abs(report.sigma_max_d - 1) < 1e-9 and not report.certified
+    assert report.passive == (report.max_sigma <= 1 + 1e-9)
+    fixed = mm.enforce_passivity(fit)
+    report = mm.passivity_report(fixed)
+    assert report.passive and report.certified  # sigma_max(D) is clipped to 1 - margin
+    assert fixed.metadata["passivity_enforcement"]["relative_rms_change"] < 1e-5
 
 
 # --------------------------------------------------------------------------- #

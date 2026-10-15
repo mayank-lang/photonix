@@ -59,7 +59,7 @@ y = model.simulate(u, dt)                        # exact delayed response to sam
 | `fit_dataset(ds, **kw)`, `SParameterDataset.to_rational(**kw)` | Fit a dataset, keeping its ports and metadata. |
 | `estimate_delays(freq_hz, S)` | Conservative per-entry arrival delays. |
 | `passivity_report(model)` | Hamiltonian crossings, violation bands, peaks, `max_sigma`, `certified`. |
-| `enforce_passivity(model, margin=1e-6, band_hz=None)` | Minimum in-band-energy residue perturbation until the Hamiltonian is clean. |
+| `enforce_passivity(model, margin=1e-6, band_hz=None)` | Damped minimum in-band-energy residue perturbation until the Hamiltonian is clean; never returns a model with a larger violation than the input. |
 | `hamiltonian_matrix(model)` | The scattering Hamiltonian (rad/s). |
 | `causality_report(wavelengths, S)` | Generalized Kramers-Kronig test with truncation and discretization bounds. |
 
@@ -112,14 +112,33 @@ fitted band. The imaginary eigenvalues of the scattering Hamiltonian
 (`R = D^H D - I`, `Q = D D^H - I`, valid for complex realizations) are the
 frequencies where a singular value equals one (Grivet-Talocia 2004). Candidate
 eigenvalues are accepted generously and each interval between them is
-classified by evaluation, so near-tangencies cannot hide a band. Enforcement
-first clips `sigma_max(D)` to `1 - margin` (re-fitting the residues in band to
-compensate), then repeatedly linearizes `delta sigma = Re(u^H delta S v)` at every
-local maximum above one and applies the perturbation of the residues with
-minimum in-band energy `integral_band ||delta S||_F^2` (an exact closed-form Gram
-matrix, no sampling) that brings each peak to `1 - margin`. Reciprocity and
-real-system symmetry are preserved when present; residues that are structurally
-zero stay zero.
+classified by evaluation, so near-tangencies cannot hide a band. The verdict
+is cross-checked on a dense sweep (band ± 50 %, every pole's neighbourhood, a
+sparse tail to 100× the band). When a singular value of `D` is within 1e-6 of
+one, `R` and `Q` are nearly singular: the crossings are then computed for
+`S / (1 + tol)`, and if `||R^-1|| > 1e8` (a lossless fit whose `D` is unitary
+to ~1e-9) or the sweep finds a violation the Hamiltonian missed, the swept
+violations are reported and `certified=False`.
+
+Enforcement first clips `sigma_max(D)` to `1 - margin` (re-fitting the residues
+in band to compensate), then repeatedly linearizes `delta sigma = Re(u^H delta S v)`
+at every local maximum above one (for a cluster of singular values closer than
+the planned correction, the Hermitian part of `U^H delta S V`, whose
+off-diagonal entries are held at zero so that the cluster does not split) and
+computes the perturbation of the residues with minimum in-band energy
+`integral_band ||delta S||_F^2` (an exact closed-form Gram matrix, no sampling)
+that brings each peak to `1 - margin`. For a real (RF) system the energy is
+taken over the band and its mirror image `[-f_hi, -f_lo]`, since `S(-f) =
+conj(S(f))`; over the positive band alone the poles with `Im p < 0` are
+nearly free and the mirrored constraints were met by enormous residue changes.
+A backtracking line search (step halved up to 10 times) accepts a step only if
+it lowers the worst singular value, so the violation decreases monotonically.
+If the iteration stalls or `max_iter` is reached, a `RuntimeWarning` is issued
+and the least-violating model is returned (the input itself if nothing beat
+it; `metadata["passivity_enforcement"]` has `passive`, `max_sigma` and
+`returned_input`). Reciprocity and real-system symmetry (including in the
+`D`-clipping compensation) are preserved when present; residues that are
+structurally zero stay zero.
 
 **Causality.** Generalized dispersion relations with `n` subtractions
 (Triverio & Grivet-Talocia 2008) reconstruct each entry from its own in-band
@@ -153,6 +172,10 @@ All rows are executable tests in `tests/test_macromodel.py`.
 | `all_pass_ring`, `add_drop_ring`, uniform and apodized `bragg_grating` (40 nm, 2001 samples, all defaults) | the analytic models on a 4× denser offset grid | 8, 8, 20, 20 poles; RMS 2.5e-6, 1.3e-5, 7.8e-7, 2.5e-7 between samples | 3 |
 | Add-drop fit with residues × 1.02 | dense σ_max sweep (1e5 points) | reported violation band equals the sweep sample-for-sample; enforced model passive on a 20× grid, no imaginary Hamiltonian eigenvalues, in-band change 2.0× the pointwise lower bound `RMS(σ_max - 1)+`, and closer to the original passive fit (3.06e-3 → 2.12e-3), as a projection onto the convex passive set must be | 2 |
 | Lossless Bragg fit with 10 nm guard bands, enforced over the band of interest | analytic model | passive, in-band RMS 1.4e-6 | 3 |
+| `add_drop_ring(coupling=0.1)` fit, residues × 1.05 (σ_max 1.07); data × 1.01 (σ_max(D) 1.008, degenerate singular-value pairs) | certified Hamiltonian test | passive in 13 / 5 damped iterations, in-band change 1.1 % / 5.2 % (the undamped step diverged to σ_max 1.1e4 / 5.5e5); with too few iterations the returned model is never worse than the input | 2 |
+| Real RF two-port, 7 poles, σ_max 1.02-1.35, band 1-20 GHz | certified Hamiltonian test | passive in 2 iterations, still a real system, change ≤ 4.4 % (positive-band energy only: diverged to 7.8e72) | 2 |
+| Real one-port with σ_max(D) = 1.02 | conjugate symmetry | clipped, passive, `S(-f) = conj S(f)` and the real realization equals the model | 2 |
+| Two all-pass sections with σ_max(D) - 1 = 5e-12, residues × (1 + 1e-8); lossless `all_pass_ring` fit (D unitary to ~1e-11) | analytic σ_max = 1 + 2e-8; dense sweep | violation reported (previously certified passive: the ill-conditioned Hamiltonian misses it), `certified=False`, every swept violation inside a reported band; the fit's verdict agrees with its `max_sigma`, uncertified, and enforcement gives a certified passive model at in-band change 1e-6 | 2 |
 | Causality of 8 library models (straight, rings, Bragg, coupler, MMI, MZI) | causal by construction | all pass; the same data × `exp(+1j Omega 5 ps)` all fail (a 200 µm line's 2.8 ps < 5 ps) | 2 |
 | Causal vs anticausal analytic pole | analytic | pass / fail | 2 |
 | Add-drop ring with 1e-4, 1e-3, 1e-2 complex noise | causal by construction | passes with estimated or known noise level, fails with `noise_std=0` (noise alone is acausal); a 5 ps advance is still detected at every level | 2 |
@@ -187,8 +210,15 @@ All rows are executable tests in `tests/test_macromodel.py`.
 - Passivity enforcement perturbs residues only (poles and delays are fixed) and
   uses equality constraints at the violation peaks; it is first-order and
   iterative, not a convex optimum, but in the tests it lands within a factor of
-  two of the pointwise lower bound. Clipping `sigma_max(D)` can fill structural
-  zeros of `D`.
+  two of the pointwise lower bound. The line search guarantees a monotone
+  decrease of the worst singular value, not convergence: enforcement can stall
+  (a warning, and the least-violating model is returned). Clipping
+  `sigma_max(D)` can fill structural zeros of `D`, and its in-band compensation
+  is a least-squares fit, so an active `D` costs more in-band change than the
+  violation alone (5 % for a uniform 1 % gain).
+- A lossless fit whose `D` is unitary to ~1e-9 has an ill-conditioned
+  Hamiltonian; its verdict comes from the dense sweep and is not certified.
+  Enforcement clips `D` to `1 - margin`, after which the result is certified.
 - The causality test assumes `|S| <= 1` out of band (passive S-parameters; set
   `out_of_band_max` otherwise), cannot detect violations at the band edges, and
   loses sensitivity (never gaining false alarms) on under-resolved sweeps. Its
