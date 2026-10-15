@@ -691,6 +691,26 @@ def test_plot_eye_never_shows(monkeypatch):
     plt.close("all")
 
 
+def test_plot_eye_keeps_the_users_matplotlib_backend():
+    import matplotlib
+    import matplotlib.pyplot as plt
+
+    before = matplotlib.get_backend()
+    try:
+        matplotlib.use("svg")
+        bits = prbs(7, 254)
+        eye = eye_diagram(drive_waveform(bits, baud=10e9, samples_per_symbol=16, rise_time_20_80_s=25e-12),
+                          baud=10e9, symbols=bits)
+        eye.plot()
+        assert matplotlib.get_backend() == "svg"            # was silently switched to Agg
+        fig = plt.figure()
+        eye.plot(ax=fig.add_subplot())                       # an explicit ax: no pyplot figure is created
+        assert len(plt.get_fignums()) == 2
+    finally:
+        plt.close("all")
+        matplotlib.use(before)
+
+
 # --------------------------------------------------------------------------- #
 # Gradients through the transceiver chain
 # --------------------------------------------------------------------------- #

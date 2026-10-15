@@ -1,4 +1,4 @@
-"""Eye-diagram plotting (matplotlib, Agg-safe; never calls ``plt.show``)."""
+"""Eye-diagram plotting (matplotlib; never switches the backend or calls ``plt.show``)."""
 from __future__ import annotations
 
 from typing import Any
@@ -31,12 +31,11 @@ def plot_eye(eye: Any, *, ax=None, max_traces: int = 400, color: str = "C0", alp
     >>> ax.get_xlabel()
     'Time (UI)'
     """
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
-    import matplotlib.pyplot as plt
-
     if ax is None:
+        # pyplot only when a figure must be created; the user's backend is never switched (matplotlib picks
+        # a non-interactive one by itself on a headless machine).
+        import matplotlib.pyplot as plt
+
         _, ax = plt.subplots(figsize=(6, 4))
     traces = np.asarray(eye.traces) * scale
     if traces.shape[0] > max_traces:

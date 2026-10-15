@@ -229,10 +229,17 @@ def gaussian_pulse(
 ) -> Waveform:
     """A Gaussian optical pulse of intensity full width at half maximum ``fwhm_s``.
 
-    The envelope is ``sqrt(P0) exp(-(1 + j C) (t - t_c)^2 / (2 T0^2))`` with
-    ``T0 = fwhm / (2 sqrt(ln 2))`` the 1/e intensity half-width (Agrawal's
-    convention, so ``T0`` is the quantity in the dispersive-broadening law) and
-    ``C = chirp``. ``t_center`` defaults to ``t0 + 4 fwhm``.
+    ``C = chirp`` is Agrawal's chirp parameter (*Fiber-Optic Communication
+    Systems*, Sec. 2.4): his envelope ``exp(-(1 + j C) t^2 / (2 T0^2))`` is
+    written for the ``exp(-j omega t)`` convention, so with photonix's
+    ``exp(+j omega t)`` the envelope is
+    ``sqrt(P0) exp(-(1 - j C) (t - t_c)^2 / (2 T0^2))``: the instantaneous
+    frequency offset ``C (t - t_c) / (2 pi T0^2)`` rises through the pulse
+    (an up-chirp) for ``C > 0``, and the pulse first narrows in anomalous
+    dispersion (``beta2 C < 0``), following
+    ``T1 / T0 = sqrt((1 + C b)^2 + b^2)`` with ``b = beta2 z / T0^2``.
+    ``T0 = fwhm / (2 sqrt(ln 2))`` is the 1/e intensity half-width.
+    ``t_center`` defaults to ``t0 + 4 fwhm``.
 
     Examples
     --------
@@ -250,5 +257,5 @@ def gaussian_pulse(
     tc = t0 + 4.0 * fwhm_s if t_center is None else float(t_center)
     t_e = fwhm_s / (2.0 * math.sqrt(math.log(2.0)))
     x = (t - tc) / t_e
-    samples = math.sqrt(peak_power_w) * np.exp(-(1.0 + 1j * chirp) * x * x / 2.0 + 2j * np.pi * offset_hz * t)
+    samples = math.sqrt(peak_power_w) * np.exp(-(1.0 - 1j * chirp) * x * x / 2.0 + 2j * np.pi * offset_hz * t)
     return Waveform(xp.asarray(samples), dt, t0, carrier_wl, "sqrt(W)")

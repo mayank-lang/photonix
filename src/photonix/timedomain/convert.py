@@ -18,16 +18,27 @@ step. The rules, in order:
    :class:`~photonix.timedomain.elements.MemorylessTD` of the carrier
    S-matrix.
 4. Ring resonators (:func:`~photonix.components.all_pass_ring`,
-   :func:`~photonix.components.add_drop_ring`) become their physical
-   structure -- couplers plus ring waveguide delays -- which is exactly the
-   circuit the closed forms describe.
+   :func:`~photonix.components.add_drop_ring`,
+   :func:`~photonix.components.ring_single`,
+   :func:`~photonix.components.ring_double`) and the Mach-Zehnder
+   interferometer (:func:`~photonix.components.mzi`, ``delta_length >= 0``)
+   become their physical structure -- couplers plus waveguide delays -- which
+   is exactly the circuit the closed forms describe. The geometry-derived
+   bus couplers of ``ring_single`` / ``ring_double`` are taken at the carrier:
+   their coupling dispersion (a frequency-dependent coupling with no delay of
+   its own, which no causal element can reproduce) is neglected, an error of
+   the order of the coupler's S-matrix change across the signal band.
 5. Anything else is sampled over the envelope band ``f_c +/- 1/(2 dt)``.
    Port pairs whose response is a pure delay (constant magnitude, linear
    phase) get a fractional-delay interpolator; the rest a causal FIR, the
    truncated inverse DFT of the band-limited response with the bulk delay
-   carried by the tap offset. A non-causal model response (e.g. a zero-phase
-   Gaussian filter) is made causal by adding latency, which is reported and
-   warned about.
+   carried by the tap offset or, when that window would start before
+   ``t = 0`` (the band-limiting precursor of a sharp onset), a causal
+   least-squares fit (:func:`causal_taps`). Only a response no causal FIR
+   reproduces within ``fir_tol`` (e.g. a zero-phase Gaussian filter) gets
+   latency, which is reported, warned about and rejected by
+   :class:`~photonix.timedomain.TimeDomainCircuit` inside loops and parallel
+   paths.
 
 Every conversion is validated when its inputs are concrete (flatness of
 "memoryless" devices, linearity of the phase of "delay" devices, FIR fit
@@ -58,12 +69,14 @@ from .elements import (
     centered_frequencies,
     design_fir,
     fir_response,
+    lagrange_layout,
     lagrange_taps,
     parse_interp,
+    planck_taper,
     window_taps,
 )
 
-__all__ = ["to_td", "to_td_time_varying", "fir_from_model", "FIRDesign"]
+__all__ = ["to_td", "to_td_time_varying", "fir_from_model", "FIRDesign", "causal_taps"]
 
 
 def _components():
@@ -227,6 +240,110 @@ def _add_drop_ring(model, settings, *, carrier_wl, dt, interp, like):
     )
 
 
+def _is_zero(x) -> bool:
+    return _is_concrete(x) and float(np.asarray(x)) == 0.0
+
+
+def _arm(p, length, *, carrier_wl, dt, interp, like):
+    """A waveguide section of ``length``; a zero-length one is a plain (memoryless) through connection."""
+    if isinstance(like, MemorylessTD) or (like is None and _is_zero(length)):
+        return MemorylessTD(("o1", "o2"), np.array([[0.0, 1.0], [1.0, 0.0]], dtype=complex))
+    return _ring_waveguide(p, length, carrier_wl=carrier_wl, dt=dt, interp=interp, like=like)
+
+
+def _bus_coupler(p, gap, *, carrier_wl):
+    """The geometry-derived bus-ring coupler of ``ring_single`` / ``ring_double``, without its common propagation.
+
+    The coupling matrix is taken at the carrier (memoryless). The propagation
+    over the coupler's straight section ``length_x``, common to all four paths,
+    is divided out here and put back exactly by the caller as waveguide
+    (``length_x`` more ring and ``length_x / 2`` on each bus port, which every
+    path traverses the same number of times). The wavelength dependence of the
+    coupling itself is not represented: with no delay of its own, a lossless
+    coupler whose coupling varies with frequency has a supermode with negative
+    group delay -- it is not causal -- so no causal element reproduces it. The
+    error is the change of the coupler's S-matrix across the signal band
+    (about 4e-4 within +/-100 GHz for a 0.2 µm gap).
+    """
+    c = _components()
+    lx = p["length_x"]
+    s_c = c.evanescent_coupler(wl=carrier_wl, gap=gap, length=lx, bend_radius=p["radius"], curved_arms=1,
+                               splitting=p["splitting"], neff=p["neff"], ng=p["ng"], wl0=p["wl0"],
+                               loss_db_cm=p["loss_db_cm"])
+    common = c.straight(wl=carrier_wl, length=lx, neff=p["neff"], ng=p["ng"], wl0=p["wl0"],
+                        loss_db_cm=p["loss_db_cm"])[("o1", "o2")]
+    return MemorylessTD.from_sdict({k: xp.asarray(v) / common for k, v in s_c.items()}, ("o1", "o2", "o3", "o4"))
+
+
+def _bus_arms(p, names, like, opts):
+    """``length_x / 2`` bus waveguides on the named terminals (none when ``length_x`` is zero)."""
+    if not (isinstance(like, CompositeTD) and names[0] in like.elements) and (like is not None or
+                                                                            _is_zero(p["length_x"])):
+        return {}
+    return {nm: _ring_waveguide(p, 0.5 * p["length_x"], like=_sub_like(like, nm), **opts) for nm in names}
+
+
+def _ring_single(model, settings, *, carrier_wl, dt, interp, like):
+    p = _model_params(model, settings)
+    opts = {"carrier_wl": carrier_wl, "dt": dt, "interp": interp}
+    cpl = _bus_coupler(p, p["gap"], carrier_wl=carrier_wl)
+    lx = p["length_x"]
+    ring = _ring_waveguide(p, 2.0 * math.pi * p["radius"] + 2.0 * lx, like=_sub_like(like, "ring"), **opts)
+    arms = _bus_arms(p, ("b1", "b4"), like, opts)
+    # H = t + k^2 A / (1 - t A): bus o1 -> o4 (bar t), o1 -> o3 (cross k) into the ring path A, back at o2.
+    conns = {("c", "o3"): ("ring", "o1"), ("ring", "o2"): ("c", "o2")}
+    ports = {"o1": ("c", "o1"), "o2": ("c", "o4")}
+    if arms:
+        conns.update({("b1", "o2"): ("c", "o1"), ("b4", "o1"): ("c", "o4")})
+        ports = {"o1": ("b1", "o1"), "o2": ("b4", "o2")}
+    return CompositeTD({"c": cpl, "ring": ring, **arms}, conns, ports)
+
+
+def _ring_double(model, settings, *, carrier_wl, dt, interp, like):
+    p = _model_params(model, settings)
+    gap2 = p["gap"] if p.get("gap2") is None else p["gap2"]
+    opts = {"carrier_wl": carrier_wl, "dt": dt, "interp": interp}
+    c1 = _bus_coupler(p, p["gap"], carrier_wl=carrier_wl)
+    c2 = _bus_coupler(p, gap2, carrier_wl=carrier_wl)
+    half = math.pi * p["radius"] + p["length_x"]
+    right = _ring_waveguide(p, half, like=_sub_like(like, "right"), **opts)
+    left = _ring_waveguide(p, half, like=_sub_like(like, "left"), **opts)
+    arms = _bus_arms(p, ("b11", "b14", "b21", "b24"), like, opts)
+    # Exactly the netlist that photonix.components.ring_double solves.
+    conns = {("c1", "o3"): ("right", "o1"), ("right", "o2"): ("c2", "o2"),
+             ("c2", "o3"): ("left", "o1"), ("left", "o2"): ("c1", "o2")}
+    ports = {"o1": ("c1", "o1"), "o2": ("c1", "o4"), "o4": ("c2", "o1"), "o3": ("c2", "o4")}
+    if arms:
+        for ext, (cc, cp) in list(ports.items()):
+            arm = f"b{cc[1]}{cp[1]}"
+            conns[(arm, "o2")] = (cc, cp)
+            ports[ext] = (arm, "o1")
+    return CompositeTD({"c1": c1, "c2": c2, "right": right, "left": left, **arms}, conns, ports)
+
+
+def _mzi(model, settings, *, carrier_wl, dt, interp, like):
+    c = _components()
+    p = _model_params(model, settings)
+    dl = p["delta_length"]
+    if like is None and _is_concrete(dl) and float(np.asarray(dl)) < 0:
+        # The closed form keeps the phase of the top arm relative to the bottom one: with a longer bottom
+        # arm that is a time *advance* of the whole response (non-causal); leave it to the sampled fit.
+        return None
+    # Normalized to the (zero-length) bottom arm: the top arm holds delta_length.
+    opts = {"carrier_wl": carrier_wl, "dt": dt, "interp": interp}
+    top = _arm(p, dl, like=_sub_like(like, "top"), **opts)
+    bot = _arm(p, 0.0, like=_sub_like(like, "bot"), **opts)
+    c1 = MemorylessTD.from_sdict(c.directional_coupler(wl=carrier_wl, coupling=p["coupling"]))
+    c2 = MemorylessTD.from_sdict(c.directional_coupler(wl=carrier_wl, coupling=p["coupling"]))
+    # bar = t^2 z - k^2 (o1 -> o2), cross = -j t k (z + 1) (o1 -> o3); c1's o2 is terminated.
+    return CompositeTD(
+        {"c1": c1, "c2": c2, "top": top, "bot": bot},
+        {("c1", "o4"): ("top", "o1"), ("top", "o2"): ("c2", "o1"),
+         ("c1", "o3"): ("bot", "o1"), ("bot", "o2"): ("c2", "o2")},
+        {"o1": ("c1", "o1"), "o2": ("c2", "o4"), "o3": ("c2", "o3")},
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Generic sampled conversion
 # --------------------------------------------------------------------------- #
@@ -235,10 +352,11 @@ class FIRDesign:
     """Static design of a sampled FIR element (kept so it can be re-fitted from traced responses).
 
     ``pairs[(in, out)]`` is ``("delay", n0, order, latency)`` for a
-    fractional-delay pair or ``("fir", n0, n_taps, latency)`` for a
-    tapered inverse-DFT pair (:func:`~photonix.timedomain.elements.design_fir`);
-    ``n_freq`` is the DFT size and ``band`` the fraction of the Nyquist band
-    reproduced exactly.
+    fractional-delay pair, ``("fir", n0, n_taps, latency)`` for a tapered
+    inverse-DFT pair (:func:`~photonix.timedomain.elements.design_fir`) or
+    ``("lsq", 0, n_taps, weights, anchored, latency)`` for a causal least-squares pair
+    (:func:`causal_taps`); ``n_freq`` is the DFT size and ``band`` the fraction
+    of the Nyquist band reproduced exactly.
     """
 
     n_freq: int
@@ -274,15 +392,27 @@ def fir_from_model(
       ``fir_tol / 2`` of the peak response. The in-band error is then below
       ``fir_tol / 2`` and the gain never exceeds the model's by more than
       that, so a passive model stays passive (stable in feedback loops).
+    * when that window would start before ``t = 0`` -- the band-limiting
+      precursor of any response with a sharp onset, such as a causal pole or a
+      delay of a few samples, as well as of a genuinely non-causal response --
+      the pair is instead fitted by a causal weighted least-squares FIR
+      (:func:`causal_taps`, taps from ``t = 0``) that moves the precursor into
+      the roll-off band, accepted when its in-band error plus gain overshoot
+      is within ``fir_tol / 2``.
 
     The DFT grid is lengthened until the response is time-limited within it
-    (no aliasing). If any pair is non-causal, the same latency is added to
-    every pair (keeping their relative timing) and reported as
-    :attr:`FIRTD.added_delay_s`. Outside ``band`` the element rolls off.
+    (no aliasing). Only when no causal fit meets the tolerance (a non-causal
+    model, e.g. a zero-phase filter, or a response too abrupt for ``dt``) is
+    the same latency added to every pair (keeping their relative timing),
+    reported as :attr:`FIRTD.added_delay_s` and warned about: the element's
+    output is then late by that much, which is harmless at the edge of a
+    circuit but wrong inside a feedback loop or between parallel paths, where
+    :class:`~photonix.timedomain.TimeDomainCircuit` rejects it. Outside
+    ``band`` the element rolls off.
 
     Examples
     --------
-    A zero-phase Gaussian grating-coupler passband needs latency to be causal:
+    A zero-phase Gaussian grating-coupler passband is non-causal and needs latency:
 
     >>> import warnings, photonix as px
     >>> with warnings.catch_warnings():
@@ -290,6 +420,17 @@ def fir_from_model(
     ...     el = fir_from_model(px.components.grating_coupler, {"bandwidth": 0.004}, dt=0.1e-12)
     >>> el.added_delay_s > 0, el.fit_error < 1e-4
     (True, True)
+
+    A causal one-pole low-pass (``h(t) ~ exp(-t / tau) u(t)``) gets none:
+
+    >>> import numpy as np
+    >>> def one_pole(*, wl=1.55):
+    ...     nu = 299792458e6 / np.asarray(wl) - 299792458e6 / 1.55
+    ...     h = 1 / (1 + 1j * nu / 100e9)
+    ...     return {("o1", "o2"): h, ("o2", "o1"): h}
+    >>> el = fir_from_model(one_pole, dt=0.1e-12)
+    >>> el.added_delay_s, bool(el.fit_error < 1e-4)
+    (0.0, True)
     """
     settings = dict(settings or {})
     fc = _carrier_hz(carrier_wl)
@@ -308,7 +449,8 @@ def fir_from_model(
     n_freq = 1024
     tol_design = fir_tol
     while True:
-        design, s, scale = _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol_design, band, order)
+        design, s, scale, causal_err = _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol_design, band,
+                                                   order)
         n_freq = design.n_freq
         el = _fir_build(ports, dt, design, s, model, settings, carrier_wl)
         # Strict passivity: a passive model must not become (slightly) active anywhere in the band,
@@ -324,8 +466,13 @@ def fir_from_model(
     latency = max((spec[-1] for spec in design.pairs.values()), default=0)
     if latency:
         warnings.warn(
-            f"model {getattr(model, '__name__', model)!r} has a non-causal response at this carrier; "
-            f"added {latency} samples ({latency * dt:.3g} s) of latency to make it causal",
+            f"model {getattr(model, '__name__', model)!r}: no causal FIR reproduces its response to "
+            f"fir_tol={fir_tol:g} at dt = {dt:g} s (best causal in-band error {causal_err:.2e} of the peak: the "
+            "response is non-causal, e.g. a zero-phase filter, or too abrupt for this time step), so "
+            f"{latency} samples ({latency * dt:.3g} s) of latency were added. The element's output is late by "
+            "that much: harmless at the edge of a circuit, wrong inside a feedback loop or between parallel "
+            "paths (TimeDomainCircuit rejects those). Reduce dt, accept the causal fit with a larger fir_tol, or "
+            "convert the device structurally (td_model).",
             stacklevel=2,
         )
     longest = max((int(np.shape(b)[0]) for _, b in el.taps.values()), default=0)
@@ -346,8 +493,100 @@ def fir_from_model(
     return el
 
 
+#: Out-of-band weights tried (largest first) by the causal least-squares FIR design.
+_CAUSAL_MU = (1e-6, 1e-8, 1e-10)
+#: Longest causal least-squares design attempted (its normal equations are solved in O(n_taps^2)).
+_CAUSAL_MAX_TAPS = 8192
+
+
+def causal_taps(response, dt: float, weights, n_taps: int, band: float = 0.5, anchored: bool = False):
+    """Weighted least-squares causal FIR ``h[0 .. n_taps - 1]`` of a response on the centred grid.
+
+    Minimizes ``sum_k w_k |sum_m h_m exp(-j 2 pi nu_k m dt) - D(nu_k)|^2``
+    with the target ``D = T S`` (``T`` the
+    :func:`~photonix.timedomain.elements.planck_taper`, one in band) or, when
+    ``anchored``, ``D = S(0) + T (S - S(0))`` (only the dispersive part rolls
+    off: suited to nearly flat responses such as dispersive couplers, whose
+    flat part is an exactly causal instantaneous tap). In-band samples carry
+    weight one and out-of-band (roll-off) samples the small ``weights`` chosen
+    by the design, which lets the filter put the band-limiting "precursor" of
+    a causal response into the roll-off instead of before ``t = 0``. The
+    normal equations are Toeplitz (Levinson solve for concrete data); the
+    taps are linear in ``response``, which may be traced.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> dt = 1e-12; nu = centered_frequencies(256, dt)
+    >>> w = np.where(np.abs(nu) * 2 * dt <= 0.5, 1.0, 1e-8)
+    >>> h = causal_taps(np.full(256, 0.5 + 0j), dt, w, 8, anchored=True)    # a constant: one tap
+    >>> [round(abs(complex(v)), 9) for v in np.asarray(h)[:3]]
+    [0.5, 0.0, 0.0]
+    """
+    from scipy import linalg as sla
+
+    resp = xp.asarray(response, dtype=complex)
+    n = int(resp.shape[0])
+    nu = centered_frequencies(n, dt)
+    w = np.asarray(weights, dtype=float)
+    taper = planck_taper(np.abs(nu) * 2.0 * dt, band)
+    target = resp * xp.asarray(taper)
+    if anchored:
+        target = target + xp.asarray(1.0 - taper) * resp[n // 2]
+    rhs = xp.fft.ifft(xp.fft.ifftshift(target * xp.asarray(w)))[:n_taps]
+    col = np.fft.ifft(np.fft.ifftshift(w))[:n_taps]          # first column of the Hermitian Toeplitz matrix
+    if _is_concrete(rhs) and n_taps > 2048:
+        return xp.asarray(sla.solve_toeplitz(col, np.asarray(rhs)))       # O(n^2) Levinson for long fits
+    # Dense solve otherwise (the matrix is static): the same, LU-accurate path for concrete and traced data.
+    return xp.linalg.solve(xp.asarray(sla.toeplitz(col)), rhs)
+
+
+def _design_causal(v, dt: float, *, band: float, tol_abs: float, n_hint: int):
+    """Best causal (taps from ``t = 0``) least-squares FIR of ``v``: ``(score, n_taps, weights, anchored)``.
+
+    ``score`` is the in-band error plus the largest excess of the FIR gain over
+    ``max |v|`` anywhere in the band (the passivity margin a later scaling would
+    cost). Out-of-band weights are raised iteratively where the gain overshoots
+    (a Lawson-type reweighting), for both targets of :func:`causal_taps`, a
+    few weight levels and lengths; the search stops as soon as
+    ``score <= tol_abs / 2``.
+    """
+    n = int(v.size)
+    nu = centered_frequencies(n, dt)
+    inband = np.abs(nu) * 2.0 * dt <= band + 1e-12
+    bound = float(np.max(np.abs(v)))
+    best: tuple[float, int, np.ndarray, bool] | None = None
+    base = max(int(n_hint), 16)
+    for anchored in (False, True):
+        for n_taps in sorted({min(base, n // 4), min(2 * base, n // 4)}):
+            for mu in _CAUSAL_MU:
+                w = np.where(inband, 1.0, mu)
+                local, stale = math.inf, 0
+                for _ in range(40):
+                    h = np.asarray(causal_taps(v, dt, w, n_taps, band, anchored))
+                    fit = fir_response(0, h, n)
+                    excess = np.maximum(np.abs(fit) - bound, 0.0)
+                    score = float(np.max(np.abs(fit - v)[inband])) + float(excess.max())
+                    if best is None or score < best[0]:
+                        best = (score, n_taps, w.copy(), anchored)
+                    stale = stale + 1 if score >= 0.99 * local else 0
+                    local = min(local, score)
+                    if excess.max() <= 0.05 * tol_abs or stale >= 4:
+                        break
+                    w = np.where(inband, 1.0, w * (1.0 + 10.0 * excess / excess.max()))
+                if best is not None and best[0] <= 0.5 * tol_abs:
+                    return best
+    assert best is not None
+    return best
+
+
 def _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol, band, order):
-    """Choose the DFT size and every pair's static tap window (see :func:`fir_from_model`)."""
+    """Choose the DFT size and every pair's static tap window (see :func:`fir_from_model`).
+
+    Returns ``(design, s, scale, causal_error)``; ``causal_error`` is the best
+    causal in-band error (relative to ``scale``) of the pairs that forced
+    latency, or ``0`` when the design is causal without latency.
+    """
     while True:
         nu = centered_frequencies(n_freq, dt)
         s = _evaluate(model, settings, nu, carrier_wl)
@@ -355,6 +594,8 @@ def _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol, band, order
         scale = max((float(np.max(np.abs(v))) for v in s.values()), default=0.0)
         tol_abs = tol * max(scale, 1e-300)
         pairs: dict[tuple[str, str], tuple] = {}
+        two_sided: dict[tuple[str, str], tuple] = {}
+        causal_err: dict[tuple[str, str], float] = {}
         aliased = False
         for key, v in s.items():
             if not np.any(np.abs(v) > 1e-14 * max(scale, 1e-300)):
@@ -363,7 +604,8 @@ def _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol, band, order
             a0 = complex(v[n_freq // 2])
             ideal = a0 * np.exp(-2j * np.pi * nu * tau)
             if abs(a0) > 0 and tau >= 0 and np.max(np.abs(v - ideal)) <= 0.5 * tol_abs:
-                pairs[key] = ("delay", max(int(math.floor(tau / dt - (order - 1) / 2.0)), 0), order, 0)
+                n0, order_k = lagrange_layout(tau / dt, order)      # centred (passive) even for short delays
+                pairs[key] = ("delay", n0, order_k, 0)
                 continue
             if abs(a0) > 1e-3 * scale:
                 tau_b = tau                   # unambiguous carrier group delay
@@ -375,14 +617,36 @@ def _fir_layout(model, settings, ports, carrier_wl, dt, n_freq, tol, band, order
             if taps.size > n_freq // 4 and n_freq < 2 ** 18:
                 aliased = True                # not time-limited within the DFT window: refine
                 break
-            pairs[key] = ("fir", int(n0), int(taps.size), 0)
+            spec = ("fir", int(n0), int(taps.size), 0)
+            two_sided[key] = spec
+            pairs[key] = spec
+            if n0 >= 0:
+                continue
+            # The two-sided window starts before t = 0. That is the band-limiting precursor of any
+            # response with a sharp onset (a causal pole, a short delay), not necessarily a non-causal
+            # model: try a causal fit whose taps start at t = 0 before resorting to latency.
+            hi = int(n0) + int(taps.size) - 1
+            if hi < 0 or hi + 1 > _CAUSAL_MAX_TAPS:
+                causal_err[key] = math.inf
+                continue
+            score, m, w_c, anchored = _design_causal(v, dt, band=band, tol_abs=tol_abs, n_hint=hi + 1)
+            if score <= 0.5 * tol_abs:
+                w_c.setflags(write=False)
+                pairs[key] = ("lsq", 0, int(m), w_c, anchored, 0)
+            else:
+                causal_err[key] = score
         if not aliased:
             break
         n_freq *= 2
+    needs = [k for k, spec in pairs.items() if spec[0] == "fir" and spec[1] < 0]
+    if needs:
+        # Latency is unavoidable: the two-sided designs are then the accurate ones for every pair.
+        pairs = {k: (two_sided[k] if spec[0] == "lsq" else spec) for k, spec in pairs.items()}
     # One common latency makes every pair causal and keeps their relative timing.
     latency = max(0, -min((spec[1] for spec in pairs.values()), default=0))
     design = FIRDesign(n_freq, float(band), {k: (*spec[:-1], latency) for k, spec in pairs.items()})
-    return design, s, scale
+    causal = max((causal_err[k] for k in needs), default=0.0) / max(scale, 1e-300)
+    return design, s, scale, causal
 
 
 def _max_singular_value(ports, responses) -> float:
@@ -401,8 +665,12 @@ def _fir_taps(spec, v_centered, dt, band, tau, a0):
     if spec[0] == "delay":
         _, n0, order, latency = spec
         return n0 + latency, a0 * lagrange_taps(tau / dt - n0, order).astype(complex)
-    _, n0, n_taps, latency = spec
-    taps = window_taps(v_centered, dt, n0, n_taps, band)
+    if spec[0] == "lsq":
+        _, n0, n_taps, weights, anchored, latency = spec
+        taps = causal_taps(v_centered, dt, weights, n_taps, band, anchored)
+    else:
+        _, n0, n_taps, latency = spec
+        taps = window_taps(v_centered, dt, n0, n_taps, band)
     # Exact at the carrier (nu = 0): a complex gain correction of order fir_tol.
     s0 = v_centered[int(v_centered.shape[0]) // 2]
     h0 = xp.sum(taps)
@@ -476,7 +744,8 @@ def _rule_tables():
              c.heater_phase_shifter, c.thermo_optic_phase_shifter)
     flat = (c.directional_coupler, c.coupler, c.ring_coupler, c.mmi1x2, c.mmi2x2, c.mmi_nxn, c.y_branch,
             c.crossing, c.attenuator, c.terminator, c.photodetector)
-    rings = {c.all_pass_ring: _all_pass_ring, c.add_drop_ring: _add_drop_ring}
+    rings = {c.all_pass_ring: _all_pass_ring, c.add_drop_ring: _add_drop_ring, c.ring_single: _ring_single,
+             c.ring_double: _ring_double, c.mzi: _mzi}
     return delay, flat, rings
 
 
@@ -536,7 +805,9 @@ def to_td(
     delay, flat, rings = _rule_tables()
     if model in rings:
         if like is None or isinstance(like, CompositeTD):
-            return rings[model](model, settings, carrier_wl=carrier_wl, dt=dt, interp=interp, like=like)
+            el = rings[model](model, settings, carrier_wl=carrier_wl, dt=dt, interp=interp, like=like)
+            if el is not None:
+                return el
     if any(model is m for m in delay) and not callable(settings.get("neff")):
         if like is None or isinstance(like, DelayLineTD):
             el = _delay_line(model, settings, carrier_wl=carrier_wl, dt=dt, interp=interp, like=like, check=check,

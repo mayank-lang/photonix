@@ -63,6 +63,7 @@ __all__ = [
     "TimeVaryingTD",
     "CompositeTD",
     "lagrange_taps",
+    "lagrange_layout",
     "thiran_coefficients",
     "split_instantaneous",
     "design_fir",
@@ -241,6 +242,29 @@ def lagrange_taps(p, order: int = 3):
                 h = h * (p - k) / (m - k)
         taps.append(h)
     return xp.stack(taps)
+
+
+def lagrange_layout(d: float, order: int = 3) -> tuple[int, int]:
+    """Centred Lagrange layout ``(n0, order')`` for a delay of ``d >= 0`` samples.
+
+    The taps ``lagrange_taps(d - n0, order')`` sit at ``n0 .. n0 + order'``
+    with the delay in their central interval, ``(order' - 1)/2 <= d - n0 <
+    (order' + 1)/2``. There an odd-order Lagrange interpolator is passive
+    (``|H| <= 1`` at every frequency); off-centre it has gain above one
+    (up to 1.19 for order 3), which makes lossless feedback loops grow without
+    bound. A delay too short to centre the requested order uses the largest
+    odd order ``order' <= order`` with ``(order' - 1)/2 <= d`` instead -- linear
+    interpolation (``order' = 1``) for ``d < 1``.
+
+    Examples
+    --------
+    >>> lagrange_layout(10.0, 3), lagrange_layout(1.3, 3), lagrange_layout(0.4, 3), lagrange_layout(2.5, 7)
+    ((9, 3), (0, 3), (0, 1), (0, 5))
+    """
+    if d < 0:
+        raise ValueError("a fractional delay cannot be negative")
+    order = int(min(int(order), 2 * int(math.floor(d)) + 1))
+    return max(int(math.floor(d - (order - 1) / 2.0)), 0), order
 
 
 def thiran_coefficients(d, order: int = 3):
@@ -533,7 +557,10 @@ class DelayLineTD(TDElement):
     interp
         Fractional-delay design: ``"lagrangeN"`` (odd ``N``; FIR, phase error
         ``O((omega dt)^(N+1))``, magnitude slightly below one at high
-        frequency), ``"thiranN"`` (IIR all-pass: lossless at every frequency,
+        frequency; a delay shorter than ``(N - 1)/2`` samples uses the largest
+        odd order that can be centred on it, down to linear interpolation for
+        ``tau < dt``, so the filter stays passive -- see
+        :func:`lagrange_layout`), ``"thiranN"`` (IIR all-pass: lossless at every frequency,
         maximally flat group delay; needs ``tau >= (N - 1/2) dt``) or
         ``"nearest"`` (rounds to whole samples). Ignored when GVD is on.
     split
@@ -594,7 +621,7 @@ class DelayLineTD(TDElement):
         if kind == "nearest":
             return int(round(d)), 1
         if kind == "lagrange":
-            n0 = max(int(math.floor(d - (order - 1) / 2.0)), 0)
+            n0, order = lagrange_layout(d, order)
             return n0, order + 1
         n_int = int(math.floor(d - order + 0.5))
         if n_int < 0:
@@ -627,7 +654,7 @@ class DelayLineTD(TDElement):
             if kind == "nearest":
                 b = xp.reshape(amp, (1,))
             elif kind == "lagrange":
-                b = amp * lagrange_taps(d - n0, order).astype(complex)
+                b = amp * lagrange_taps(d - n0, n_taps - 1).astype(complex)    # order reduced for short delays
             else:
                 a_all = thiran_coefficients(d - n0, order)
                 b = amp * a_all[::-1].astype(complex)

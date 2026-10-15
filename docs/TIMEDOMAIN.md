@@ -78,7 +78,7 @@ waveforms; under NumPy it is a plain loop with identical results.
 | Element | Implementation |
 |---|---|
 | `MemorylessTD(ports, S)` | Frequency-flat `b = S a` (couplers, MMIs, crossings, terminations at the carrier) |
-| `DelayLineTD(tau_s, carrier_phase, loss_amp, beta2_l_s2=None, interp="lagrange3")` | Reciprocal delay `loss * exp(-j phase) * exp(-j 2 pi nu tau)`: Lagrange FIR (odd order, phase error `O((omega dt)^(N+1))`), Thiran all-pass (lossless at every frequency) or nearest sample; with `beta2_l_s2` a GVD FIR exact to `gvd_tol/2` in band |
+| `DelayLineTD(tau_s, carrier_phase, loss_amp, beta2_l_s2=None, interp="lagrange3")` | Reciprocal delay `loss * exp(-j phase) * exp(-j 2 pi nu tau)`: Lagrange FIR (odd order, phase error `O((omega dt)^(N+1))`, always centred on the delay so it is passive: a delay shorter than `(N-1)/2` steps uses the largest odd order that fits, linear interpolation below one step), Thiran all-pass (lossless at every frequency) or nearest sample; with `beta2_l_s2` a GVD FIR exact to `gvd_tol/2` in band |
 | `FIRTD(ports, dt, taps)` | Causal FIR per port pair (generic sampled models) |
 | `PoleResidueTD(ports, poles, residues, direct, delays)` | Rational model `d + sum r/(s - p)`, integrated exactly for piecewise-linear (`"foh"`, recursive convolution of Gustavsen & Semlyen) or held (`"zoh"`) input; the bridge for vector-fitted macromodels |
 | `TimeVaryingTD(ports, fn, controls)` | Quasi-static `S(t)` from electrical control waveforms (any vectorized photonix model via `from_model`) |
@@ -94,15 +94,31 @@ waveforms; under NumPy it is a plain loop with identical results.
    waveguide-type phase shifters) become a `DelayLineTD` with the exact carrier
    transmission and group delay `-d arg S21 / d omega` (`n_g L / c`);
 3. frequency-flat devices become a `MemorylessTD`, after a flatness check;
-4. `all_pass_ring` and `add_drop_ring` become their physical structure (couplers
-   plus ring delays), exactly the circuit their closed forms describe;
+4. `all_pass_ring`, `add_drop_ring`, `ring_single`, `ring_double` and `mzi`
+   (`delta_length >= 0`) become their physical structure (couplers plus
+   waveguide delays), exactly the circuit their closed forms describe. The
+   geometry-derived bus couplers of `ring_single`/`ring_double` are taken at
+   the carrier: a lossless coupler whose coupling varies with frequency but has
+   no delay of its own is not causal, so its coupling dispersion is neglected
+   (|ΔS| ≈ 4e-4 within ±100 GHz for a 0.2 µm gap; the ring response then
+   agrees with the closed form to ~6e-5 there, to ~2e-2 within ±500 GHz);
 5. anything else is sampled over `f_c +/- 1/(2 dt)` and fitted with a causal
    FIR: pure-delay pairs get a fractional-delay interpolator, the rest a
    Planck-tapered inverse DFT (exact to `fir_tol/2` for `|nu| <= band/(2 dt)`,
-   smooth roll-off to zero at Nyquist). A passive model is scaled to a
-   **strictly** passive FIR (largest singular value ≤ 1 over the whole band), so
-   lossless feedback loops stay stable over arbitrarily long runs. Non-causal
-   responses (e.g. a zero-phase Gaussian passband) get reported latency.
+   smooth roll-off to zero at Nyquist). When that window would start before
+   `t = 0` -- the band-limiting precursor of any sharp onset, e.g. a causal
+   pole or a delay of a few steps -- the pair is fitted instead by a causal
+   weighted least-squares FIR (`causal_taps`, taps from `t = 0`, the precursor
+   pushed into the roll-off band), so a causal model gets **no latency**. A
+   passive model is scaled to a **strictly** passive FIR (largest singular
+   value ≤ 1 over the whole band), so lossless feedback loops stay stable over
+   arbitrarily long runs. Only a response that no causal FIR reproduces within
+   `fir_tol` (a non-causal model such as a zero-phase Gaussian passband, or one
+   too abrupt for `dt`, such as the reflection of `bragg_grating` at 0.5 ps)
+   gets latency; it is reported (`FIRTD.added_delay_s`), warned about with the
+   best causal error, and `TimeDomainCircuit` raises if such an element sits
+   in a feedback loop or between parallel paths, where the latency would change
+   the physics.
 
 `to_td_time_varying(model, settings, control_params={"voltage": "v"})` turns
 a modulator model into a quasi-static element (passive delay plus a lumped
@@ -111,10 +127,13 @@ modulation at its output). Circuits from `from_netlist` accept
 static layout (integer delays, tap counts) is kept, so time-domain figures of
 merit can be differentiated with respect to circuit parameters.
 
-Diagnostics: a warning when a delay is shorter than one step (its
-interpolation is off-centre), when an input has more than 0.1 % of its energy
-outside the exact band of a sampled-FIR element, when an FIR fit exceeds its
-tolerance or `max_taps`; an error for singular zero-delay loops.
+Diagnostics: a warning when a delay is shorter than one step (it is then a
+linear interpolation between the current and previous sample), when an input
+has more than 0.1 % of its energy outside the exact band of a sampled-FIR
+element, when an FIR fit exceeds its tolerance or `max_taps` or needs latency;
+an error for singular zero-delay loops (including loops closed through a
+time-varying element, checked for every step of the control waveforms) and for
+a latency-carrying element in a loop or between parallel paths.
 `TimeDomainCircuit.discrete_response(nu)` returns the response the discretized
 network actually implements, so the discretization error is directly visible.
 
@@ -127,7 +146,7 @@ network actually implements, so the discretization error is directly visible.
 | `filters` | `AnalogFilter` (pole-residue; RC, Butterworth, Bessel-Thomson prototypes; exact FOH/ZOH discretization; noise bandwidth, rise time), `lowpass`, `linear_recurrence` |
 | `receivers` | `photodiode` (responsivity, dark current, shot / thermal / RIN noise, receiver filter), `tia`, `recover_clock` |
 | `metrics` | `eye_diagram` → `EyeDiagram` (levels, sigmas, Q, Gaussian BER for NRZ and Gray PAM4, height, width, crossing %, ER, OMA, decisions, `plot`), `ber_from_q`, `q_from_ber`, `ber_count` (Wilson interval), `receiver_sensitivity` (feeds `analysis.LinkBudget`), `power_penalty_db`, `extinction_ratio_penalty_db`, `EyeMask` / `mask_test` |
-| `viz.plot_eye` | Eye-diagram plot (Agg-safe) |
+| `viz.plot_eye` | Eye-diagram plot (never switches the matplotlib backend; pyplot only when no `ax` is given) |
 
 Receiver noise is generated before the filter as band-limited white noise and
 filtered **exactly within the simulation band** (DFT multiplication by `H(f)`),
@@ -150,6 +169,10 @@ Evidence levels follow [`VALIDATION.md`](VALIDATION.md). All checks run in CI
 | Integer delays (Lagrange, Thiran, nearest) | exact shift | 1e-13 | 2 |
 | 2 mm straight, 1 ps pulse | `n_g L / c` = 28.02 ps (`analysis.pulse_response` doctest) | 1e-4 ps | 2 |
 | GVD broadening | `T1 = T0 sqrt(1 + (beta2 z / T0^2)^2)` (Agrawal) | 1e-4 | 2 |
+| Chirped-Gaussian broadening (`gaussian_pulse(chirp=C)`, Agrawal's `C`: up-chirp for `C > 0`) | `T1/T0 = sqrt((1 + C b)^2 + b^2)`, `b = beta2 z / T0^2`, both signs of `C` and `beta2` | 1e-4 | 2 |
+| Lagrange delays of 0-6 steps, orders 1-15; lossless ring with a sub-step round trip | `max \|H\| <= 1`; output power stays at the input | 1e-12; 1e-9 | 2 |
+| Causal FIR of a one-pole filter; MZI with that filter in one arm; ring containing an `mzi` | no latency; FD solver | 1e-4; 1e-4; 1e-5 | 2 |
+| `ring_single`, `ring_double`, `mzi` structural rules | closed forms (exact at the carrier; coupler dispersion within ±20 GHz) | 1e-12; 1e-4 | 2 |
 | Lossless CROW energy; reciprocity; 50:50 Sagnac mirror | exact invariants | 1e-9; 1e-13; reflect 1 - 1e-9 | 2 |
 | `jax.grad` of drop-port energy w.r.t. a coupling through `lax.scan` | finite differences | 1e-6 relative | — |
 | 2^15-bit PRBS, 16 samples/bit, 4-ring CROW | throughput | < 5 s compiled (CPU) | — |
@@ -180,11 +203,15 @@ laser defaults are illustrative textbook values.
   bandwidths must fit inside it, and delays should be at least one step.
   Lagrange interpolation has phase error `O((omega dt)^4)`; sampled FIR fits are
   exact only for `|nu| <= band/(2 dt)` (default half the Nyquist band).
-- **Generic FIR conversion** of short dispersive devices needs a two-sided
-  kernel and therefore latency: a 1 mm `pn_phase_shifter` at `dt = 0.5 ps` gets
-  2.5 ps of reported latency (its plasma dispersion makes it not quite a pure
-  delay). High-Q devices exceed `max_taps`: model them structurally or as
-  `PoleResidueTD`. No vector fitting is built in yet.
+- **Generic FIR conversion** is causal without latency whenever a causal FIR
+  meets `fir_tol` (a 1 mm `pn_phase_shifter` at `dt = 0.5 ps`, a one-pole
+  filter). Non-causal models and very abrupt
+  causal onsets (the Bragg reflection at 0.5 ps: best causal error ~9e-4) get
+  latency, which is only allowed outside loops and parallel paths. High-Q
+  devices exceed `max_taps`: model them structurally or as `PoleResidueTD`. No
+  vector fitting is built in yet.
+- **Structural ring couplers** (`ring_single`, `ring_double`) use the carrier
+  coupling; their coupling dispersion is neglected (see rule 4).
 - **No nonlinear optics** (Kerr, TPA, free-carrier dynamics) and no thermal
   transients other than through user-supplied control waveforms.
 - **Rate-equation laser**: single mode, no spatial hole burning or thermal

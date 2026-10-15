@@ -66,6 +66,11 @@ __all__ = ["TimeDomainCircuit", "flatten_elements"]
 
 _Terminal = tuple[str, str]
 
+_SINGULAR_LOOP = (
+    "the network has a singular instantaneous (zero-delay) loop: some feedback path contains no "
+    "element with memory. Add the waveguide (delay) that closes the loop."
+)
+
 
 # --------------------------------------------------------------------------- #
 # Flattening of composite elements
@@ -321,10 +326,7 @@ def _assemble(compiled: Mapping[str, CompiledTD], conns: Mapping[_Terminal, _Ter
     if _is_concrete(lhs) and n:
         cond = np.linalg.cond(np.asarray(lhs))
         if not np.isfinite(cond) or cond > 1e12:
-            raise ValueError(
-                "the network has a singular instantaneous (zero-delay) loop: some feedback path contains no "
-                "element with memory. Add the waveguide (delay) that closes the loop."
-            )
+            raise ValueError(_SINGULAR_LOOP)
     rhs = xp.concatenate([d0 @ xp.asarray(p_ext, dtype=complex), xp.asarray(q, dtype=complex),
                           xp.asarray(e_t, dtype=complex)], axis=1)
     b_lin = xp.linalg.solve(lhs, rhs) if n else rhs
@@ -526,6 +528,7 @@ class TimeDomainCircuit:
         self._rebuild: Callable[[Mapping[str, Any]], dict[str, TDElement]] | None = None
         self._cache: dict[Any, Any] = {}
         self._check_delays()
+        self._check_latency_placement()
 
     # -- construction -------------------------------------------------------- #
     @classmethod
@@ -547,7 +550,10 @@ class TimeDomainCircuit:
 
         Every instance is converted with :func:`photonix.timedomain.to_td`
         (analytic delay lines for waveguides, memoryless couplers, structural
-        rings, sampled FIR fits otherwise).
+        rings and MZIs, causal sampled FIR fits otherwise). An element that
+        could only be fitted with added latency (a non-causal model) is
+        rejected inside a feedback loop or between parallel paths, where the
+        latency would change the circuit's response.
 
         Parameters
         ----------
@@ -655,9 +661,49 @@ class TimeDomainCircuit:
                 if d < 1.0:
                     warnings.warn(
                         f"element {name!r}: delay {d * self.dt:.3g} s is shorter than one time step "
-                        f"({self.dt:.3g} s); it acts (partly) instantaneously and its interpolation is "
-                        "off-centre -- reduce dt if this delay matters",
+                        f"({self.dt:.3g} s); it acts partly instantaneously (it is built from the current "
+                        "and the previous sample only, accurate for slowly varying envelopes) "
+                        "-- reduce dt if this delay matters",
                         stacklevel=3,
+                    )
+
+    def _check_latency_placement(self) -> None:
+        """Reject an element with added latency inside a feedback loop or between parallel paths.
+
+        :func:`~photonix.timedomain.fir_from_model` adds latency only to models
+        it cannot fit causally; the latency is harmless where it merely delays
+        everything downstream, but on a cycle of the element graph (a loop, or
+        two paths that recombine) it changes the round-trip time or the
+        relative timing of interfering paths, i.e. the physics.
+        """
+        latent = {name: float(el.added_delay_s) for name, el in self._flat.items()
+                  if isinstance(el, FIRTD) and el.added_delay_s > 0}
+        if not latent:
+            return
+        edges = [(a[0], b[0]) for a, b in self._conns.items()]
+        for name, lat in latent.items():
+            for i, (a, b) in enumerate(edges):
+                if name not in (a, b):
+                    continue
+                other = b if a == name else a
+                seen = {name}
+                stack = [name]
+                while stack and other not in seen:
+                    node = stack.pop()
+                    for j, (x, y) in enumerate(edges):
+                        if j == i or node not in (x, y):
+                            continue
+                        nxt = y if x == node else x
+                        if nxt not in seen:
+                            seen.add(nxt)
+                            stack.append(nxt)
+                if other in seen:
+                    raise ValueError(
+                        f"element {name!r} carries {lat:.3g} s of added latency (its model could not be fitted "
+                        "causally at this dt; see the conversion warning) but sits in a feedback loop or between "
+                        "parallel paths, where that latency changes the loop round trip or the timing of "
+                        "interfering paths. Reduce dt, convert the device structurally (td_model), or accept "
+                        "a causal fit with a larger fir_tol."
                     )
 
     # -- record resolution --------------------------------------------------- #
@@ -911,6 +957,13 @@ class TimeDomainCircuit:
             off += m
         eye = xp.eye(n_tv, dtype=complex)
         lhs = eye[None, :, :] - s_all @ arrays["fz"][None, :, :]
+        if n_tv and _is_concrete(lhs):
+            # The static check in _assemble cannot see loops closed through time-varying blocks.
+            cond = np.linalg.cond(np.asarray(lhs))
+            bad = ~np.isfinite(cond) | (cond > 1e12)
+            if np.any(bad):
+                raise ValueError(_SINGULAR_LOOP + f" (closed through a time-varying element, first at step "
+                                 f"{int(np.argmax(bad))})")
         return xp.linalg.solve(lhs, s_all)
 
     # -- convenience analyses ------------------------------------------------- #
