@@ -358,15 +358,112 @@ def test_sparse_engine_under_jit_and_vmap(mesh4):
 
 
 @requires_jax
-def test_forward_mode_through_dense_and_reduce_matches_reverse_sparse(mesh4):
+def test_forward_mode_through_every_backend_matches_reverse_sparse(mesh4):
     import jax
 
     nl, models = mesh4
     x0 = px.xp.asarray([0.7, 0.43])
     rev = np.asarray(jax.jacrev(_mesh_fom(compile_circuit(nl, models, backend="sparse")))(x0))
-    for backend in ("dense", "reduce"):
+    for backend in BACKENDS:
         fwd = np.asarray(jax.jacfwd(_mesh_fom(compile_circuit(nl, models, backend=backend)))(x0))
         assert np.max(np.abs(fwd - rev)) <= 1e-10, backend
+
+
+@requires_jax
+@pytest.mark.parametrize("seed", [3, 8])
+def test_sparse_jvp_and_second_order_match_dense(seed):
+    """Regression: the sparse solve was custom_vjp, so jvp/jacfwd/hessian raised."""
+    import jax
+
+    inst, conn, ports = _random_network(seed, batch=(2,))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FloatingSubcircuitWarning)
+        topo = compile_topology(inst, conn, ports)
+    v = gather_values(topo, inst)
+    rng = np.random.default_rng(seed)
+    dv = px.xp.asarray(rng.normal(size=v.shape) + 1j * rng.normal(size=v.shape))
+    w = px.xp.asarray(rng.normal(size=(2, topo.m, topo.m)))
+
+    def fom(t, backend):            # real scalar of a real parameter: all AD modes apply
+        Y = solve_matrix(topo, v + t * dv, backend=backend)
+        return px.xp.sum(w * px.xp.real(Y * px.xp.conj(Y)))
+
+    out = {}
+    for backend in BACKENDS:
+        tangent = jax.jvp(lambda x, b=backend: solve_matrix(topo, x, backend=b), (v,), (dv,))[1]
+        out[backend] = (
+            np.asarray(tangent),
+            float(jax.jacfwd(fom)(0.3, backend)),
+            float(jax.hessian(fom)(0.3, backend)),                  # forward over reverse
+            float(jax.grad(jax.grad(fom))(0.3, backend)),           # reverse over reverse
+            float(jax.jit(jax.jacfwd(jax.jacfwd(fom), argnums=0), static_argnums=1)(0.3, backend)),
+        )
+    ref = out["dense"]
+    for backend in ("sparse", "reduce"):
+        assert np.max(np.abs(out[backend][0] - ref[0])) <= 1e-10, backend
+        for got, want in zip(out[backend][1:], ref[1:], strict=True):
+            assert abs(got - want) <= 1e-9 * max(1.0, abs(want)), backend
+    h = 1e-4
+    fd2 = (float(fom(0.3 + h, "sparse")) - 2 * float(fom(0.3, "sparse")) + float(fom(0.3 - h, "sparse"))) / h**2
+    assert abs(out["sparse"][2] - fd2) <= 1e-5 * max(1.0, abs(fd2))
+
+
+@requires_jax
+def test_auto_backend_supports_forward_mode_on_large_circuits():
+    """Regression: ``auto`` picked the reverse-only sparse path above 300 terminals,
+    breaking jax.jacfwd / jax.hessian (e.g. ``fosm(second_order=True)``)."""
+    import jax
+
+    N = 160                                                   # 320 terminals > DENSE_MAX_TERMINALS
+    wl = px.xp.asarray([1.55, 1.56])
+
+    def fom(neff, backend="auto"):
+        inst = {f"w{i}": comp.straight(wl=wl, length=10.0, neff=neff + 1e-3 * i) for i in range(N)}
+        conns = {(f"w{i}", "o2"): (f"w{i + 1}", "o1") for i in range(N - 1)}
+        ports = {"in": ("w0", "o1"), "out": (f"w{N - 1}", "o2")}
+        s = px.circuit.evaluate_circuit(inst, conns, ports, backend=backend)
+        return px.xp.sum(px.xp.real(s[("in", "out")]) ** 2 + px.xp.imag(s[("in", "out")]))
+
+    inst = {f"w{i}": comp.straight(wl=wl, length=10.0) for i in range(N)}
+    topo = compile_topology(inst, {(f"w{i}", "o2"): (f"w{i + 1}", "o1") for i in range(N - 1)},
+                            {"in": ("w0", "o1"), "out": (f"w{N - 1}", "o2")})
+    assert resolve_backend(topo, (2,)) == "sparse"
+    jf = float(jax.jacfwd(fom)(2.4))
+    hs = float(jax.hessian(fom)(2.4))
+    assert abs(jf - float(jax.grad(fom)(2.4))) <= 1e-9 * abs(jf)
+    assert abs(jf - float(jax.jacfwd(lambda x: fom(x, "dense"))(2.4))) <= 1e-9 * abs(jf)
+    assert abs(hs - float(jax.hessian(lambda x: fom(x, "dense"))(2.4))) <= 1e-9 * abs(hs)
+
+
+@requires_jax
+def test_sparse_derivatives_with_high_degree_rows_and_factor_reuse(monkeypatch):
+    """The scatter fallback of the S Gamma tangent (very unequal row degrees) and the
+    per-call LU reuse: one factorization per sample for a value-and-gradient."""
+    import jax
+
+    from photonix.circuit import sparse_linalg
+
+    wl = px.xp.asarray([1.55, 1.56, 1.57])
+    inst = {"star": comp.mmi_nxn(wl=wl, n=8), **{f"w{k}": comp.straight(wl=wl, length=5.0 + k) for k in range(8)}}
+    conns = {("star", f"o{k + 9}"): (f"w{k}", "o1") for k in range(8)}
+    ports = {**{f"in{k}": ("star", f"o{k + 1}") for k in range(8)}, **{f"out{k}": (f"w{k}", "o2") for k in range(8)}}
+    topo = compile_topology(inst, conns, ports)
+    v = gather_values(topo, inst)
+    solver = topo.sparse_solver()
+    assert solver._sg_layers is None                         # 8-entry rows next to 1-entry rows: scatter path
+    dv = px.xp.ones_like(v) * 0.1j
+    t_sparse = jax.jvp(lambda x: solve_matrix(topo, x, backend="sparse"), (v,), (dv,))[1]
+    t_dense = jax.jvp(lambda x: solve_matrix(topo, x, backend="dense"), (v,), (dv,))[1]
+    assert np.max(np.abs(np.asarray(t_sparse) - np.asarray(t_dense))) <= 1e-10
+
+    calls = []
+    original = sparse_linalg.SparseExposedSolver._factor
+    monkeypatch.setattr(sparse_linalg.SparseExposedSolver, "_factor",
+                        lambda self, row: calls.append(1) or original(self, row))
+    fom = lambda x: px.xp.sum(px.xp.abs(solve_matrix(topo, x * v, backend="sparse")) ** 2)  # noqa: E731
+    val, g = jax.value_and_grad(fom)(1.01)
+    assert len(calls) == 3                                    # X solve and transposed solve share the factors
+    assert np.isfinite(float(val)) and np.isfinite(float(g))
 
 
 # --------------------------------------------------------------------------- #
@@ -404,6 +501,49 @@ def _decoupled_loop():
 def test_decoupled_lossless_resonance_raises(backend):
     with pytest.raises(CircuitSingularError, match="singular"):
         px.circuit.evaluate_circuit(*_decoupled_loop(), backend=backend)
+
+
+def _unexcited_unit_loop():
+    """A lossless unit-gain loop (loop.o1 -> o2 -> w -> loop.o1) that no exposed port excites."""
+    loop = {("o1", "o2"): 1.0, ("o2", "o3"): 0.5, ("o3", "o1"): 0.5}
+    w = {("o1", "o2"): 1.0, ("o2", "o1"): 1.0}
+    m = {("o1", "o1"): 0.9, ("o2", "o1"): 0.1, ("o1", "o2"): 0.1}
+    conns = {("loop", "o2"): ("w", "o1"), ("w", "o2"): ("loop", "o1"), ("loop", "o3"): ("m", "o1")}
+    return {"loop": loop, "w": w, "m": m}, conns, {"out": ("m", "o2")}
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_exactly_singular_system_raises_on_every_backend(backend):
+    """Regression: dense + JAX returned a finite value (jnp.linalg.solve never fails)."""
+    with pytest.raises(CircuitSingularError, match="singular") as info:
+        px.circuit.evaluate_circuit(*_unexcited_unit_loop(), backend=backend)
+    if backend != "dense" or px.HAS_JAX:                      # NumPy's LinAlgError names no sample
+        assert info.value.samples == [0]
+
+
+@requires_jax
+def test_dense_singularity_check_is_skipped_inside_a_trace():
+    import jax
+
+    inst, conn, ports = _unexcited_unit_loop()
+    topo = compile_topology(inst, conn, ports)
+    Y = jax.jit(lambda x: solve_matrix(topo, x, backend="dense"))(gather_values(topo, inst))
+    assert np.asarray(Y).shape == (1, 1)                       # no exception crosses the trace
+
+
+def test_reduce_recovers_from_a_vanishing_intermediate_denominator():
+    """Regression: a regular, non-passive circuit whose first growth step (loop + w) closes a
+    unit-gain loop raised CircuitSingularError on the reduce backend."""
+    loop = {("o1", "o2"): 1.0, ("o1", "o3"): 0.5, ("o3", "o2"): 0.5}
+    w = {("o1", "o2"): 1.0}
+    m = {("o1", "o1"): 0.9, ("o2", "o1"): 0.1, ("o1", "o2"): 0.1}
+    inst = {"loop": loop, "w": w, "m": m}
+    conns = {("loop", "o2"): ("w", "o1"), ("w", "o2"): ("loop", "o1"), ("loop", "o3"): ("m", "o1")}
+    ports = {"out": ("m", "o2")}
+    ref = _reference(inst, conns, ports)
+    assert np.isclose(complex(ref[("out", "out")]), -1 / 90)
+    for backend in BACKENDS:
+        assert _max_diff(px.circuit.evaluate_circuit(inst, conns, ports, backend=backend), ref) <= 1e-12, backend
 
 
 @requires_jax
@@ -493,6 +633,27 @@ def test_dedupe_evaluates_each_unique_setting_once():
     calls.clear()
     compile_circuit(nl, models)(wl=1.55, c2={"coupling": 0.3})   # override joins the 0.3 group
     assert sorted(calls) == [0.2, 0.3, 0.5]
+
+
+def test_dedupe_distinguishes_mapping_keys_of_different_types():
+    """Regression: dict settings were frozen with str(key), so {1: x} and {"1": x} collided."""
+    calls = []
+
+    def phase(*, wl=1.55, table=None):
+        calls.append(table)
+        t = np.exp(-1j * table.get(1, 0.0))
+        return {("o1", "o2"): t, ("o2", "o1"): t}
+
+    nl = Netlist(name="d")
+    nl.add("a", "ph", table={1: 1.0})
+    nl.add("b", "ph", table={"1": 1.0})                      # key "1" is not 1: phase 0
+    nl.add("c", "ph", table={1: 1.0})                        # equal to a: shares its evaluation
+    nl.connect(("a", "o2"), ("b", "o1")).connect(("b", "o2"), ("c", "o1"))
+    nl.expose("in", ("a", "o1")).expose("out", ("c", "o2"))
+    s = compile_circuit(nl, {"ph": phase})(wl=1.55)
+    assert len(calls) == 2
+    assert np.isclose(complex(s[("in", "out")]), np.exp(-2j))
+    assert engine._freeze({1: 1.0, "x": 2}) == engine._freeze({"x": 2, 1: 1.0})
 
 
 @requires_jax

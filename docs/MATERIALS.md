@@ -26,9 +26,10 @@ Other packages (for example `photonix.xsection`) accept any object with:
 
 **Sign convention.** The protocol returns the *physics* sign used by tabulated
 n-k data (`n + i k`, `k >= 0` for loss). The `photonix.em` solvers propagate as
-`exp(-j beta z)` and treat `Im(eps) < 0` as loss, so convert with
-`to_engineering_sign` (complex conjugation) or `MaterialSpec(..., convention=...)`
-before handing a lossy index to a solver.
+`exp(-j beta z)` and treat `Im(eps) < 0` as loss. Convert before handing a
+lossy index to a solver, either with `to_engineering_sign` (complex
+conjugation) or by passing `convention="engineering"` to
+`MaterialSpec.index`, `epsilon` or `eps_tensor`.
 
 **Range checks.** Evaluating outside a model's stated wavelength or temperature
 range raises `MaterialRangeWarning` (or `MaterialRangeError` in strict mode).
@@ -60,12 +61,20 @@ per concept).
 
 * `load_refractiveindex_yaml`, `parse_refractiveindex_yaml`, `load_nk_csv` --
   import refractiveindex.info YAML (formula types 1-9, tabulated n/k/nk) or CSV.
+  Loaded models always use vacuum wavelengths and absolute indices. Files whose
+  `SPECS` say `n_is_absolute: false` or `wavelength_is_vacuum: false` (for
+  example catalogue glasses and Malitson-type fits) are converted with
+  Ciddor's standard-air model at the data temperature:
+  `N(l) = N_rel(l / n_air(l)) n_air(l)`. The conversion is a 3e-4 to 1e-3
+  change. Pass `to_vacuum=False` to use the stored numbers as written.
 * `register`, `unregister`, `get_material`, `list_materials` -- registry.
 * `doped_si`, `soref_bennett_1987`, `nedeljkovic_2011` -- free-carrier index
   and absorption changes of doped silicon.
 * `lorentz_lorenz_mix`, `sion` -- effective-medium mixtures (SiON).
 * `fit_lorentz` -> `LorentzFit` -- passive multi-pole Lorentz-Drude fits over a
-  band, exportable to Meep media (sign converted to Meep's convention).
+  band, exportable to Meep media. Meep's `exp(-i omega t)` media already treat
+  `Im(eps) > 0` as loss, the same sign as this protocol, so the parameters are
+  passed through unchanged.
 * `kramers_kronig_n` -- consistency check of tabulated n against k.
 
 ## Validation

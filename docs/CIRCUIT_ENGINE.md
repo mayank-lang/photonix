@@ -21,12 +21,27 @@ work is split into three stages.
 | Backend | Method | Autodiff | Cost |
 |---|---|---|---|
 | `dense` | batched dense LU of `I - S Gamma` | all JAX transforms, forward and reverse | `O(n^3)` per sample, `O(batch n^2)` memory |
-| `sparse` | SuperLU on `A = I - S Gamma` with a hand-written transpose adjoint (`sparse_linalg.py`) | `jit` / `vmap` / `grad` via a host callback; **no forward mode** (`jvp` / `jacfwd`) | `O(batch (nnz + m^2))` memory |
+| `sparse` | SuperLU on `A = I - S Gamma` through a host callback, with implicit-function derivatives (`sparse_linalg.py`) | all JAX transforms, forward and reverse, higher order (`jax.hessian`) | `O(batch (nnz + m^2))` memory; `O(batch n m)` more under differentiation |
 | `reduce` | subnetwork growth: pairwise `innerconnect` on small dense blocks in greedy minimum-size order (`reduction.py`) | all JAX transforms; stays on device | set by the largest intermediate block |
 | `auto` (default) | `dense` up to `DENSE_MAX_TERMINALS = 300` terminals while the batched system fits in `DENSE_MAX_BYTES`, else `sparse` | as chosen | |
 
-Choose `backend="dense"` or `"reduce"` explicitly when you need forward-mode
-AD on a large circuit:
+`auto` decides from the sizes alone, never from whether the values are JAX
+tracers. Every backend supports every transformation, so code that uses
+`jax.jacfwd`, `jax.jvp` or `jax.hessian` (for example
+`photonix.analysis.fosm(..., second_order=True)`) works on any circuit size.
+
+The sparse derivative is exact. The primal solve is a host callback returning
+only the `m x m` block. Its `custom_jvp` tangent is
+`dX = A^{-1} (dS P_E + dS Gamma X)`, with `A^{-1}` applied by
+`jax.lax.custom_linear_solve` (SuperLU callbacks for the solve and the
+transposed solve). JAX obtains reverse mode by transposing this linear
+tangent. The solve, the tangent solve and the transposed solve of one
+differentiated call share one LU factorization per sample.
+
+The `reduce` backend is an alternative to `auto` when nothing may leave the
+device. Under `jit` it unrolls the whole elimination into XLA, so a 16x16
+mesh takes minutes to compile there, against seconds for `sparse`. Choose a
+backend explicitly with:
 
 ```python
 f = px.circuit.circuit_from_netlist(nl, backend="reduce")
@@ -46,8 +61,13 @@ reach every instance that has its own traced setting.
   which also removes spurious singularities from decoupled lossless loops.
 * **Singular systems.** A genuinely singular system, for example a lossless
   ring with `coupling=0` exactly on resonance, raises `CircuitSingularError`
-  (a `ValueError`) on concrete inputs. Inside a JAX trace the affected samples
-  come back as NaN with a warning, because exceptions cannot cross a trace.
+  (a `ValueError`) on concrete inputs. Every backend applies this, including
+  `dense` under JAX: `jnp.linalg.solve` would return a finite but meaningless
+  value there. Instead the engine factors explicitly and applies the same
+  relative-pivot test as the sparse backend (`PIVOT_RTOL = 1e-14`). Inside a
+  JAX trace no exception can be raised: the sparse and reduce backends return
+  NaN for the affected samples (sparse also warns), and `dense` returns
+  whatever the LU solve gives.
 
 ## Validation
 
@@ -70,7 +90,14 @@ to 32x32.
 ## Limits
 
 * The sparse backend factorizes on the host (SciPy), so on an accelerator each
-  call moves `O(batch nnz)` values to the host and `O(batch m^2)` back.
-* Forward-mode AD is not available on the sparse backend.
+  call moves `O(batch nnz)` values to the host and `O(batch m^2)` back. Under
+  differentiation, the full `n x m` solution and the tangent or cotangent
+  solves (`O(batch n m)`) also cross the host boundary.
 * The reduction backend's cost grows with the largest intermediate block, so
   it suits cascades and meshes better than densely interconnected networks.
+* The reduction backend assumes passive blocks. When a partial sub-network is
+  lossless or active and resonant, a pairwise `innerconnect` denominator can
+  vanish even though the whole circuit is regular. On concrete inputs that
+  call is then re-solved with the global sparse solve, which raises
+  `CircuitSingularError` only if `I - S Gamma` itself is singular. Inside a JAX
+  trace the affected samples come back as NaN.

@@ -24,7 +24,7 @@ import numpy as np
 
 from photonix.core.backend import xp
 
-from .formulas import HC_EV_UM, refractiveindex_formula
+from .formulas import HC_EV_UM, ciddor1996_air, refractiveindex_formula
 from .model import ROOM_TEMPERATURE_K, OpticalModel, Reference, _table_column, tabulated_model
 
 __all__ = [
@@ -256,10 +256,55 @@ def _temperature(doc: dict[str, Any]) -> tuple[float | None, tuple[float, float]
     return None, None
 
 
+def _spec_flag(doc: dict[str, Any], name: str) -> bool:
+    """A boolean ``SPECS`` entry; absent means ``True`` (the database default: absolute, vacuum)."""
+    specs = doc.get("SPECS")
+    value = specs.get(name) if isinstance(specs, dict) else None
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    if text in ("true", "yes", "1"):
+        return True
+    if text in ("false", "no", "0"):
+        return False
+    raise ValueError(f"SPECS {name}: expected true or false, got {value!r}")
+
+
+def _air_wavelength_to_vacuum(wl_air: Any, t_air: float | None) -> np.ndarray:
+    """Vacuum wavelength whose in-air wavelength is ``wl_air``: ``l_vac = n_air(l_vac) l_air``."""
+    lam_air = np.asarray(wl_air, dtype=float)
+    lam = lam_air.copy()
+    for _ in range(4):                     # contraction factor ~1e-6: converged to rounding
+        lam = lam_air * np.asarray(ciddor1996_air(lam, t_air), dtype=float)
+    return lam
+
+
+def _to_absolute_vacuum(evaluate: Any, wl_range: tuple[float, float], *, n_absolute: bool,
+                        wavelength_vacuum: bool, t_air: float | None) -> tuple[Any, tuple[float, float]]:
+    """Wrap ``evaluate(wl_file, T)`` (file conventions) as a function of the vacuum wavelength.
+
+    Data relative to air (``n_is_absolute: false``) give ``N_abs = N_rel n_air``,
+    and data on an air-wavelength axis (``wavelength_is_vacuum: false``) are
+    read at ``l_air = l_vac / n_air(l_vac)``; ``n_air`` is
+    :func:`~photonix.materials.formulas.ciddor1996_air` at the data temperature.
+    """
+    def converted(wl: Any, T: Any) -> Any:
+        lam = xp.asarray(wl, dtype=float)
+        n_air = ciddor1996_air(lam, t_air)
+        n = evaluate(lam if wavelength_vacuum else lam / n_air, T)
+        return n if n_absolute else n * n_air
+
+    if not wavelength_vacuum:
+        lo, hi = _air_wavelength_to_vacuum(np.asarray(wl_range), t_air).tolist()
+        wl_range = (float(lo), float(hi))
+    return converted, wl_range
+
+
 def load_refractiveindex_yaml(path: str | os.PathLike[str], *, label: str = "",
                               reference: Reference | None = None,
                               reference_temperature_k: float | None = None,
-                              temperature_range_k: tuple[float, float] | None = None) -> OpticalModel:
+                              temperature_range_k: tuple[float, float] | None = None,
+                              to_vacuum: bool = True) -> OpticalModel:
     """Load a refractiveindex.info YAML file as an :class:`~photonix.materials.OpticalModel`.
 
     Supports ``formula 1``-``formula 9`` and ``tabulated n``/``k``/``nk`` blocks,
@@ -271,6 +316,18 @@ def load_refractiveindex_yaml(path: str | os.PathLike[str], *, label: str = "",
     overrides it. The model is temperature-independent; evaluating it more than
     5 K away from a stated data temperature warns.
 
+    The returned model always takes vacuum wavelengths and gives the absolute
+    index, the photonix convention. Files whose ``SPECS`` say
+    ``n_is_absolute: false`` (index relative to air, usual for optical-glass
+    and Malitson-type Sellmeier fits) or ``wavelength_is_vacuum: false``
+    (wavelengths in air) are converted with Ciddor's standard-air model
+    (:func:`~photonix.materials.formulas.ciddor1996_air`, at the data
+    temperature when one is stated): ``N_abs(l) = N_rel(l / n_air(l)) n_air(l)``,
+    and the validity range is mapped to vacuum wavelengths. This changes ``n``
+    by about ``(n_air - 1) n``, i.e. 3e-4 to 1e-3. Pass ``to_vacuum=False`` to
+    evaluate the stored formula or table as written, for example to compare
+    coefficients with a source.
+
     Parameters
     ----------
     path
@@ -281,6 +338,10 @@ def load_refractiveindex_yaml(path: str | os.PathLike[str], *, label: str = "",
         Replaces the citation parsed from ``REFERENCES``.
     reference_temperature_k, temperature_range_k
         Override the temperature metadata.
+    to_vacuum
+        Convert air-relative and air-wavelength data (``SPECS``) to the
+        absolute index versus vacuum wavelength (default). ``False`` uses the
+        file's numbers as stored.
 
     Examples
     --------
@@ -341,13 +402,27 @@ def load_refractiveindex_yaml(path: str | os.PathLike[str], *, label: str = "",
         t_range = temperature_range_k
     kind = " + ".join(kinds)
 
+    n_absolute = _spec_flag(doc, "n_is_absolute") or not to_vacuum
+    wavelength_vacuum = _spec_flag(doc, "wavelength_is_vacuum") or not to_vacuum
+
+    def finish(evaluate: Any, wl_range: tuple[float, float], model_coeffs: dict[str, Any]) -> OpticalModel:
+        name = kind
+        if not (n_absolute and wavelength_vacuum):
+            evaluate, wl_range = _to_absolute_vacuum(evaluate, wl_range, n_absolute=n_absolute,
+                                                     wavelength_vacuum=wavelength_vacuum, t_air=t_ref)
+            model_coeffs = {**model_coeffs, "air_conversion": {
+                "n_is_absolute": n_absolute, "wavelength_is_vacuum": wavelength_vacuum,
+                "air_model": "ciddor1996", "air_temperature_k": t_ref}}
+            name = f"{kind} (air -> vacuum)"
+        ref = reference or _reference(doc, wl_range, t_ref)
+        return OpticalModel(name, evaluate, (ref,), wl_range, t_range, t_ref, False, model_coeffs, label)
+
     if n_tab is not None:
         model = tabulated_model(n_tab[0], n_tab[1], None if k_tab is None else k_tab[1],
                                 wl_k=None if k_tab is None else k_tab[0], reference_temperature_k=t_ref,
                                 temperature_range_k=t_range, label=label)
-        ref = reference or _reference(doc, model.wl_range_um, t_ref)
-        return OpticalModel(kind, model.evaluate, (ref,), model.wl_range_um, t_range, t_ref, False,
-                            model.coeffs, label)
+        assert model.wl_range_um is not None
+        return finish(model.evaluate, model.wl_range_um, dict(model.coeffs))
 
     assert n_fn is not None and n_range is not None
     wl_range = n_range
@@ -370,8 +445,7 @@ def load_refractiveindex_yaml(path: str | os.PathLike[str], *, label: str = "",
             n = n + 1j * xp.interp(w, k_x, k_y)
         return n
 
-    ref = reference or _reference(doc, wl_range, t_ref)
-    return OpticalModel(kind, evaluate, (ref,), wl_range, t_range, t_ref, False, coeffs, label)
+    return finish(evaluate, wl_range, coeffs)
 
 
 # --------------------------------------------------------------------------- #
