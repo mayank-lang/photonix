@@ -35,7 +35,7 @@ unless stated):
 
 * rotation invariance -- the continuum ``n_eff`` of a rotated core does not
   depend on the angle.  At 45 deg and 40 / 80 px/um the tensor (box) error
-  against the axis-aligned Richardson limit 2.36506 is 2.3e-3 / 4.0e-4 versus
+  against the axis-aligned Richardson limit 2.36506 is 2.5e-3 / 3.4e-4 versus
   2.0e-2 / 1.0e-2 for arithmetic smoothing (first order);
 * on grids whose lines contain the horizontal faces, rectangle and trapezoid
   converge with observed order ~2 (tensor) and both schemes extrapolate to the
@@ -43,7 +43,7 @@ unless stated):
 * tent kernel on ordinary (unaligned) grids: :func:`n_eff_convergence` over
   30/40/60 px/um recovers 2.36506 to 2.2e-4 (axis-aligned) and 2.9e-4
   (45 deg), inside its 3.5e-3 / 4.2e-3 error bounds; sub-cell shifts of an
-  80-deg, 220 nm trapezoid move ``n_eff`` by about 4e-4 at 40 px/um (box: 5.6e-3);
+  80-deg, 220 nm trapezoid move ``n_eff`` by about 4e-4 at 40 px/um (box: 5.9e-3);
 * coupler supermode splitting reproduces ``SOI_STRIP_SPLITTING_FIT`` within
   its ~2 % trust band at 60 px/um (gaps 0.1-0.4 um);
 * the sparse operator equals the matrix-free one used by the adjoint, and the
@@ -54,8 +54,10 @@ depends on where a horizontal or vertical face cuts its cell (as for the 1-D
 TE slab with cell-averaged ``eps``): ``n_eff`` of a 220 nm core moves by
 ~5e-3 at 40 px/um under sub-cell vertical shifts, and refinement sequences on
 ordinary grids are often not monotone, so a Richardson estimate built from
-them is unreliable (the vertical-shift sensitivity is still 3e-3 at
-60 px/um).  With the tent kernel that sensitivity falls quickly with
+them is unreliable (the vertical-shift sensitivity is still 3.5e-3 at
+60 px/um).  (``n_eff`` is nevertheless continuous in the geometry with both
+kernels: the box normals come from a continuous 3 x 3-cell kernel, see
+:mod:`photonix.xsection.raster`.)  With the tent kernel that sensitivity falls quickly with
 resolution (3.4e-4 at 40, 1.5e-4 at 60 px/um; below ~20 px/um both kernels
 move by several 1e-3), at the price of a larger, systematic error at one
 resolution (about -6e-3 at 40 px/um for the 220 nm strip, about 2x-3x the

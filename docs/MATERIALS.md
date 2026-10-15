@@ -29,7 +29,10 @@ n-k data (`n + i k`, `k >= 0` for loss). The `photonix.em` solvers propagate as
 `exp(-j beta z)` and treat `Im(eps) < 0` as loss. Convert before handing a
 lossy index to a solver, either with `to_engineering_sign` (complex
 conjugation) or by passing `convention="engineering"` to
-`MaterialSpec.index`, `epsilon` or `eps_tensor`.
+`MaterialSpec.index`, `epsilon` or `eps_tensor`. `photonix.xsection` does this
+itself: a material object passed to a cross-section region is evaluated with
+`convention="engineering"` (or conjugated), see
+[`xsection.md`](xsection.md#loss-sign-convention).
 
 **Range checks.** Evaluating outside a model's stated wavelength or temperature
 range raises `MaterialRangeWarning` (or `MaterialRangeError` in strict mode).

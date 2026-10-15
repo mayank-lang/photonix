@@ -7,10 +7,31 @@ refractive index,
   uses ``exp(-j beta z)`` propagation, so loss means a negative imaginary part);
 * a callable ``n(wl)`` such as :func:`photonix.em.silicon`;
 * any object with an ``index(wl)`` method (for example
-  :class:`photonix.em.Material`, or a future ``photonix.materials`` entry);
+  :class:`photonix.em.Material` or a :mod:`photonix.materials` entry such as
+  ``get_material("Si")`` or ``doped_si(...)``);
 * a 3-tuple of the above for a diagonal anisotropic medium whose principal axes
   are the cross-section axes ``(x, y, z)``; an ``index`` returning a
   length-3 array is treated the same way.
+
+Sign convention
+---------------
+Everything in :mod:`photonix.xsection` (and the :mod:`photonix.em` solvers)
+uses the *engineering* sign: ``exp(+j w t)``, ``exp(-j beta z)``, loss is
+``Im(n) < 0``.  :mod:`photonix.materials` returns the *physics* sign
+``n + i k`` with ``k >= 0`` for loss (refractiveindex.info, Palik, Meep).
+:func:`resolve_index` converts as follows, so a lossy material stays lossy:
+
+1. an ``index`` method -- or a plain callable -- that accepts a ``convention``
+   keyword (:meth:`photonix.materials.MaterialSpec.index` does) is called with
+   ``convention="engineering"``;
+2. otherwise, an object (or bound method) defined in :mod:`photonix.materials`
+   (e.g. :class:`photonix.materials.LorentzFit`) follows that package's physics
+   sign and its value is complex-conjugated
+   (:func:`photonix.materials.model.to_engineering_sign`);
+3. numbers, plain callables and any other object are taken as they are, i.e.
+   already in the engineering convention (``Im(n) < 0`` is loss).
+
+The rule is applied to each entry of a 3-tuple.
 
 A temperature is forwarded as ``temperature=T`` only when one is requested; a
 callable or ``index`` method that cannot accept it raises instead of silently
@@ -43,15 +64,48 @@ def _accepts_temperature(fn: Any) -> bool:
     return False
 
 
-def _call(fn: Any, arg: Any, temperature: float | None, what: str) -> Any:
-    if temperature is None:
-        return fn(arg)
-    if not _accepts_temperature(fn):
-        raise TypeError(
-            f"{what} does not accept a temperature argument; pass temperature=None or use a "
-            "temperature-dependent material (a callable or index method with a 'temperature' parameter)"
-        )
-    return fn(arg, temperature=temperature)
+def _accepts_convention(fn: Any) -> bool:
+    """``fn`` has an explicit ``convention`` keyword (a bare ``**kwargs`` does not count)."""
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    p = sig.parameters.get("convention")
+    return p is not None and p.kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+
+
+def _physics_sign(obj: Any) -> bool:
+    """``obj`` (or the object a bound method belongs to) comes from :mod:`photonix.materials`."""
+    owner = getattr(obj, "__self__", obj)
+    module = getattr(type(owner), "__module__", "") or ""
+    return module == "photonix.materials" or module.startswith("photonix.materials.")
+
+
+def _conj(value: Any) -> Any:
+    from .shapes import _is_jax_array
+
+    if _is_jax_array(value):
+        import jax.numpy as jnp
+
+        return jnp.conj(value)
+    return np.conj(np.asarray(value))
+
+
+def _call(fn: Any, arg: Any, temperature: float | None, what: str, *, owner: Any = None) -> Any:
+    kwargs: dict[str, Any] = {}
+    if temperature is not None:
+        if not _accepts_temperature(fn):
+            raise TypeError(
+                f"{what} does not accept a temperature argument; pass temperature=None or use a "
+                "temperature-dependent material (a callable or index method with a 'temperature' parameter)"
+            )
+        kwargs["temperature"] = temperature
+    if _accepts_convention(fn):
+        return fn(arg, convention="engineering", **kwargs)
+    value = fn(arg, **kwargs)
+    if _physics_sign(fn) or (owner is not None and _physics_sign(owner)):
+        return _conj(value)   # photonix.materials protocol: n + i k (k >= 0 loss) -> n - j k
+    return value
 
 
 def _as_index_array(value: Any, what: str) -> Any:
@@ -78,6 +132,10 @@ def _as_index_array(value: Any, what: str) -> Any:
 def resolve_index(material: Any, wl: float, temperature: float | None = None) -> Any:
     """Refractive index of ``material`` at scalar ``wl`` (µm): shape ``()`` or ``(3,)``.
 
+    The result is in the engineering sign convention (``Im(n) < 0`` is loss);
+    :mod:`photonix.materials` objects, which return ``n + i k``, are converted
+    (see the module docstring for the rule).
+
     Examples
     --------
     >>> import photonix as px
@@ -87,6 +145,9 @@ def resolve_index(material: Any, wl: float, temperature: float | None = None) ->
     3.4777
     >>> resolve_index((2.21, 2.14, 2.14), 1.55).shape            # uniaxial, x = extraordinary
     (3,)
+    >>> from photonix.materials import doped_si
+    >>> bool(resolve_index(doped_si(electrons_cm3=1e19), 1.55).imag < 0)   # n + i k -> n - j k: loss
+    True
     """
     if isinstance(material, (tuple, list)):
         if len(material) != 3:
@@ -105,7 +166,8 @@ def resolve_index(material: Any, wl: float, temperature: float | None = None) ->
         return np.asarray(material)
     index = getattr(material, "index", None)
     if callable(index):
-        return _as_index_array(_call(index, wl, temperature, f"{material!r}.index"), repr(material))
+        return _as_index_array(_call(index, wl, temperature, f"{material!r}.index", owner=material),
+                               repr(material))
     if callable(material):
         return _as_index_array(_call(material, wl, temperature, repr(material)), repr(material))
     raise TypeError(f"unsupported material {material!r}")

@@ -346,6 +346,45 @@ def test_material_resolution_protocols():
         rect(0, 1, 0, 1, "silicon")
 
 
+def test_photonix_materials_physics_sign_becomes_engineering_loss():
+    """photonix.materials returns n + i k (k >= 0 loss); xsection treats Im(n) < 0 as loss.  A lossy
+    material object must stay lossy: MaterialSpec.index is called with convention="engineering",
+    other photonix.materials objects (LorentzFit, bound methods) are conjugated, and plain numbers /
+    callables / foreign objects keep the xsection engineering convention unchanged."""
+    from photonix.materials import DrudeTerm, LorentzFit, doped_si, get_material
+
+    dsi = doped_si(electrons_cm3=1e19)
+    phys = complex(np.asarray(dsi.index(1.55)))
+    assert phys.imag > 0                                                   # physics sign: k >= 0
+    assert complex(resolve_index(dsi, 1.55)) == pytest.approx(phys.conjugate(), abs=1e-15)
+    assert complex(resolve_index(dsi.index, 1.55)) == pytest.approx(phys.conjugate(), abs=1e-15)
+    si = get_material("Si")
+    assert complex(resolve_index(si, 1.55, 300.0)) == pytest.approx(
+        complex(si.index(1.55, 300.0, convention="engineering")), abs=1e-15)
+    fit = LorentzFit(eps_inf=1.0, poles=(), drude=DrudeTerm(plasma_frequency=5.0, gamma=0.1),
+                     wl_range_um=(1.0, 2.0), max_abs_error=0.0, max_rel_error=0.0)
+    n_fit = complex(np.asarray(fit.index(1.55)))
+    assert n_fit.imag > 0
+    assert complex(resolve_index(fit, 1.55)) == pytest.approx(n_fit.conjugate(), abs=1e-15)
+    assert complex(resolve_index(fit.index, 1.55)) == pytest.approx(n_fit.conjugate(), abs=1e-15)
+    aniso = resolve_index((dsi, fit, 2.0 - 0.1j), 1.55)
+    assert np.all(aniso.imag < 0)
+    # Numbers, plain callables and foreign objects: already engineering sign, untouched.
+    assert complex(resolve_index(2.0 - 0.1j, 1.55)) == 2.0 - 0.1j
+    assert complex(resolve_index(lambda wl: 2.0 - 0.1j, 1.55)) == 2.0 - 0.1j
+    assert complex(resolve_index(em.Material("m", lambda wl: 2.0 - 0.1j), 1.55)) == 2.0 - 0.1j
+
+    class Aware:                                       # any convention-aware index gets "engineering"
+        def index(self, wl, *, convention="physics"):
+            return 2.0 + (0.1j if convention == "physics" else -0.1j)
+
+    assert complex(resolve_index(Aware(), 1.55)) == 2.0 - 0.1j
+    # End to end: a doped-Si core gives a decaying mode (Im n_eff < 0).
+    m = solve_modes(XSection([rect(-0.25, 0.25, 0.0, 0.22, dsi)], background=N_OX), resolution=15,
+                    margin=0.8, smoothing="arithmetic")
+    assert m.n_eff[0].imag < 0
+
+
 def test_region_validation():
     with pytest.raises(ValueError, match="not simple"):
         polygon([(0, 0), (2, 2), (2, 0), (0, 1)], 2.0)                      # crossed edges
@@ -536,7 +575,7 @@ def test_coupler_splitting_reproduces_soi_fit(gap, kernel):
 
     The fit declares a 1.3 % residual against its 80 px/um legacy solves plus a
     +/-1.3 % resolution spread of those solves, so it is trusted to ~2 % of the
-    continuum.  Tensor smoothing at 60 px/um lands within 1.31 % at every gap
+    continuum.  Tensor smoothing at 60 px/um lands within 1.65 % at every gap
     (gap 0.2 is the worst; 1.67 % with the tent kernel); the legacy arithmetic
     discretization at the fit's own 80 px/um, solved through this geometry path,
     lands within 1.26 % (design study).
@@ -724,7 +763,7 @@ def test_tent_eps_gradient_matches_finite_difference_cellwise(resolution):
 def test_tent_kernel_translation_invariance_within_gci():
     """Spec check: sub-cell shifts (vertical, lateral, diagonal) of an 80-degree trapezoid change the
     tensor/tent n_eff by much less than the GCI of a 20/30/40 px/um study.  The box kernel moves the
-    same core by ~5.6e-3 under vertical shifts -- as much as its GCI -- because its O(h^2) interface
+    same core by ~5.9e-3 under vertical shifts -- as much as its GCI -- because its O(h^2) interface
     error depends on where the horizontal faces cut their cells (as for the 1-D TE slab)."""
     xs = strip(0.5, 0.22, sidewall_deg=80.0)
     study = xsec.n_eff_convergence(xs, (20, 30, 40), margin=1.2)
@@ -797,6 +836,133 @@ def test_traced_translation_and_rotation_are_differentiable():
 
         assert float(area(31.0)) == pytest.approx(0.11, abs=1e-13)
         assert abs(float(jax.grad(area)(31.0))) < 1e-12
+
+
+_HZ_GRID = TensorGrid(np.arange(-10, 11) / 10, np.arange(-10, 11) / 10)        # lines every 0.1 um
+
+
+def _hz_xsection(p, painted):
+    regs = [polygon(p.reshape(-1, 2), 3.0)]
+    if painted:   # a lower slab whose top face coincides with the core's bottom face, and a higher rail
+        regs = [rect(-0.8, 0.8, -0.7, -0.2, 2.0, order=-1), regs[0], rect(0.1, 0.25, 0.1, 0.6, 2.5, order=2)]
+    return XSection(regs, background=1.0)
+
+
+@requires_jax
+@pytest.mark.parametrize("kernel", ["box", "tent"])
+@pytest.mark.parametrize(("case", "graded"), [("on_lines", False), ("independent", False), ("on_lines", True),
+                                              ("painted", False), ("pentagon", True)])
+def test_horizontal_edge_gradients_match_finite_differences_per_sample(kernel, case, graded):
+    """jax.jacfwd of the exact per-sample fractions w.r.t. every vertex coordinate equals central
+    differences of the forward rasterization.  Covers horizontal faces exactly on grid lines (uniform
+    grid; graded grid, whose refine-box edges are grid lines; for the tent kernel the dual lines are cell
+    centres), horizontal edges whose two vertices move independently, coincident painted faces, and a
+    clockwise polygon.  At a face on a grid line the per-sample values are only one-sided
+    differentiable: the derivative is the mean of the two sides, i.e. what the central difference sees."""
+    import jax
+
+    p0 = {"on_lines": [-0.33, -0.2, 0.41, -0.2, 0.41, 0.3, -0.33, 0.3],
+          "independent": [-0.33, -0.217, 0.41, -0.217, 0.41, 0.333, -0.33, 0.333],
+          "painted": [-0.33, 0.3, 0.41, 0.3, 0.41, -0.2, -0.33, -0.2],                 # clockwise
+          "pentagon": list(np.array([-0.5, -0.3, 0.4, -0.3, 0.3, 0.4, -0.2, 0.5, -0.6, 0.1]) + 0.0123)}[case]
+    p0 = np.asarray(p0, float)
+    grid = graded_grid((-1, 1, -1, 1), refine=[(-0.33, 0.41, -0.2, 0.3, 0.05)], h_max=0.3) if graded else _HZ_GRID
+    if case == "on_lines":
+        assert np.any(grid.y_edges == -0.2) and np.any(grid.y_edges == 0.3)
+    if graded:                   # refine-box edges are grid lines exactly (not just to rounding)
+        assert np.any(grid.x_edges == -0.33) and np.any(grid.x_edges == 0.41)
+
+    def frac(p):
+        return _hz_xsection(p, case == "painted").rasterize(grid, kernel=kernel).fractions
+
+    jac = np.asarray(jax.jacfwd(frac)(px.xp.asarray(p0)))
+    h = 1e-7
+    fd = np.stack([(np.asarray(frac(p0 + h * e)) - np.asarray(frac(p0 - h * e))) / (2 * h)
+                   for e in np.eye(p0.size)], axis=-1)
+    assert np.max(np.abs(jac - fd)) < 2e-6 * np.max(np.abs(fd))
+    # Total area: the shoelace derivative 0.5 * (y_{k+1} - y_{k-1}, x_{k-1} - x_{k+1}) for every vertex.
+    if case != "painted":
+        cov = _hz_xsection(p0, False).rasterize(grid, kernel=kernel)
+        P = p0.reshape(-1, 2)
+        area_jac = np.tensordot(jac[0], cov.sample_areas, axes=([0, 1], [0, 1])).reshape(-1, 2)
+        nxt, prv = np.roll(P, -1, axis=0), np.roll(P, 1, axis=0)
+        shoelace = 0.5 * np.stack([nxt[:, 1] - prv[:, 1], prv[:, 0] - nxt[:, 0]], axis=1)
+        assert np.allclose(area_jac, shoelace, atol=1e-12)
+
+
+@requires_jax
+def test_rasterization_forward_values_agree_under_jax():
+    """The derivative-only terms (horizontal edges, frozen slab bounds, tie-symmetric clips) add exact
+    zeros: traced and NumPy rasterizations agree to rounding (both kernels, faces on grid lines)."""
+    p0 = np.array([-0.33, -0.2, 0.41, -0.2, 0.41, 0.3, -0.33, 0.3])
+    for kernel in ("box", "tent"):
+        a = _hz_xsection(p0, True).rasterize(_HZ_GRID, kernel=kernel)
+        b = _hz_xsection(px.xp.asarray(p0), True).rasterize(_HZ_GRID, kernel=kernel)
+        assert np.allclose(a.fractions, np.asarray(b.fractions), rtol=0, atol=1e-15)
+        assert np.allclose(a.indicator_gradient, np.asarray(b.indicator_gradient), rtol=0, atol=1e-14)
+
+
+@requires_jax
+@pytest.mark.parametrize("kernel", ["box", "tent"])
+def test_n_eff_gradient_with_horizontal_faces_on_grid_lines(kernel):
+    """d n_eff / d height of a 500 x 200 nm strip at 20 px/um, where the horizontal faces (y = +-0.1)
+    lie on grid lines of the Yee-shifted (box) or tent-dual grids: formerly 0.040 vs ~4.2 (tent).  The
+    derivative equals the central difference, i.e. the mean of the one-sided slopes (off such
+    coincidences see test_n_eff_gradient_through_geometry_matches_finite_difference)."""
+    import jax
+
+    grid = uniform_grid((-0.25, 0.25, -0.11, 0.11), resolution=20, margin=1.0)
+
+    def f(h):
+        return n_eff(XSection([rect(-0.25, 0.25, -h / 2, h / 2, N_SI)], background=N_OX), grid=grid, kernel=kernel)
+
+    g = float(jax.grad(f)(0.2))
+    fd = (f(0.2 + 1e-6) - f(0.2 - 1e-6)) / 2e-6
+    assert g == pytest.approx(fd, rel=2e-5)
+    assert 3.5 < g < 5.0
+
+
+def test_box_tensor_smoothing_is_continuous_when_a_face_crosses_a_grid_line():
+    """Box-kernel normals come from a continuous 3 x 3-cell kernel, so the tensor-smoothed eps and n_eff
+    are continuous in the geometry.  Formerly the normal (from the cell's own face coverages) flipped
+    when a vertical face crossed a Yee-shifted grid line: eps_yy jumped by 1.6e-2 and n_eff by 3e-5 for
+    a 1e-9 um width change at 20 px/um."""
+    from photonix.xsection import yee_permittivity
+
+    grid = uniform_grid((-0.25, 0.25, -0.11, 0.11), resolution=20, margin=1.0)
+
+    def xs(w):
+        return XSection([rect(-w / 2, w / 2, -0.11, 0.11, N_SI)], background=N_OX)
+
+    ref = yee_permittivity(xs(0.5), grid)
+    for w in (0.5 - 1e-9, 0.5 + 1e-9):
+        other = yee_permittivity(xs(w), grid)
+        assert max(float(np.max(np.abs(a - b))) for a, b in zip(ref, other, strict=True)) < 1e-6
+    n = [n_eff(xs(w), grid=grid) for w in (0.5 - 1e-9, 0.5, 0.5 + 1e-9)]
+    assert abs(n[1] - n[0]) < 1e-7 and abs(n[2] - n[1]) < 1e-7
+    # Uncut cells keep their material's value exactly; normals are reported for cut cells only.
+    cov = xs(0.5).rasterize(grid)
+    e = cov.eps(smoothing="tensor", offdiagonal=True)
+    pure = cov.fractions[0] == 1.0
+    assert pure.any() and np.all(e[0][pure] == N_SI**2) and np.all(e[3][pure] == 0.0)
+    nrm = xs(0.5).normals(grid)
+    assert np.all(nrm[cov.fractions.max(axis=0) == 1.0] == 0.0)
+
+
+@requires_jax
+def test_box_n_eff_gradient_at_vertical_faces_on_grid_lines():
+    """d n_eff / d width with the vertical faces (x = +-0.25) on grid lines, box kernel: the mean of the
+    one-sided slopes (central difference); formerly 1.289 against a discontinuous n_eff."""
+    import jax
+
+    grid = uniform_grid((-0.25, 0.25, -0.11, 0.11), resolution=20, margin=1.0)
+
+    def f(w):
+        return n_eff(XSection([rect(-w / 2, w / 2, -0.11, 0.11, N_SI)], background=N_OX), grid=grid)
+
+    g = float(jax.grad(f)(0.5))
+    fd = (f(0.5 + 1e-6) - f(0.5 - 1e-6)) / 2e-6
+    assert g == pytest.approx(fd, rel=2e-5)
 
 
 def test_n_eff_convergence_validates_resolutions():

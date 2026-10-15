@@ -12,6 +12,16 @@ the release is tagged.
 
 ## [Unreleased]
 
+### Fixed
+
+- `photonix.xsection`: `photonix.materials` objects (physics sign `n + i k`) are
+  converted to the engineering sign, so lossy materials are no longer treated
+  as gain; JAX gradients of rasterized areas, tent moments and `n_eff` are exact
+  for horizontal edges, including faces lying on grid lines; box-kernel tensor
+  smoothing takes its normals over a continuous 3 x 3-cell kernel, so `n_eff`
+  no longer jumps when a face crosses a grid line; `graded_grid` refine-box
+  edges are now exactly grid lines.
+
 ## [0.2.0] - Unreleased
 
 The first tagged release. It adds the layout-to-simulation fidelity work, a much
