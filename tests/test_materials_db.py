@@ -34,8 +34,8 @@ from photonix.materials.io import DATA_DIR
 REF = Path(__file__).parent / "data" / "refractiveindex_info"
 
 
-def ref_model(name: str) -> pm.OpticalModel:
-    return pm.load_refractiveindex_yaml(REF / name)
+def ref_model(name: str, *, to_vacuum: bool = True) -> pm.OpticalModel:
+    return pm.load_refractiveindex_yaml(REF / name, to_vacuum=to_vacuum)
 
 
 @pytest.fixture(autouse=True)
@@ -112,10 +112,34 @@ def test_silicon_thermo_optic_coefficient():
     assert float(get_material("Si_Li1980").dn_dt(1.55, 300.0)) == pytest.approx(dndt, rel=1e-9)
 
 
+def test_li1980_silicon_is_continuous_at_its_293k_reference():
+    """Regression: the two dL/L_293 branches did not meet at 293 K (jump 7.5e-7 in n), so
+    the central-difference dn/dT at the default temperature was ~4 % too large."""
+    wl = np.array([1.31, 1.55, 5.0])
+    jump = np.asarray(pm.li1980_silicon(wl, 293.0 + 1e-9)) - np.asarray(pm.li1980_silicon(wl, 293.0))
+    assert np.max(np.abs(jump)) < 1e-11
+    # dL/L_293 vanishes at 293 K by definition: L(293) = 1, n^2 = eps + (A0 + A1 T + A2 T^2) / l^2
+    t = 293.0
+    eps = 11.4445 + 2.7739e-4 * t + 1.7050e-6 * t**2 - 8.1347e-10 * t**3
+    n_ref = np.sqrt(eps + (0.8948 + 4.3977e-4 * t + 7.3835e-8 * t**2) / wl**2)
+    assert np.max(np.abs(np.asarray(pm.li1980_silicon(wl, t)) - n_ref)) < 1e-14
+    # dn/dT at 293 K: the mean of the two one-sided derivatives (one per branch)
+    h = 1e-3
+    n0 = float(pm.li1980_silicon(1.55, t))
+    one_sided = 0.5 * ((float(pm.li1980_silicon(1.55, t + h)) - n0) + (n0 - float(pm.li1980_silicon(1.55, t - h)))) / h
+    si = get_material("Si_Li1980")
+    assert float(si.dn_dt(1.55)) == pytest.approx(one_sided, rel=1e-5)
+    assert float(si.dn_dt(1.55)) == pytest.approx(1.8186e-4, rel=2e-4)
+    # and it lies between its neighbours (no spike at the branch point)
+    assert float(si.dn_dt(1.55, 292.5)) < float(si.dn_dt(1.55)) < float(si.dn_dt(1.55, 293.5))
+
+
 def test_germanium_li_agrees_with_nist_burnett_2016():
     """Cross-source: Li (1980) at 22 degC vs Burnett et al. (NIST, 2016; uncertainty 2-8e-5) for 2.5-12 um."""
     wl = np.linspace(2.5, 12.0, 120)
-    burnett = re(ref_model("Ge_Burnett.yml").n(wl))
+    # The published numbers as stored (Burnett's file is relative to air; Li's compilation states no
+    # medium), so the ~1e-3 air correction does not enter this source-to-source comparison.
+    burnett = re(ref_model("Ge_Burnett.yml", to_vacuum=False).n(wl))
     li = re(get_material("Ge_Li1980").index(wl, 295.15))
     assert np.max(np.abs(li - burnett)) < 1e-3
 
@@ -147,7 +171,7 @@ def test_silicon_sources_scatter_is_documented():
 ])
 def test_library_matches_refractiveindex_info_transcription(material, axis, ref_file, wl_lo, wl_hi):
     spec = get_material(material)
-    ref = ref_model(ref_file)
+    ref = ref_model(ref_file, to_vacuum=False)    # the coefficients as published (some are relative to air)
     wl = np.linspace(wl_lo, wl_hi, 200)
     # GaAs: the database rounds the converted Sellmeier constants to 7 digits (Skauli's form is used here)
     tol = 2e-7 if material == "GaAs" else 1e-10
@@ -277,7 +301,7 @@ def _explicit(number: int, c: list[float], lam: np.ndarray) -> np.ndarray:
     ("urea_Rosker-e.yml", 9, "explicit"),
 ])
 def test_yaml_formula_types_1_to_9(file, number, check):
-    model = ref_model(file)
+    model = ref_model(file, to_vacuum=False)            # the formula as stored
     assert model.coeffs["formula"] == number
     lo, hi = model.wl_range_um
     wl = np.linspace(lo, hi, 101)
@@ -290,6 +314,61 @@ def test_yaml_formula_types_1_to_9(file, number, check):
     else:
         expected = _explicit(number, model.coeffs["coefficients"], wl)
     np.testing.assert_allclose(got, expected, rtol=0, atol=1e-12)
+
+
+def test_yaml_air_relative_data_are_converted_to_absolute_vacuum(tmp_path):
+    """Regression: SPECS n_is_absolute/wavelength_is_vacuum = false were ignored, so air-relative
+    glass data (Sellmeier of N-BK7 type, 20 degC) were off by ~4e-4."""
+    from photonix.materials.formulas import ciddor1996_air
+
+    body = (
+        'REFERENCES: "test glass, catalogue Sellmeier relative to air"\n'
+        "DATA:\n"
+        "  - type: formula 2\n"
+        "    wavelength_range: 0.3 2.5\n"
+        "    coefficients: 0 1.03961212 0.00600069867 0.231792344 0.0200179144 1.01046945 103.560653\n"
+        "SPECS:\n"
+        "    n_is_absolute: {abs}\n"
+        "    wavelength_is_vacuum: {vac}\n"
+        "    temperature: 20 °C\n"
+    )
+    paths = {}
+    for a in ("true", "false"):
+        for v in ("true", "false"):
+            paths[a, v] = tmp_path / f"glass_{a}_{v}.yml"
+            paths[a, v].write_text(body.format(abs=a, vac=v), encoding="utf-8")
+    c = [1.03961212, 0.00600069867, 0.231792344, 0.0200179144, 1.01046945, 103.560653]
+
+    def n_rel(lam):                                        # the stored formula, evaluated by hand
+        lam2 = lam * lam
+        return np.sqrt(1 + sum(c[i] * lam2 / (lam2 - c[i + 1]) for i in (0, 2, 4)))
+
+    t_air = 293.15
+    wl = np.linspace(0.4, 2.0, 41)                         # vacuum wavelengths
+    n_air = np.asarray(ciddor1996_air(wl, t_air))
+    lam_air = wl / n_air
+    assert np.max(np.abs(lam_air * np.asarray(ciddor1996_air(wl, t_air)) - wl)) < 1e-15
+    expected = {("true", "true"): n_rel(wl), ("false", "true"): n_rel(wl) * n_air,
+                ("true", "false"): n_rel(lam_air), ("false", "false"): n_rel(lam_air) * n_air}
+    for key, path in paths.items():
+        m = pm.load_refractiveindex_yaml(path)
+        assert np.max(np.abs(re(m.n(wl)) - expected[key])) < 1e-13, key
+        raw = pm.load_refractiveindex_yaml(path, to_vacuum=False)
+        assert np.max(np.abs(re(raw.n(wl)) - n_rel(wl))) < 1e-13, key
+    m = pm.load_refractiveindex_yaml(paths["false", "false"])
+    assert 3.5e-4 < float(m.n(1.55).real) - n_rel(1.55) < 4.5e-4          # the size of the correction
+    # the air-wavelength range 0.3-2.5 um maps to vacuum wavelengths: l_vac = n_air(l_vac) l_air
+    lo, hi = m.wl_range_um
+    assert lo / float(ciddor1996_air(lo, t_air)) == pytest.approx(0.3, abs=1e-14)
+    assert hi / float(ciddor1996_air(hi, t_air)) == pytest.approx(2.5, abs=1e-14)
+    assert m.coeffs["air_conversion"]["air_temperature_k"] == pytest.approx(t_air)
+    # a malitson-type reference file of the database is converted too (fused silica, relative to air)
+    silica = ref_model("SiO2_Malitson.yml")
+    assert float(silica.n(1.55).real) - float(em.silica(1.55)) == pytest.approx(3.94e-4, abs=2e-5)
+    bad = tmp_path / "bad.yml"
+    bad.write_text(body.format(abs="maybe", vac="true"), encoding="utf-8")
+    with pytest.raises(ValueError, match="n_is_absolute"):
+        pm.load_refractiveindex_yaml(bad)
 
 
 def test_yaml_formula_anchor_helium():

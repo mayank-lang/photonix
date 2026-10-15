@@ -24,21 +24,30 @@ Backends
     transformations including forward-mode AD. ``O(n^3)`` per sample and
     ``O(batch * n^2)`` memory.
 ``"sparse"``
-    SuperLU on ``A = I - S Gamma`` (``nnz(A) <= nnz(S) + n``) with a
-    hand-written transpose adjoint (:mod:`photonix.circuit.sparse_linalg`).
-    ``jit``/``vmap``/``grad`` under JAX via a host callback; no forward-mode
-    AD. ``O(batch * (nnz + m^2))`` memory.
+    SuperLU on ``A = I - S Gamma`` (``nnz(A) <= nnz(S) + n``) through a host
+    callback, with implicit-function derivatives
+    (:mod:`photonix.circuit.sparse_linalg`): every JAX transformation, forward
+    and reverse mode and higher order included. ``O(batch * (nnz + m^2))``
+    memory, plus the ``O(batch * n * m)`` solution kept for differentiation.
 ``"reduce"``
     Subnetwork growth (:mod:`photonix.circuit.reduction`): pairwise
     ``innerconnect`` on small dense blocks in greedy minimum-size order.
     Pure ``xp`` algebra, so every JAX transformation works and nothing leaves
-    the device; cost set by the largest intermediate block.
+    the device; cost set by the largest intermediate block. An intermediate
+    step can only break down (vanishing ``innerconnect`` denominator) when a
+    partial sub-network is lossless or active and resonant, which passive
+    blocks with loss rule out: on concrete inputs such a call is re-solved
+    with the global sparse solve, while inside a JAX trace the affected
+    samples are NaN, so traced use assumes passive blocks.
 ``"auto"`` (default)
     ``dense`` when ``n <= DENSE_MAX_TERMINALS`` and the batched dense system
-    fits in ``DENSE_MAX_BYTES``; otherwise ``sparse``. The sparse callback
-    ships only ``O(batch * nnz)`` values to the host and ``O(batch * m^2)``
-    back, so it is also preferred on accelerators; choose ``reduce`` or
-    ``dense`` explicitly when forward-mode AD is needed.
+    fits in ``DENSE_MAX_BYTES``; otherwise ``sparse``. The choice depends on
+    sizes only, never on whether the values are traced, and every backend
+    supports every JAX transformation, so ``"auto"`` never breaks
+    ``jax.jacfwd``/``jax.hessian``. The sparse callback ships only
+    ``O(batch * nnz)`` values to the host and ``O(batch * m^2)`` back (plus
+    ``O(batch * n * m)`` under differentiation), so it is also preferred on
+    accelerators; ``reduce`` keeps everything on the device.
 
 Subnetworks with no exposed terminal cannot affect the exposed response (the
 system is block-diagonal and their right-hand side is zero). They are pruned
@@ -76,7 +85,7 @@ from photonix.core.types import AliasedSDict, Array, Model, PortPair, SDict, por
 
 from .netlist import Netlist
 from .reduction import ReductionPlan, execute_plan, plan_reduction
-from .sparse_linalg import SingularSampleError, SparseExposedSolver
+from .sparse_linalg import PIVOT_RTOL, SingularSampleError, SparseExposedSolver
 
 __all__ = [
     "Backend",
@@ -500,7 +509,23 @@ def _solve_dense(topology: CompiledTopology, values: Array) -> Array:
     A = A + xp.eye(n, dtype=values.dtype)
     B = xp.zeros((*batch, n, m), dtype=values.dtype)
     B = _scatter(B, rows[rhs], k_of[cols[rhs]], xp.take(values, xp.asarray(rhs), axis=-1))
-    X = xp.linalg.solve(A, B)
+    if HAS_JAX and not _is_tracer(values):
+        # Concrete JAX inputs: jnp.linalg.solve returns finite garbage for an
+        # exactly singular system, so factor explicitly (the same partial-
+        # pivoting LU it uses) and apply the sparse backend's relative-pivot
+        # test. Inside a trace the plain solve keeps every transformation.
+        from jax.scipy.linalg import lu_factor, lu_solve
+
+        lu, piv = lu_factor(A)
+        u_diag = np.abs(np.asarray(xp.diagonal(lu, axis1=-2, axis2=-1))).reshape(-1, n)
+        bad = ~np.all(np.isfinite(u_diag), axis=-1) | (
+            u_diag.min(axis=-1) <= PIVOT_RTOL * np.maximum(u_diag.max(axis=-1), 1e-300))
+        if np.any(bad):
+            samples = np.nonzero(bad)[0].tolist()
+            raise CircuitSingularError(_singular_message(topology, "dense") + f" Samples: {samples[:10]}.", samples)
+        X = lu_solve((lu, piv), B)
+    else:
+        X = xp.linalg.solve(A, B)
     return xp.take(X, xp.asarray(exposed), axis=-2)
 
 
@@ -581,6 +606,18 @@ def solve_matrix(topology: CompiledTopology, values: Array, *, backend: Backend 
     if not traced:
         y_host = np.asarray(Y)
         if not np.all(np.isfinite(y_host)) and np.all(np.isfinite(np.asarray(values))):
+            if chosen == "reduce":
+                # A pairwise elimination step can hit a vanishing denominator
+                # (an intermediate lossless or active sub-loop at resonance)
+                # although the global system is regular, which cannot happen
+                # for passive blocks. Re-solve globally; that raises only if
+                # I - S Gamma itself is singular.
+                try:
+                    return solve_matrix(topology, values, backend="sparse")
+                except CircuitSingularError as exc:
+                    raise CircuitSingularError(
+                        _singular_message(topology, "reduce") + f" Samples: {exc.samples[:10]}.", exc.samples
+                    ) from None
             bad = np.nonzero(~np.isfinite(y_host.reshape(-1, m * m)).all(axis=-1))[0].tolist()
             raise CircuitSingularError(_singular_message(topology, chosen) + f" Samples: {bad[:10]}.", bad)
     return Y
@@ -681,7 +718,9 @@ def _freeze(v: Any) -> Hashable:
     if isinstance(v, (tuple, list)):
         return (type(v).__name__, tuple(_freeze(x) for x in v))
     if isinstance(v, Mapping):
-        return ("map", tuple(sorted(((str(k), _freeze(x)) for k, x in v.items()), key=lambda kv: kv[0])))
+        # Keys are frozen like values (so 1 and "1" stay distinct) and sorted
+        # by repr, which orders keys of mixed types deterministically.
+        return ("map", tuple(sorted(((_freeze(k), _freeze(x)) for k, x in v.items()), key=lambda kv: repr(kv[0]))))
     # JAX arrays and tracers, callables, arbitrary objects: identity. The
     # object is alive for the whole call, so equal ids mean the same value.
     return ("id", id(v))

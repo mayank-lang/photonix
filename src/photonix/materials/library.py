@@ -52,7 +52,14 @@ from typing import Any
 from photonix.core.backend import xp
 from photonix.em import materials as _em
 
-from .formulas import HC_EV_UM, li1980_germanium, li1980_silicon, lorentz_drude_epsilon, refractiveindex_formula
+from .formulas import (
+    HC_EV_UM,
+    ciddor1996_air,
+    li1980_germanium,
+    li1980_silicon,
+    lorentz_drude_epsilon,
+    refractiveindex_formula,
+)
 from .io import DATA_DIR, load_refractiveindex_yaml
 from .model import (
     ROOM_TEMPERATURE_K,
@@ -306,11 +313,7 @@ SI3N4 = MaterialSpec(
 
 
 def _air(wl: Any, T: Any) -> Any:
-    sigma2 = 1.0 / (xp.asarray(wl, dtype=float) ** 2)
-    refractivity = 0.05792105 / (238.0185 - sigma2) + 0.00167917 / (57.362 - sigma2)
-    if T is None:
-        return 1.0 + refractivity
-    return 1.0 + refractivity * (288.15 / xp.asarray(T, dtype=float))
+    return ciddor1996_air(wl, T)
 
 
 #: Standard air (Ciddor 1996, 15 degC, 101.325 kPa, 450 ppm CO2); the refractivity ``n - 1`` scales with the

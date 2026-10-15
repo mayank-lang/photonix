@@ -25,6 +25,7 @@ __all__ = [
     "lorentz_drude_epsilon",
     "li1980_silicon",
     "li1980_germanium",
+    "ciddor1996_air",
 ]
 
 #: ``h c`` in eV * um, so that photon energy [eV] = HC_EV_UM / wl [um] (CODATA 2018 exact constants).
@@ -135,6 +136,12 @@ def lorentz_drude_epsilon(wl: Any, plasma_ev: float, drude: tuple[float, float],
     return eps
 
 
+# Values of Li's two silicon dL/L_293 [%] polynomials at 293 K (fit residuals
+# of a quantity that is zero there by definition); subtracted in li1980_silicon.
+_LI_SI_LOW_293 = -0.021 - 4.149e-5 * 293.0 - 4.620e-8 * 293.0**2 + 1.482e-9 * 293.0**3
+_LI_SI_HIGH_293 = -0.071 + 1.887e-4 * 293.0 + 1.934e-7 * 293.0**2 - 4.544e-11 * 293.0**3
+
+
 def li1980_silicon(wl: Any, T: Any) -> Any:
     """Refractive index of crystalline silicon versus wavelength and temperature, Li (1980).
 
@@ -151,6 +158,13 @@ def li1980_silicon(wl: Any, T: Any) -> Any:
     for ``T <= 293 K`` and ``-0.071 + 1.887e-4 T + 1.934e-7 T^2 - 4.544e-11 T^3``
     above. ``wl`` in micrometres, ``T`` in kelvin.
 
+    ``dL/L_293`` is by definition the expansion relative to the length at
+    293 K, so it vanishes there; Li's two fitted polynomials leave residuals
+    of +1.6e-4 % and -2.5e-4 % at 293 K, a 7.5e-7 jump in ``n`` that made a
+    central-difference ``dn/dT`` across 293 K about 4 % too large. Each branch
+    is therefore anchored, ``p(T) - p(293)``, which makes ``n`` continuous at
+    293 K and changes it by < 5e-7 elsewhere.
+
     Evidence: reproduces Li's tabulated recommended values (as transcribed in
     the refractiveindex.info database, "Li-100K" ... "Li-750K") to <= 6e-5 for
     100-350 K and <= 2e-4 up to 750 K over 1.2-14 um (``tests/test_materials_db.py``);
@@ -165,8 +179,8 @@ def li1980_silicon(wl: Any, T: Any) -> Any:
     lam = xp.asarray(wl, dtype=float)
     t = xp.asarray(T, dtype=float)
     eps = 11.4445 + 2.7739e-4 * t + 1.7050e-6 * t**2 - 8.1347e-10 * t**3
-    low = -0.021 - 4.149e-5 * t - 4.620e-8 * t**2 + 1.482e-9 * t**3
-    high = -0.071 + 1.887e-4 * t + 1.934e-7 * t**2 - 4.544e-11 * t**3
+    low = -0.021 - 4.149e-5 * t - 4.620e-8 * t**2 + 1.482e-9 * t**3 - _LI_SI_LOW_293
+    high = -0.071 + 1.887e-4 * t + 1.934e-7 * t**2 - 4.544e-11 * t**3 - _LI_SI_HIGH_293
     dl = xp.where(t <= 293.0, low, high) * 1e-2
     lt = xp.exp(-3.0 * dl)
     n2 = eps + lt / (lam * lam) * (0.8948 + 4.3977e-4 * t + 7.3835e-8 * t**2)
@@ -201,3 +215,25 @@ def li1980_germanium(wl: Any, T: Any) -> Any:
     lt = xp.exp(-3.0 * dl)
     n2 = eps + lt / (lam * lam) * (2.5381 + 1.8260e-3 * t + 2.8888e-6 * t**2)
     return xp.sqrt(n2)
+
+
+def ciddor1996_air(wl: Any, T: Any = None) -> Any:
+    """Refractive index of dry standard air versus *vacuum* wavelength, Ciddor (1996).
+
+    P. E. Ciddor, Appl. Opt. 35, 1566 (1996): ``n - 1 = 0.05792105/(238.0185 - s^2)
+    + 0.00167917/(57.362 - s^2)``, ``s = 1/wl`` [1/um], for 15 degC, 101.325 kPa
+    and 450 ppm CO2 (valid 0.23-1.69 um; smooth beyond, without the infrared
+    absorption lines). With ``T`` [K] the refractivity is scaled by the
+    ideal-gas density ``288.15 / T`` at constant pressure. This is the model
+    of the library entry ``"air"``.
+
+    Examples
+    --------
+    >>> round(float(ciddor1996_air(1.55)) - 1.0, 8)
+    0.00027326
+    """
+    sigma2 = 1.0 / (xp.asarray(wl, dtype=float) ** 2)
+    refractivity = 0.05792105 / (238.0185 - sigma2) + 0.00167917 / (57.362 - sigma2)
+    if T is None:
+        return 1.0 + refractivity
+    return 1.0 + refractivity * (288.15 / xp.asarray(T, dtype=float))

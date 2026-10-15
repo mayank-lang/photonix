@@ -16,7 +16,8 @@ Filipsson (1981) and Gupta, Garg & Chadha (1981):
 Every step is plain array algebra on the active backend (``xp``), so the
 result is differentiable in both forward and reverse mode, ``jit``-able, and
 needs no host callback -- the reason to prefer it over the sparse backend for
-forward-mode AD (``jax.jacfwd``) or accelerator-only programs. Its cost grows
+accelerator-only programs. Under ``jit`` the elimination is unrolled into one
+XLA program per step, so very large circuits compile slowly. Its cost grows
 with the size of the largest intermediate block rather than the total number
 of terminals, which suits long cascades and meshes but not densely
 interconnected networks.
