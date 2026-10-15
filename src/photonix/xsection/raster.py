@@ -31,20 +31,38 @@ The topology (slabs, sort orders, owners) is computed in NumPy from concrete
 coordinates; the arithmetic is then repeated in ``jax.numpy`` when any polygon
 holds JAX values, so areas -- and everything derived from them -- are
 differentiable with respect to vertex coordinates under ``jax.grad`` (the
-topology is piecewise constant; ``jax.jit`` is not supported).
+topology is piecewise constant; ``jax.jit`` is not supported).  The traced
+derivative is the exact boundary (Hadamard) shape derivative: the slab
+boundaries are frozen (their derivative terms vanish because each region's
+width in a column is continuous across them), slanted edges move area
+through ``x_e(y)``, and every horizontal edge adds ``int V_y dx`` with
+``V_y = (1 - t) dy_a + t dy_b`` along it, so each of its vertices gets its
+share and a face lying exactly on a grid line is not lost.  Where a face or
+edge end lies exactly on a grid line a per-cell value is only one-sided
+differentiable; the derivative is then the mean of the two sides -- what a
+central finite difference sees -- split evenly between the two cells.  The
+forward values are unchanged (the derivative-only terms are exact zeros).
 
 Interface normals and tensor smoothing
 --------------------------------------
 For anisotropic subpixel smoothing (Farjadpour et al., Opt. Lett. 31, 2972,
 2006; Kottke, Farjadpour & Johnson, Phys. Rev. E 77, 036611, 2008) every cut
-cell needs an interface normal.  It is the direction of the cell-integrated
-gradient of the property ``q`` being smoothed, computed exactly from the face
-coverages by the divergence theorem::
-
-    int_cell grad q dA = sum_r q_r [ (Fx_r(right) - Fx_r(left)) dy ,  (Fy_r(top) - Fy_r(bottom)) dx ]
-
-For two materials this is exactly Kottke's ``int grad chi``; for more it is
-weighted by the property jump across each interface.  The smoothed tensor uses
+cell needs an interface normal.  It is the direction of the kernel-weighted
+gradient ``int K grad q dA = -int q grad K dA`` of the property ``q`` being
+smoothed.  For ``kernel="box"`` ``K`` is the separable trapezoid that is 1 on
+the cell and falls linearly to 0 across each neighbouring cell (support
+3 x 3 cells; Kottke and Meep likewise take the normal over a region larger
+than the pixel); ``-int q grad K`` needs only the exact cell moments
+``int (1, xi, eta) dA``.  ``K`` is continuous, so the normals -- and the
+smoothed tensor -- vary continuously with the geometry; the cell-integrated
+gradient from the face coverages (the divergence theorem,
+``sum_r q_r [(Fx_r(right) - Fx_r(left)) dy, (Fy_r(top) - Fy_r(bottom)) dx]``)
+would flip when a face crosses a cell boundary and make ``n_eff``
+discontinuous.  It is still used in the first and last rows and columns,
+where the trapezoid would reach outside the window.  For a straight
+interface any scalar kernel gives the exact normal.  For two materials this
+is Kottke's ``int K grad chi``; for more it is weighted by the property jump
+across each interface.  The smoothed tensor uses
 Kottke's ``tau`` average in the local (normal, tangent, z) frame, which reduces
 for isotropic media to ``P <eps^-1>^-1 + (1 - P) <eps>`` with ``P = n n^T`` and
 is the exact homogenization of a laminate (series across, parallel along).
@@ -84,6 +102,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -252,6 +271,7 @@ def _graded_axis(lo: float, hi: float, zones: list[tuple[float, float, float]], 
             pos.append(x + h)
         arr = np.asarray(pos)
         arr = p + (arr - p) * ((q - p) / (arr[-1] - p))  # shrink (never stretch) to land on q
+        arr[-1] = q                                        # exactly: box edges are grid lines
         edges.extend(arr[1:].tolist())
     out = np.asarray(edges)
     out[-1] = hi
@@ -318,6 +338,14 @@ class _Topology:
     p_edge: np.ndarray        # ... edge index
     p_left: np.ndarray        # ... owner of the trapezoid on its left (R = background)
     p_right: np.ndarray       # ... owner on its right
+    bvals: np.ndarray         # slab-boundary values (sorted)
+    mids: np.ndarray          # slab mid-heights
+    e_reg: np.ndarray         # region of each kept edge
+    e_dir: np.ndarray         # +1 upward, -1 downward
+    h_a: np.ndarray           # horizontal edges inside the window: first vertex (polygon order),
+    h_b: np.ndarray           # ... second vertex,
+    h_reg: np.ndarray         # ... region
+    orient: np.ndarray        # sign of each region polygon's signed area (+1 counter-clockwise)
 
 
 def _topology(conc: list[np.ndarray], ranks: np.ndarray, grid: TensorGrid) -> _Topology:
@@ -421,9 +449,137 @@ def _topology(conc: list[np.ndarray], ranks: np.ndarray, grid: TensorGrid) -> _T
     def cat(parts):
         return np.concatenate(parts).astype(int) if parts else np.zeros(0, int)
 
+    hz = (ya == yb) & (ya >= Y0) & (ya <= Y1) & (V[a, 0] != V[b, 0]) if len(a) else np.zeros(0, bool)
+    orient = np.array([np.sign(np.sum(c[:, 0] * np.roll(c[:, 1], -1) - np.roll(c[:, 0], -1) * c[:, 1]))
+                       for c in conc], dtype=float)
     return _Topology(e_lo=e_lo, e_hi=e_hi, pairs=pairs, cand_kind=cand_kind, cand_ref=cand_ref, bnd=rep,
                      slab_row=slab_row, first=first, last=last, p_slab=cat(p_slab), p_edge=cat(p_edge),
-                     p_left=cat(p_left), p_right=cat(p_right))
+                     p_left=cat(p_left), p_right=cat(p_right), bvals=bvals, mids=mids, e_reg=e_reg,
+                     e_dir=e_dir, h_a=a[hz], h_b=b[hz], h_reg=reg[hz], orient=orient)
+
+
+_HZ_KEYS = ("r", "row", "col", "a", "b", "ca", "cb", "fr", "frow", "fcol", "fa", "fb", "fca", "fcb")
+
+
+def _horizontal_terms(topo: _Topology, V: np.ndarray, ranks: np.ndarray, grid: TensorGrid,
+                      moments: bool) -> tuple[np.ndarray, ...]:
+    """First-order shape-derivative coefficients of the horizontal polygon edges (concrete).
+
+    The traced sweep arithmetic differentiates at frozen slab boundaries
+    (``lo``/``hi`` under ``stop_gradient``).  That is exact for every
+    non-horizontal edge: the width of a region in a column is continuous across
+    a slab boundary unless a horizontal edge lies on it, so the boundary terms
+    of the derivative vanish -- whichever candidate (grid line, vertex,
+    crossing) represents the boundary.  A horizontal edge ``a -> b`` at ``y0``
+    moves area through its own normal velocity instead; by the Hadamard
+    formula ``dA = int V_y n_y dx`` with ``V_y = (1 - t) dy_a + t dy_b`` along
+    the edge, so each vertex gets its share, and the area moves between the
+    owner the strip has with the edge's region present and with it absent.
+    Where the edge lies on a grid line (or other regions' edges coincide with
+    it) the per-cell values are only one-sided differentiable; the
+    coefficients average the two sides, i.e. the derivative a central finite
+    difference sees.
+
+    Returns, per entry, target region ``r``, ``row``, ``col``, vertex indices
+    ``a``, ``b`` and coefficients ``ca``, ``cb`` (``(4, n)`` for the moments
+    ``int (1, xi, eta, xi eta) dA``), and the same for the vertical face
+    coverages (``fr``, ``frow``, ``fcol``, ``fa``, ``fb``, ``fca``, ``fcb``),
+    in the order of ``_HZ_KEYS``.
+    """
+    X, Y = grid.x_edges, grid.y_edges
+    nx = grid.nx
+    R = len(ranks)
+    bv = topo.bvals
+    S = bv.size - 1
+    tol = 1e-12 * max(float(Y[-1] - Y[0]), abs(float(Y[0])), abs(float(Y[-1])))
+    lo_v, hi_v = V[topo.e_lo], V[topo.e_hi]
+    ylo, yhi, xlo = lo_v[:, 1], hi_v[:, 1], lo_v[:, 0]
+    slope = (hi_v[:, 0] - xlo) / (yhi - ylo) if ylo.size else np.zeros(0)
+    def members(s: int, y: float) -> tuple[np.ndarray, np.ndarray]:
+        """Edge positions at height ``y`` (a boundary of slab ``s``) and region membership after each."""
+        m = topo.mids[s]
+        act = np.flatnonzero((ylo <= m) & (yhi >= m))
+        act = act[np.argsort(xlo[act] + (m - ylo[act]) * slope[act], kind="stable")]
+        wind = np.zeros((act.size + 1, R))
+        wind[1 + np.arange(act.size), topo.e_reg[act]] = -topo.e_dir[act]
+        # Same order as at mid-slab (edges do not cross inside a slab); ties at y are zero-length gaps.
+        pos = np.maximum.accumulate(xlo[act] + (y - ylo[act]) * slope[act]) if act.size else np.zeros(0)
+        return pos, np.cumsum(wind, axis=0) != 0
+
+    def owner(mem: np.ndarray) -> int:
+        score = np.where(mem, ranks, -1)
+        return int(np.argmax(score)) if score.max() >= 0 else R
+
+    out: dict[str, list[Any]] = {k: [] for k in _HZ_KEYS}
+    for a, b, q in zip(topo.h_a, topo.h_b, topo.h_reg, strict=True):
+        xa, xb, y0 = float(V[a, 0]), float(V[b, 0]), float(V[a, 1])
+        hit = np.flatnonzero(np.abs(bv - y0) <= tol)
+        if not hit.size:
+            continue
+        k = int(hit[0])
+        sides = [s for s in (k - 1, k) if 0 <= s < S]
+        if not sides:
+            continue
+        w = 1.0 / len(sides)
+        above = (xb - xa) * topo.orient[q] > 0          # the region's interior lies above the edge
+        x0, x1 = min(xa, xb), max(xa, xb)
+
+        def t(x: float, xa: float = xa, xb: float = xb) -> float:
+            return (x - xa) / (xb - xa)
+
+        for s in sides:
+            row = int(topo.slab_row[s])
+            pos, mem = members(s, y0)
+            cuts = np.unique(np.concatenate([[x0, x1], pos[(pos > x0) & (pos < x1)], X[(X > x0) & (X < x1)]]))
+            for u, v in zip(cuts[:-1], cuts[1:], strict=True):
+                mid = 0.5 * (u + v)
+                col = int(np.searchsorted(X, mid, side="right")) - 1
+                if col < 0 or col >= nx:
+                    continue
+                m_in = mem[int(np.searchsorted(pos, mid, side="right"))].copy()
+                m_in[q] = True
+                m_out = m_in.copy()
+                m_out[q] = False
+                o_in, o_out = owner(m_in), owner(m_out)
+                if o_in == o_out:
+                    continue
+                new, old = (o_out, o_in) if above else (o_in, o_out)   # who gains when the edge moves up
+                L = float(v - u)
+                i_b = L * t(mid)
+                i_a = L - i_b
+                if moments:
+                    W, H = X[col + 1] - X[col], Y[row + 1] - Y[row]
+                    eta = (y0 - Y[row]) / H
+                    xis = [(x - X[col]) / W for x in (u, mid, v)]
+                    ts = [t(x) for x in (u, mid, v)]
+                    j_b = L / 6.0 * (xis[0] * ts[0] + 4.0 * xis[1] * ts[1] + xis[2] * ts[2])
+                    j_a = L * xis[1] - j_b                     # int xi dx is exact at the midpoint
+                    ca: Any = np.array([i_a, j_a, eta * i_a, eta * j_a])
+                    cb: Any = np.array([i_b, j_b, eta * i_b, eta * j_b])
+                else:
+                    ca, cb = i_a, i_b
+                # Vertical grid lines at the interval ends: each side contributes half (a line under
+                # the edge gets both halves; at an edge end on the line the coverage is 1/2 already).
+                lines = [] if moments else [x for x in (u, v) if np.any(X == x)]
+                for r, sgn in ((new, w), (old, -w)):
+                    for key, val in (("r", r), ("row", row), ("col", col), ("a", a), ("b", b),
+                                     ("ca", sgn * ca), ("cb", sgn * cb)):
+                        out[key].append(val)
+                    for x in lines:
+                        for key, val in (("fr", r), ("frow", row), ("fcol", int(np.searchsorted(X, x))),
+                                         ("fa", a), ("fb", b), ("fca", 0.5 * sgn * (1.0 - t(x))),
+                                         ("fcb", 0.5 * sgn * t(x))):
+                            out[key].append(val)
+    res = []
+    for key in _HZ_KEYS:
+        vals = out[key]
+        if key in ("ca", "cb") and moments:
+            res.append(np.stack(vals, axis=-1) if vals else np.zeros((4, 0)))
+        elif key in ("ca", "cb", "fca", "fcb"):
+            res.append(np.asarray(vals, dtype=float))
+        else:
+            res.append(np.asarray(vals, dtype=int))
+    return tuple(res)
 
 
 def _scatter_add(xpm: Any, target: Any, index: tuple[Any, Any], values: Any) -> Any:
@@ -435,8 +591,11 @@ def _scatter_add(xpm: Any, target: Any, index: tuple[Any, Any], values: Any) -> 
 
 def _phase2(V: Any, Y: Any, X: Any, dy: Any, area: Any, fx: Any, fyb: Any, fyt: Any, e_lo: Any, e_hi: Any,
             vin: Any, pairs: Any, bnd: Any, s: Any, e: Any, L: Any, Rt: Any, row: Any, wfirst: Any, wlast: Any,
-            *, xpm: Any) -> tuple[Any, Any, Any]:
-    """Arithmetic of the sweep for a fixed topology (traceable and jit-able under JAX)."""
+            hz: Any = (), *, xpm: Any) -> tuple[Any, Any, Any]:
+    """Arithmetic of the sweep for a fixed topology (traceable and jit-able under JAX).
+
+    ``hz`` are the horizontal-edge derivative coefficients of :func:`_horizontal_terms` (JAX only).
+    """
     lo_v, hi_v = V[e_lo], V[e_hi]
     slope = (hi_v[:, 0] - lo_v[:, 0]) / (hi_v[:, 1] - lo_v[:, 1])
     # Slab-boundary candidates (grid lines, vertices, edge crossings) in the traced arithmetic.
@@ -447,7 +606,7 @@ def _phase2(V: Any, Y: Any, X: Any, dy: Any, area: Any, fx: Any, fyb: Any, fyt: 
         ys = xpm.zeros(0)
     cand = xpm.concatenate([Y, V[vin, 1], ys])
     bvals = cand[bnd]
-    lo, hi = bvals[:-1][s], bvals[1:][s]
+    lo, hi = _frozen(xpm, bvals[:-1][s]), _frozen(xpm, bvals[1:][s])
     h = (hi - lo)[:, None]
     xb = (lo_v[e, 0] + (lo - lo_v[e, 1]) * slope[e])[:, None]
     xt = (lo_v[e, 0] + (hi - lo_v[e, 1]) * slope[e])[:, None]
@@ -478,13 +637,14 @@ def _phase2(V: Any, Y: Any, X: Any, dy: Any, area: Any, fx: Any, fyb: Any, fyt: 
 
         steep = xpm.abs(D) > 1e-3 * Wc
         Dz = xpm.where(steep, D, 1.0)
-        smooth = h * xpm.where(steep, (G(xt) - G(xb)) / Dz, g(0.5 * (xb + xt)))
+        smooth = h * xpm.where(steep, (G(xt) - G(xb)) / Dz, _clip_sym(xpm, 0.5 * (xb + xt), X0, X1) - X0)
         C = smooth + jax.lax.stop_gradient(C - smooth)
     # Fraction of the slab height over which the edge lies left of each vertical line X.
     Xall = X[None, :]
     u = (Xall - xb) / Ds
     step = xpm.where(xb < Xall, 1.0, xpm.where(xb == Xall, 0.5, 0.0))
-    H = xpm.where(D > 0, xpm.clip(u, 0.0, 1.0), xpm.where(D < 0, 1.0 - xpm.clip(u, 0.0, 1.0), step))
+    uc = xpm.clip(u, 0.0, 1.0) if xpm is np else _clip_sym(xpm, u, 0.0, 1.0)
+    H = xpm.where(D > 0, uc, xpm.where(D < 0, 1.0 - uc, step))
     area = _scatter_add(xpm, area, (L, row), C)
     area = _scatter_add(xpm, area, (Rt, row), -C)
     fx = _scatter_add(xpm, fx, (L, row), -H * h)
@@ -495,7 +655,51 @@ def _phase2(V: Any, Y: Any, X: Any, dy: Any, area: Any, fx: Any, fyb: Any, fyt: 
     Gt = g3 * wlast[:, None]
     fyt = _scatter_add(xpm, fyt, (L, row), Gt)
     fyt = _scatter_add(xpm, fyt, (Rt, row), -Gt)
+    if xpm is not np and len(hz) and hz[0].shape[0]:
+        r_, row_, col_, a_, b_, ca, cb, fr, frow, fcol, fa, fb, fca, fcb = hz
+        dv = _tangent(xpm, V[:, 1])
+        area = area.at[r_, row_, col_].add(ca * dv[a_] + cb * dv[b_])
+        if fr.shape[0]:
+            fx = fx.at[fr, frow, fcol].add(fca * dv[fa] + fcb * dv[fb])
     return _finish(xpm, area, fx, fyb, fyt, Wc[0], dy)
+
+
+def _frozen(xpm: Any, value: Any) -> Any:
+    """Slab boundaries carry no derivative (see :func:`_horizontal_terms`)."""
+    if xpm is np:
+        return value
+    import jax
+
+    return jax.lax.stop_gradient(value)
+
+
+def _clip_sym(xpm: Any, x: Any, lo: Any, hi: Any) -> Any:
+    """``clip(x, lo, hi)`` whose derivative is 1/2 (not 0 or 1) where ``x`` equals a bound (JAX).
+
+    At such ties the clipped quantity is only one-sided differentiable; the
+    mean of the two one-sided derivatives is what a central difference sees
+    and splits a face lying on a grid line evenly between its two cells.
+    """
+    import jax
+
+    d = xpm.where((x > lo) & (x < hi), 1.0, xpm.where((x == lo) | (x == hi), 0.5, 0.0))
+    return jax.lax.stop_gradient(xpm.clip(x, lo, hi)) + d * _tangent(xpm, x)
+
+
+def _with_tangent(xpm: Any, value: Any, slope_from: Any) -> Any:
+    """``value`` (exactly) carrying the derivative of ``slope_from``."""
+    if xpm is np:
+        return value
+    import jax
+
+    return jax.lax.stop_gradient(value) + _tangent(xpm, slope_from)
+
+
+def _tangent(xpm: Any, value: Any) -> Any:
+    """``value - stop_gradient(value)``: exactly zero, with the derivative of ``value``."""
+    import jax
+
+    return value - jax.lax.stop_gradient(value)
 
 
 def _finish(xpm: Any, area: Any, fx: Any, fyb: Any, fyt: Any, W: Any, dy: Any) -> tuple[Any, Any, Any]:
@@ -514,7 +718,6 @@ def _phase2_jax() -> Any:
     """``_phase2`` jitted for jax.numpy (compiled once per problem shape)."""
     global _PHASE2_JIT
     if _PHASE2_JIT is None:
-        from functools import partial
 
         import jax
         import jax.numpy as jnp
@@ -523,11 +726,13 @@ def _phase2_jax() -> Any:
     return _PHASE2_JIT
 
 
-def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, Any, Any]:
+def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid,
+           topo: _Topology | None = None) -> tuple[Any, Any, Any]:
     """Exact visible area fractions and face coverages, shapes (R+1, ny, nx) etc."""
     use_jax = any(_is_jax_array(p) for p in polys)
     conc = [_concrete(p) for p in polys]
-    topo = _topology(conc, ranks, grid)
+    if topo is None:
+        topo = _topology(conc, ranks, grid)
     R, (ny, nx) = len(polys), grid.shape
     W, dy = grid.dx, grid.dy
     area = np.zeros((R + 1, ny, nx))
@@ -550,8 +755,9 @@ def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, 
     if use_jax:
         import jax.numpy as jnp
 
+        hz = _horizontal_terms(topo, np.concatenate(conc), ranks, grid, moments=False)
         V = jnp.concatenate([jnp.asarray(p, dtype=float) for p in polys])
-        return _phase2_jax()(V, grid.y_edges, grid.x_edges, dy, area, fx, fyb, fyt, *args)
+        return _phase2_jax()(V, grid.y_edges, grid.x_edges, dy, area, fx, fyb, fyt, *args, hz)
     V = np.concatenate([np.asarray(p, dtype=float) for p in polys])
     return _phase2(V, grid.y_edges, grid.x_edges, dy, area, fx, fyb, fyt, *args, xpm=np)
 
@@ -560,7 +766,7 @@ def _sweep(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> tuple[Any, 
 # Exact bilinear moments (tent kernel)
 # --------------------------------------------------------------------------- #
 def _phase2_moments(V: Any, Y: Any, X: Any, dy: Any, m: Any, e_lo: Any, e_hi: Any, vin: Any, pairs: Any,
-                    bnd: Any, s: Any, e: Any, L: Any, Rt: Any, row: Any, *, xpm: Any) -> Any:
+                    bnd: Any, s: Any, e: Any, L: Any, Rt: Any, row: Any, hz: Any = (), *, xpm: Any) -> Any:
     """Exact cell moments ``int (1, xi, eta, xi eta) dA`` of every visible region (traceable).
 
     ``xi, eta`` are the cell-local coordinates in ``[0, 1]``.  For each kept
@@ -578,7 +784,7 @@ def _phase2_moments(V: Any, Y: Any, X: Any, dy: Any, m: Any, e_lo: Any, e_hi: An
         ys = xpm.zeros(0)
     cand = xpm.concatenate([Y, V[vin, 1], ys])
     bvals = cand[bnd]
-    lo, hi = bvals[:-1][s], bvals[1:][s]
+    lo, hi = _frozen(xpm, bvals[:-1][s]), _frozen(xpm, bvals[1:][s])
     h = (hi - lo)[:, None]
     hr = dy[row]
     eta0 = ((lo - Y[row]) / hr)[:, None]
@@ -590,8 +796,8 @@ def _phase2_moments(V: Any, Y: Any, X: Any, dy: Any, m: Any, e_lo: Any, e_hi: An
     D = xt - xb
     Ds = xpm.where(D == 0, 1.0, D)
 
-    def f(u):
-        g0 = xpm.clip(xb + u * D, X0, X1) - X0
+    def f(u, clip=xpm.clip):
+        g0 = clip(xb + u * D, X0, X1) - X0
         g1 = g0 * g0 / (2.0 * Wc)
         eta = eta0 + u * deta
         return (g0, g1, eta * g0, eta * g1)
@@ -629,13 +835,19 @@ def _phase2_moments(V: Any, Y: Any, X: Any, dy: Any, m: Any, e_lo: Any, e_hi: An
         d20 = (t0 - (tpsi0 - bpsi0) / Dz) / Dz
         d21 = (t1 - (tpsi1 - bpsi1) / Dz) / Dz
         closed = [h * d10, h * d11, h * (eta0 * d10 + deta * d20), h * (eta0 * d11 + deta * d21)]
-        fa, fm, fb = f(0.0), f(0.5), f(1.0)
+        sym = partial(_clip_sym, xpm)
+        fa, fm, fb = f(0.0, sym), f(0.5, sym), f(1.0, sym)
         simpson = [h / 6.0 * (fa[k] + 4.0 * fm[k] + fb[k]) for k in range(4)]
         smooth = [xpm.where(steep, closed[k], simpson[k]) for k in range(4)]
         exact = [smooth[k] + jax.lax.stop_gradient(exact[k] - smooth[k]) for k in range(4)]
     vals = xpm.stack(exact)
     m = _scatter_add_moments(xpm, m, L, row, vals)
-    return _scatter_add_moments(xpm, m, Rt, row, -vals)
+    m = _scatter_add_moments(xpm, m, Rt, row, -vals)
+    if xpm is not np and len(hz) and hz[0].shape[0]:
+        r_, row_, col_, a_, b_, ca, cb = hz[:7]
+        dv = _tangent(xpm, V[:, 1])
+        m = m.at[:, r_, row_, col_].add(ca * dv[a_][None] + cb * dv[b_][None])
+    return m
 
 
 def _scatter_add_moments(xpm: Any, target: Any, reg: Any, row: Any, values: Any) -> Any:
@@ -651,7 +863,6 @@ _MOMENTS_JIT: Any = None
 def _moments_jax() -> Any:
     global _MOMENTS_JIT
     if _MOMENTS_JIT is None:
-        from functools import partial
 
         import jax
         import jax.numpy as jnp
@@ -660,11 +871,12 @@ def _moments_jax() -> Any:
     return _MOMENTS_JIT
 
 
-def _moments(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> Any:
+def _moments(polys: list[Any], ranks: np.ndarray, grid: TensorGrid, topo: _Topology | None = None) -> Any:
     """``(4, R+1, ny, nx)`` exact visible moments ``int (1, xi, eta, xi*eta) dA`` per cell."""
     use_jax = any(_is_jax_array(p) for p in polys)
     conc = [_concrete(p) for p in polys]
-    topo = _topology(conc, ranks, grid)
+    if topo is None:
+        topo = _topology(conc, ranks, grid)
     R, (ny, nx) = len(polys), grid.shape
     cell = grid.areas
     m = np.zeros((4, R + 1, ny, nx))
@@ -683,8 +895,9 @@ def _moments(polys: list[Any], ranks: np.ndarray, grid: TensorGrid) -> Any:
     if use_jax:
         import jax.numpy as jnp
 
+        hz = _horizontal_terms(topo, np.concatenate(conc), ranks, grid, moments=True)
         V = jnp.concatenate([jnp.asarray(p, dtype=float) for p in polys])
-        return _moments_jax()(V, grid.y_edges, grid.x_edges, grid.dy, m, *args)
+        return _moments_jax()(V, grid.y_edges, grid.x_edges, grid.dy, m, *args, hz)
     V = np.concatenate([np.asarray(p, dtype=float) for p in polys])
     return _phase2_moments(V, grid.y_edges, grid.x_edges, grid.dy, m, *args, xpm=np)
 
@@ -704,6 +917,55 @@ def _tent_dual_grid(grid: TensorGrid) -> TensorGrid:
     nodal (hat) function on these lines.
     """
     return TensorGrid(_node_axis(grid.xc, grid.dx), _node_axis(grid.yc, grid.dy))
+
+
+def _pad_edge(xpm: Any, a: Any, axis: int) -> Any:
+    """Replicate the first and last entries along ``axis`` (one ghost cell per side)."""
+    n = a.shape[axis]
+    first = xpm.take(a, xpm.asarray([0]), axis=axis)
+    last = xpm.take(a, xpm.asarray([n - 1]), axis=axis)
+    return xpm.concatenate([first, a, last], axis=axis)
+
+
+def _face_gradient(face_x: Any, face_y: Any, grid: TensorGrid) -> Any:
+    """``(2, R+1, ny, nx)`` box-integrated ``int_cell grad(chi_r) dA`` from the face coverages."""
+    xpm = _xp_of(face_x, face_y)
+    gx = (face_x[:, :, 1:] - face_x[:, :, :-1]) * grid.dy[None, :, None]
+    gy = (face_y[:, 1:, :] - face_y[:, :-1, :]) * grid.dx[None, None, :]
+    return xpm.stack([gx, gy])
+
+
+def _box_normal_gradient(m: Any, grid: TensorGrid, face: Any) -> Any:
+    """``(2, R+1, ny, nx)`` integral ``int K grad(chi_r) dA`` for the 3 x 3-cell trapezoid kernel.
+
+    ``K = T_x(x) T_y(y)`` is 1 on the cell, falls linearly to 0 across each
+    neighbouring cell and is 0 beyond.  Because ``K`` is continuous, the
+    integral ``-int chi grad(K) dA`` is a continuous function of the geometry
+    (unlike the box-integrated gradient, which jumps when a face crosses a
+    cell boundary); for a straight interface it is parallel to the exact
+    normal for any scalar kernel.  It needs only the cell moments ``m`` of
+    :func:`_moments` on the primal grid.  The kernel would reach outside the
+    window in the first and last rows and columns; there the box-integrated
+    gradient ``face`` (:func:`_face_gradient`) is used instead, so a straight
+    interface still gets its exact normal.
+    """
+    xpm = _xp_of(m)
+    m0, m1, m2 = m[0], m[1], m[2]            # int 1, int xi, int eta  (R+1, ny, nx)
+    W = _pad_edge(np, grid.dx, 0)
+    H = _pad_edge(np, grid.dy, 0)
+    # Weighted by T_y over rows j-1, j, j+1 (ramp eta, 1, 1 - eta), per column.
+    p0, p2 = _pad_edge(xpm, m0, 1), _pad_edge(xpm, m2, 1)
+    ty = p2[:, :-2] + p0[:, 1:-1] + (p0 - p2)[:, 2:]                          # (R+1, ny, nx)
+    ty = _pad_edge(xpm, ty, 2)
+    gx = ty[:, :, 2:] / W[None, None, 2:] - ty[:, :, :-2] / W[None, None, :-2]
+    q0, q1 = _pad_edge(xpm, m0, 2), _pad_edge(xpm, m1, 2)
+    tx = q1[:, :, :-2] + q0[:, :, 1:-1] + (q0 - q1)[:, :, 2:]
+    tx = _pad_edge(xpm, tx, 1)
+    gy = tx[:, 2:, :] / H[None, 2:, None] - tx[:, :-2, :] / H[None, :-2, None]
+    ny, nx = grid.shape
+    border = np.ones((ny, nx), bool)
+    border[1:-1, 1:-1] = False
+    return xpm.where(border[None, None], face, xpm.stack([gx, gy]))
 
 
 def _tent_assemble(m: Any, dual: TensorGrid) -> tuple[Any, Any]:
@@ -764,13 +1026,20 @@ class Coverage:
     face_y
         ``kernel="box"`` only: ``(R + 1, ny + 1, nx)`` the same for horizontal
         faces (``y = y_edges[j]``).  An interface lying exactly on a face counts
-        half to each side.
+        half to each side, so a face coverage jumps when an interface crosses
+        that face: its JAX derivative is meaningful only away from such
+        coincidences (and from edges passing exactly through grid corners).
     kernel
         ``"box"`` or ``"tent"`` (see :meth:`XSection.rasterize`).
     indicator_gradient
         ``(2, R + 1, ny, nx)`` kernel-weighted integral ``int K grad(chi_r) dA``
         of each region's indicator function (µm); it defines the interface
-        normals.  Computed from the face coverages when not given.
+        normals.  :meth:`XSection.rasterize` uses the tent itself for
+        ``kernel="tent"`` and, for ``kernel="box"``, the continuous 3 x 3-cell
+        trapezoid kernel (cell-integrated gradient in the outermost rows and
+        columns); see the module docstring.  Computed from the face coverages
+        (the cell-integrated gradient) when a ``Coverage`` is built by hand
+        without it.
     """
 
     xsection: XSection
@@ -787,10 +1056,7 @@ class Coverage:
         if self.indicator_gradient is None:
             if self.face_x is None or self.face_y is None:
                 raise ValueError("a Coverage needs face coverages or an indicator_gradient")
-            xpm = _xp_of(self.face_x, self.face_y)
-            gx = (self.face_x[:, :, 1:] - self.face_x[:, :, :-1]) * self.grid.dy[None, :, None]
-            gy = (self.face_y[:, 1:, :] - self.face_y[:, :-1, :]) * self.grid.dx[None, None, :]
-            object.__setattr__(self, "indicator_gradient", xpm.stack([gx, gy]))
+            object.__setattr__(self, "indicator_gradient", _face_gradient(self.face_x, self.face_y, self.grid))
 
     # -- helpers ------------------------------------------------------------ #
     @property
@@ -818,6 +1084,10 @@ class Coverage:
         if self.xsection.background is None:  # rasterize() verified it is covered (to rounding)
             present[-1] = False
         return present
+
+    def _uncut(self) -> np.ndarray:
+        """``(ny, nx)`` samples covered by a single region (to 1e-12)."""
+        return 1.0 - _concrete(self.fractions).max(axis=0) <= 1e-12
 
     def _material(self, r: int) -> Any:
         return self.xsection.background if r == len(self.regions) else self.regions[r].material
@@ -877,7 +1147,15 @@ class Coverage:
         defines the normal (e.g. ``Re(eps)``).  Samples with no interface -- or
         whose integrated gradient vanishes, such as a sliver centred in its
         cell -- get ``(0, 0)``.
+
+        For ``kernel="box"`` the gradient is taken with the continuous 3 x 3-cell
+        trapezoid kernel of :func:`_box_normal_gradient` (not the cell itself),
+        so the normals -- and the tensor-smoothed ``eps`` -- vary continuously
+        when a face crosses a grid line.
         """
+        return self._normals(weights, cut_only=True)
+
+    def _normals(self, weights: Any, *, cut_only: bool) -> Any:
         g = self.indicator_gradient
         xpm = _xp_of(weights, g)
         w = xpm.asarray(weights)
@@ -889,6 +1167,8 @@ class Coverage:
         span = float(np.max(wc) - np.min(wc)) if wc.size else 0.0
         floor = 1e-9 * max(span, 1e-300) * float(min(dx.min(), dy.min()))
         ok = m2 > floor * floor
+        if cut_only and self.kernel == "box":
+            ok = ok & ~self._uncut()       # the stencil reaches beyond the cell: report cut cells only
         safe = xpm.sqrt(xpm.where(ok, m2, 1.0))  # double-where: finite gradients where masked
         nx_ = xpm.where(ok, gx / safe, 0.0)
         ny_ = xpm.where(ok, gy / safe, 0.0)
@@ -912,7 +1192,7 @@ class Coverage:
         vy = v[:, 1] if aniso else v
         vz = v[:, 2] if aniso else v
         weights = xpm.real(0.5 * (vx + vy))
-        n = self.normals(weights)
+        n = self._normals(weights, cut_only=False)
         c, s = n[..., 0], n[..., 1]
         has_n = (c * c + s * s) > 0.5
         c = xpm.where(has_n, c, 1.0)
@@ -938,6 +1218,14 @@ class Coverage:
         exx = xpm.where(has_n, exx, ar_x)
         eyy = xpm.where(has_n, eyy, ar_y)
         exy = xpm.where(has_n, exy, 0.0)
+        if self.kernel == "box":
+            # An uncut cell next to an interface has a normal (the stencil reaches it) but its value
+            # is exactly its material's; keep that value and the tensor average's derivative, which is
+            # what a face entering the cell produces (the arithmetic fallback would give the wrong one).
+            uncut = self._uncut()
+            exx = xpm.where(uncut, _with_tangent(xpm, ar_x, exx), exx)
+            eyy = xpm.where(uncut, _with_tangent(xpm, ar_y, eyy), eyy)
+            exy = xpm.where(uncut, _with_tangent(xpm, 0.0 * exy, exy), exy)
         ezz = xpm.tensordot(vz, f, axes=1)
         comps = [exx, eyy, ezz, exy] if offdiagonal else [exx, eyy, ezz]
         return xpm.stack(comps)
@@ -1124,8 +1412,11 @@ class XSection:
             raise ValueError(f"the grid must lie within |x| < {BAND_HALF_WIDTH} um of the origin")
         polys = [r.polygon for r in self.regions]
         if kernel == "box":
-            frac, face_x, face_y = _sweep(polys, self.ranks, grid)
-            cov = Coverage(self, grid, frac, face_x, face_y)
+            topo = _topology([_concrete(p) for p in polys], self.ranks, grid)
+            frac, face_x, face_y = _sweep(polys, self.ranks, grid, topo)
+            grad = _box_normal_gradient(_moments(polys, self.ranks, grid, topo), grid,
+                                        _face_gradient(face_x, face_y, grid))
+            cov = Coverage(self, grid, frac, face_x, face_y, indicator_gradient=grad)
         else:
             frac, grad = _tent_assemble(_moments(polys, self.ranks, sweep_grid), sweep_grid)
             cov = Coverage(self, grid, frac, kernel="tent", indicator_gradient=grad)

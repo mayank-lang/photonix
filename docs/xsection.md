@@ -66,18 +66,33 @@ column lines. Overlapping and abutting shapes need no polygon booleans, and the
 result equals the exact rectangle rasterizers to rounding. A per-cell product
 rule `f_i * prod(1 - f_j)` (sometimes proposed) is wrong wherever two abutting
 shapes share a cut cell, so it is not used. Topology is decided in NumPy; the
-arithmetic is replayed in `jax.numpy` when vertices are JAX values, with
-tie-free derivative forms where an edge end touches a grid line.
+arithmetic is replayed in `jax.numpy` when vertices are JAX values. The traced
+derivative is the exact boundary (Hadamard) shape derivative: slab boundaries
+are frozen, slanted edges move area through their position, and each
+horizontal edge contributes `int V_y dx` with the velocity interpolated between
+its two vertices -- so a face lying exactly on a grid line (as `graded_grid`
+refine boxes and the tent kernel's dual lines produce) keeps its gradient, and
+the two vertices of a horizontal edge each get their share. Where a face or
+edge end lies exactly on a grid line the per-cell values are only one-sided
+differentiable; the gradient is the mean of the two sides, which is what a
+central finite difference sees. Forward values are unaffected.
 
 **Smoothing.** `smoothing="arithmetic"` is the area average (legacy
 convention). `smoothing="tensor"` is Kottke's anisotropic average
 (Farjadpour et al., Opt. Lett. 31, 2972 (2006); Kottke, Farjadpour & Johnson,
 Phys. Rev. E 77, 036611 (2008)) with the normal taken from the exactly
-integrated gradient of the smoothed property; for isotropic media it is
+integrated, kernel-weighted gradient of the smoothed property; for isotropic media it is
 `P <eps^-1>^-1 + (1 - P) <eps>`, `P = n n^T`. In the mode solver each field
 component gets its own average on its Yee position and slanted interfaces add a
 symmetric `eps_xy` coupling (essential: without it a 45-degree core converges at
-first order).
+first order). With the box kernel the normal is taken over a continuous
+3 x 3-cell trapezoid kernel (1 on the cell, falling to 0 across its
+neighbours), like the larger-than-a-pixel support of Kottke and Meep, rather
+than over the cell itself: the cell-integrated gradient flips when a face
+crosses a (Yee-shifted) grid line, which made `n_eff` jump by up to ~3e-5 for a
+1e-9 µm geometry change at 20 px/µm. The smoothed `eps` and `n_eff` are now
+continuous in the geometry with both kernels (they still have kinks where a
+face crosses a grid line, as the area fractions do).
 
 **Kernels.** `kernel="box"` averages each sample over its cell.
 `kernel="tent"` uses the bilinear hat centred on the sample and reaching its
@@ -107,10 +122,10 @@ those translations (the continuum value is about 2.4447):
 
 | px/µm | box: vertical shift | box: lateral shift | box: mean | tent: vertical shift | tent: lateral shift | tent: mean |
 |---|---|---|---|---|---|---|
-| 20 | 1.6e-2 | 3.7e-3 | 2.4310 | 3.9e-3 | 4.1e-3 | 2.4181 |
-| 30 | 4.6e-3 | 1.6e-3 | 2.4426 | 1.1e-3 | 1.4e-3 | 2.4330 |
-| 40 | 5.0e-3 | 8.9e-4 | 2.4469 | 3.4e-4 | 6.6e-4 | 2.4383 |
-| 60 | 3.2e-3 | 4.2e-4 | 2.4431 | 1.5e-4 | 1.2e-4 | 2.4421 |
+| 20 | 1.8e-2 | 4.0e-3 | 2.4287 | 3.9e-3 | 4.1e-3 | 2.4181 |
+| 30 | 5.1e-3 | 1.7e-3 | 2.4418 | 1.1e-3 | 1.4e-3 | 2.4330 |
+| 40 | 5.4e-3 | 9.3e-4 | 2.4467 | 3.4e-4 | 6.6e-4 | 2.4383 |
+| 60 | 3.5e-3 | 4.1e-4 | 2.4428 | 1.5e-4 | 1.2e-4 | 2.4421 |
 
 The box error is smaller on average but its dependence on vertical alignment
 barely decays between 30 and 60 px/µm; the tent error is a smooth, larger bias
@@ -128,15 +143,17 @@ kernels move by several 1e-3 under sub-cell shifts.
 | Trapezoid at 90 deg | identical polygon and raster to the rectangle | exact |
 | Laminate / normals | vertical interface: harmonic / arithmetic means (box: isotropic and anisotropic; tent: isotropic); slanted half-plane normals (both kernels) | to 1e-12 |
 | Legacy solver | arithmetic path vs `em.solve_modes_fullvector` | `n_eff` to 1e-10 |
-| Rotation invariance | 45-deg core vs axis-aligned Richardson limit 2.36506 (aligned grids, 40/80 px/µm) | tensor 2.3e-3 at 40 px/µm vs arithmetic 2.0e-2 |
+| Rotation invariance | 45-deg core vs axis-aligned Richardson limit 2.36506 (aligned grids, 40/80 px/µm) | tensor 2.5e-3 at 40 px/µm vs arithmetic 2.0e-2 |
 | Convergence order | 80-deg trapezoid on face-aligned grids (20-60 px/µm) | tensor: observed order ~2 and a lower GCI than arithmetic; both reach a common limit |
 | Tent extrapolation | `n_eff_convergence` on unaligned grids (30/40/60), 0- and 45-deg cores | within 2.2e-4 / 2.9e-4 of 2.36506; bounds 3.5e-3 / 4.2e-3 |
-| Translation invariance (sub-cell shifts) | 80-deg, 220 nm trapezoid at 40 px/µm, vertical/lateral/diagonal shifts | tent: 4e-4 (GCI 7.5e-3); box: 5.6e-3 (vertical); box lateral shifts stay within its GCI |
+| Translation invariance (sub-cell shifts) | 80-deg, 220 nm trapezoid at 40 px/µm, vertical/lateral/diagonal shifts | tent: 4e-4 (GCI 7.5e-3); box: 5.9e-3 (vertical); box lateral shifts stay within its GCI |
 | Physical ordering | rib > strip; shallower sidewall at fixed top width > vertical; fixed bottom width < vertical | ordering holds |
-| Coupler splitting | even/odd TE splitting vs `SOI_STRIP_SPLITTING_FIT` (gaps 0.1-0.4 µm, 60 px/µm) | within 1.31 % (box), 1.67 % (tent, gap 0.2); fit trusted to ~2 % |
+| Coupler splitting | even/odd TE splitting vs `SOI_STRIP_SPLITTING_FIT` (gaps 0.1-0.4 µm, 60 px/µm) | within 1.65 % (box, gap 0.2), 1.67 % (tent, gap 0.2); fit trusted to ~2 % |
 | Symmetry | x <-> y transposition maps TE0 of `(n_x, n_y, n_z)` onto TM0 of `(n_y, n_x, n_z)` | to 1e-9 |
 | Loss | metal heater: decaying complex index, larger when closer | `Im n_eff < 0`, ordering holds |
 | Gradients (JAX) | per-sample `d eps / d width` and `d n_eff / d width` vs central differences, including corners exactly on grid lines / tent nodes | per sample 1e-5 (box) / 1e-7 (tent); `n_eff` 5e-6 relative |
+| Shape derivative of horizontal edges | per-sample Jacobians of the exact fractions (both kernels) w.r.t. every vertex coordinate vs central differences: faces on grid lines (uniform and graded grids), independently moving vertices, coincident painted faces; total area vs shoelace; `d n_eff / d height` with faces on Yee / tent-dual grid lines | per sample 2e-6 relative; area to 1e-12; `n_eff` 2e-5 relative (formerly 0.04 vs 4.2) |
+| Continuity of box tensor smoothing | Yee-staggered `eps` and `n_eff` for a 1e-9 µm width change with the side faces on grid lines (20 px/µm) | `eps` < 1e-6, `n_eff` < 1e-7 (formerly 1.6e-2 / 3e-5) |
 
 Evidence levels (see [`VALIDATION.md`](VALIDATION.md)): exact identities and
 laminate formulas are analytic (level 2); the mode results are convergence and
@@ -156,7 +173,12 @@ benchmark. Nothing here is calibrated to measurements.
   digits.
 * `jax.grad` is supported through the geometry, `jax.jit` is not (the sweep
   topology is computed from concrete coordinates). The differentiable `n_eff`
-  handles lossless (real) permittivity only.
+  handles lossless (real) permittivity only. Gradients are first derivatives
+  (the shape-derivative terms do not support higher orders); at grid-line
+  coincidences they are the mean of the one-sided derivatives, so check them
+  with central differences, or with steps that cross no grid line. The face
+  coverages `Coverage.face_x` / `face_y` jump when an interface crosses a face;
+  their derivatives are meaningful only away from that.
 * Polygons must be simple; holes are made by painting (a higher-order region of
   the surrounding material). Bands are polygons of half-width 1e4 µm, so grids
   must lie inside `|x| < 1e4` µm.
