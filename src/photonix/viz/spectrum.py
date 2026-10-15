@@ -12,9 +12,6 @@ __all__ = ["plot_spectrum", "plot_phase"]
 
 
 def _get_ax(ax):
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
     import matplotlib.pyplot as plt
 
     if ax is None:

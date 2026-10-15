@@ -16,9 +16,6 @@ def plot_netlist(netlist, *, ax=None):
     """
     import math
 
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
     import matplotlib.pyplot as plt
 
     if ax is None:

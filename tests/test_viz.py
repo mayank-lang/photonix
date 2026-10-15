@@ -37,3 +37,15 @@ def test_plot_netlist_returns_axes():
     )
     ax = px.viz.plot_netlist(nl)
     assert ax is not None
+
+
+def test_plotting_keeps_the_users_matplotlib_backend():
+    """Plot helpers must not switch the backend (that breaks Jupyter inline / Qt sessions)."""
+    import subprocess
+    import sys
+
+    code = ("import matplotlib; matplotlib.use('svg'); import photonix as px; from photonix import viz; "
+            "wl = px.linspace(1.5, 1.6, 11); viz.plot_spectrum(px.components.straight(wl=wl), wl); "
+            "viz.plot_phase(px.components.straight(wl=wl), wl); print(matplotlib.get_backend())")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=300, check=True)
+    assert out.stdout.strip().lower() == "svg"

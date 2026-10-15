@@ -30,9 +30,6 @@ def plot_mode(field, x=None, y=None, *, ax=None, cmap: str = "RdBu_r"):
     >>> ax.get_xlabel()
     'x (µm)'
     """
-    import matplotlib
-
-    matplotlib.use("Agg", force=False)
     import matplotlib.pyplot as plt
 
     if ax is None:
