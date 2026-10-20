@@ -14,6 +14,8 @@ the release is tagged.
 
 ### Fixed
 
+- `photonix.materials` `SiO2` and `Al2O3` are now absolute indices of the vacuum wavelength:
+  Malitson's air-relative fits are converted with Ciddor standard air (about +4e-4).
 - `photonix.xsection`: `photonix.materials` objects (physics sign `n + i k`) are
   converted to the engineering sign, so lossy materials are no longer treated
   as gain; JAX gradients of rasterized areas, tent moments and `n_eff` are exact

@@ -14,6 +14,11 @@ __all__ = ["silica", "silicon", "silicon_nitride", "Material", "constant"]
 def silica(wl):
     """Fused silica (SiO2) index, Malitson 1965 Sellmeier (valid 0.21-6.7 µm).
 
+    These are Malitson's published coefficients, which give the index relative
+    to air (20 degC) versus the wavelength in air, evaluated here as if absolute.
+    The absolute index at a vacuum wavelength is about 4e-4 higher; use
+    ``photonix.materials.get_material("SiO2")``, which applies that conversion.
+
     >>> abs(float(silica(1.55)) - 1.444) < 2e-3
     True
     """

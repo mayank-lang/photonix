@@ -16,8 +16,8 @@ of every entry):
 3.4777
 >>> round(float(m("Si_Li1980").index(1.55, 293.0).real), 4)  # Li (1980) recommended table: 3.4757
 3.4757
->>> round(float(m("SiO2").index(1.55).real), 4)            # Malitson (1965)
-1.444
+>>> round(float(m("SiO2").index(1.55).real), 4)            # Malitson (1965), converted from air-relative
+1.4444
 >>> round(float(m("Si3N4").index(1.55).real), 4)           # Luke et al. (2015)
 1.9963
 >>> ln = m("LiNbO3")                                       # Zelmon et al. (1997): no ~ 2.211, ne ~ 2.138
@@ -30,8 +30,8 @@ of every entry):
 >>> N = complex(m("Ge").index(1.305))                      # Nunley et al. (2016) table row: 4.279 + 0.08699j
 >>> round(N.real, 3), round(N.imag, 5)
 (4.279, 0.08699)
->>> round(float(m("Al2O3").index(1.55, axis="o").real), 4)  # Malitson & Dodge (1972), sapphire
-1.7462
+>>> round(float(m("Al2O3").index(1.55, axis="o").real), 4)  # Malitson & Dodge (1972), sapphire, absolute
+1.7467
 >>> round(float(m("TiO2").index(1.0, axis="o").real), 4)    # Devore (1951), rutile
 2.4856
 >>> round(float(m("SU-8").index(1.55).real), 4)            # MicroChem SU-8 3000 data sheet Cauchy
@@ -47,6 +47,7 @@ of every entry):
 """
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 from photonix.core.backend import xp
@@ -60,7 +61,7 @@ from .formulas import (
     lorentz_drude_epsilon,
     refractiveindex_formula,
 )
-from .io import DATA_DIR, load_refractiveindex_yaml
+from .io import DATA_DIR, _to_absolute_vacuum, load_refractiveindex_yaml
 from .model import (
     ROOM_TEMPERATURE_K,
     MaterialSpec,
@@ -276,12 +277,33 @@ SI_GREEN2008 = MaterialSpec(
 # =========================================================================== #
 # Dielectrics
 # =========================================================================== #
-_SIO2_BASE = callable_model(_em.silica, reference=REFERENCES["malitson1965"], wl_range_um=(0.21, 6.7),
-                            temperature_range_k=_window(293.15), reference_temperature_k=293.15,
-                            kind="sellmeier", label="SiO2 (Malitson 1965)")
+def _absolute_from_air_relative(base: OpticalModel, t_air_k: float) -> OpticalModel:
+    """An air-relative fit on an air-wavelength axis as an absolute index of the vacuum wavelength.
 
-#: Silicon dioxide: :func:`photonix.em.silica` (Malitson 1965 fused silica, 20 degC) with a linear
-#: thermo-optic coefficient of 0.95e-5 /K (Arbabi & Goddard 2013, PECVD SiOx at 1.55 um).
+    Malitson's fits (fused silica 1965, sapphire 1972) give the index relative
+    to air at 20 degC versus the wavelength in air, like most glass-catalogue
+    data. ``N = N_rel(l / n_air) n_air`` with Ciddor standard air at
+    ``t_air_k`` (:func:`~photonix.materials.formulas.ciddor1996_air`) is the
+    same conversion :func:`~photonix.materials.io.load_refractiveindex_yaml`
+    applies to ``n_is_absolute: false`` / ``wavelength_is_vacuum: false``
+    files; it raises the index by about ``(n_air - 1) n`` (4e-4 for silica).
+    """
+    assert base.wl_range_um is not None
+    evaluate, wl_range = _to_absolute_vacuum(base.evaluate, base.wl_range_um, n_absolute=False,
+                                             wavelength_vacuum=False, t_air=t_air_k)
+    return dataclasses.replace(base, evaluate=evaluate, wl_range_um=wl_range, kind=f"{base.kind}+air_to_vacuum",
+                               coeffs={**base.coeffs, "air_relative_source": True, "t_air_k": t_air_k})
+
+
+_SIO2_BASE = _absolute_from_air_relative(
+    callable_model(_em.silica, reference=REFERENCES["malitson1965"], wl_range_um=(0.21, 6.7),
+                   temperature_range_k=_window(293.15), reference_temperature_k=293.15,
+                   kind="sellmeier", label="SiO2 (Malitson 1965)"),
+    293.15)
+
+#: Silicon dioxide: :func:`photonix.em.silica` (Malitson 1965 fused silica, 20 degC, relative to air)
+#: converted to an absolute index of the vacuum wavelength, with a linear thermo-optic coefficient
+#: of 0.95e-5 /K (Arbabi & Goddard 2013, PECVD SiOx at 1.55 um).
 SIO2 = MaterialSpec(
     "SiO2",
     with_linear_thermo_optic(_SIO2_BASE, 0.95e-5, reference_temperature_k=293.15,
@@ -438,11 +460,14 @@ LINBO3 = MaterialSpec(
 
 
 def _sapphire(coeffs: list[float], label: str) -> OpticalModel:
-    return _formula(1, [0.0] + coeffs, REFERENCES["malitson_dodge1972"], label=label, t_ref=293.15,
-                    t_range=_window(293.15))
+    return _absolute_from_air_relative(
+        _formula(1, [0.0] + coeffs, REFERENCES["malitson_dodge1972"], label=label, t_ref=293.15,
+                 t_range=_window(293.15)),
+        293.15)
 
 
-#: Synthetic sapphire (uniaxial, crystal z = c axis), 0.2-5 um at 20 degC (Malitson & Dodge 1972).
+#: Synthetic sapphire (uniaxial, crystal z = c axis), 0.2-5 um at 20 degC (Malitson & Dodge 1972),
+#: converted from the published air-relative fit to an absolute index of the vacuum wavelength.
 #: Amorphous ALD/sputtered alumina films have a markedly lower index (~1.6 at 1.55 um).
 AL2O3 = MaterialSpec(
     "Al2O3",

@@ -55,7 +55,6 @@ def re(x) -> np.ndarray:
 # =========================================================================== #
 @pytest.mark.parametrize("name, fn, lo, hi", [
     ("Si", em.silicon, 1.36, 11.0),
-    ("SiO2", em.silica, 0.21, 6.7),
     ("Si3N4", em.silicon_nitride, 0.31, 5.5),
 ])
 def test_library_wraps_em_sellmeier_bit_for_bit(name, fn, lo, hi):
@@ -66,6 +65,20 @@ def test_library_wraps_em_sellmeier_bit_for_bit(name, fn, lo, hi):
     np.testing.assert_array_equal(np.asarray(spec(wl)), np.asarray(fn(wl)))   # LayerLevel callable
     t_ref = spec.reference_temperature_k                       # explicit T_ref adds exactly zero
     np.testing.assert_array_equal(re(spec.index(wl, t_ref)), np.asarray(fn(wl)))
+
+
+def test_sio2_is_em_silica_converted_from_air_relative_to_absolute():
+    """Malitson (1965) is relative to air at 20 degC on an air-wavelength axis: N = N_rel(l/n_air) n_air."""
+    spec = get_material("SiO2")
+    assert spec.optical.coeffs["fn"] is em.silica              # still referenced, not copied
+    wl = np.linspace(0.25, 6.5, 257)
+    n_air = np.asarray(pm.formulas.ciddor1996_air(wl, 293.15))
+    expected = np.asarray(em.silica(wl / n_air)) * n_air
+    np.testing.assert_allclose(re(spec.index(wl)), expected, rtol=0, atol=1e-15)
+    shift = float(spec.index(1.55).real) - float(em.silica(1.55))
+    assert shift == pytest.approx(3.93e-4, abs=1e-5)          # ~ (n_air - 1) n
+    # the Malitson reference file of the database, converted by the YAML loader, agrees
+    np.testing.assert_allclose(re(spec.index(wl)), re(ref_model("SiO2_Malitson.yml").n(wl)), rtol=0, atol=1e-12)
 
 
 def test_materials_subpackage_is_attached():
@@ -171,13 +184,18 @@ def test_silicon_sources_scatter_is_documented():
 ])
 def test_library_matches_refractiveindex_info_transcription(material, axis, ref_file, wl_lo, wl_hi):
     spec = get_material(material)
-    ref = ref_model(ref_file, to_vacuum=False)    # the coefficients as published (some are relative to air)
-    wl = np.linspace(wl_lo, wl_hi, 200)
+    # The coefficients as published; SiO2 and Al2O3 (Malitson) are relative to air and the library
+    # entries are absolute, so those files are compared after the loader's own air-to-vacuum conversion.
+    ref = ref_model(ref_file, to_vacuum=material in ("SiO2", "Al2O3"))
+    model = spec.optical.axis_model(axis) if axis else spec.optical
+    lo, hi = model.wl_range_um            # (the air-to-vacuum conversion shifts the window by n_air)
+    wl = np.linspace(lo, hi, 200)
     # GaAs: the database rounds the converted Sellmeier constants to 7 digits (Skauli's form is used here)
     tol = 2e-7 if material == "GaAs" else 1e-10
     assert np.max(np.abs(re(spec.index(wl, axis=axis)) - re(ref.n(wl)))) < tol
-    model = spec.optical.axis_model(axis) if axis else spec.optical
     assert model.wl_range_um == pytest.approx(ref.wl_range_um)
+    if material not in ("SiO2", "Al2O3"):
+        assert (wl_lo, wl_hi) == pytest.approx(model.wl_range_um, rel=1e-3)
 
 
 def test_lithium_niobate_published_values():
@@ -197,7 +215,12 @@ def test_air_ciddor_vs_peck_reeder():
 def test_sapphire_malitson_dodge_vs_malitson_1962():
     """Independent sapphire measurements (1962 vs 1972) agree to 2e-4 for the ordinary ray."""
     wl = np.linspace(0.3, 5.0, 200)
-    diff = re(get_material("Al2O3").index(wl, axis="o")) - re(ref_model("Al2O3_Malitson1962.yml").n(wl))
+    # Both papers report the index relative to air versus the wavelength in air; compare on the
+    # library's absolute, vacuum-wavelength basis by converting the 1962 fit the same way.
+    m1962 = ref_model("Al2O3_Malitson1962.yml")
+    absolute_1962, _ = pm.io._to_absolute_vacuum(m1962.evaluate, m1962.wl_range_um, n_absolute=False,
+                                                  wavelength_vacuum=False, t_air=293.15)
+    diff = re(get_material("Al2O3").index(wl, axis="o")) - re(absolute_1962(wl, None))
     assert np.max(np.abs(diff)) < 2e-4
 
 

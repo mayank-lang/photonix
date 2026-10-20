@@ -44,13 +44,13 @@ range raises `MaterialRangeWarning` (or `MaterialRangeError` in strict mode).
 | `Si` | Salzberg & Villa (1957) / Tatian Sellmeier via `photonix.em.silicon`; thermo-optic data from Li (1980) |
 | `Si_Li1980`, `Ge_Li1980` | H. H. Li (1980), temperature-dependent n(λ, T) |
 | `Si_Green2008` | M. A. Green (2008), tabulated n-k, 0.25-1.45 µm |
-| `SiO2` | Malitson (1965) via `photonix.em.silica` |
+| `SiO2` | Malitson (1965) via `photonix.em.silica`, converted from air-relative to absolute (see below) |
 | `Si3N4` | Luke et al. (2015) via `photonix.em.silicon_nitride` |
 | `Ge` | Nunley et al. (2016), tabulated n-k |
 | `InP` | Pettit & Turner (1965) |
 | `GaAs` | Skauli et al. (2003) |
 | `LiNbO3` | Zelmon et al. (1997), ordinary/extraordinary (`Uniaxial`) |
-| `Al2O3`, `TiO2` | Malitson & Dodge (1972); DeVore (1951) |
+| `Al2O3`, `TiO2` | Malitson & Dodge (1972), converted from air-relative to absolute; DeVore (1951) |
 | `SU-8` | MicroChem SU-8 3000 data sheet |
 | `Al`, `Cu`, `Au`, `Ag`, `W`, `Ti`, `Cr`, `Pt`, `Ni` | Rakic et al. (1998) Lorentz-Drude |
 | `TiN` | Beliaev et al. (2023) |
@@ -59,6 +59,14 @@ range raises `MaterialRangeWarning` (or `MaterialRangeError` in strict mode).
 `photonix.em.silicon`, `silica` and `silicon_nitride` remain the canonical
 Sellmeier implementations; the library entries wrap them (one implementation
 per concept).
+
+**Air-relative sources.** Malitson's fused-silica (1965) and sapphire (1972)
+fits give the index relative to air at 20 degC versus the wavelength in air.
+The `SiO2` and `Al2O3` entries convert them to an absolute index of the vacuum
+wavelength, `N = N_rel(l / n_air) n_air`, with Ciddor standard air; this raises
+the index by about 4e-4. `photonix.em.silica` itself evaluates the published
+coefficients unchanged (as most solvers and PDKs do), so it is about 4e-4 below
+`get_material("SiO2")`.
 
 ## Tools
 
