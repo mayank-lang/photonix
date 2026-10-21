@@ -13,11 +13,22 @@ equally to simulated responses and to measured data.
 * :mod:`~photonix.analysis.time_domain` -- impulse and pulse responses.
 * :mod:`~photonix.analysis.sensitivity` -- AD/FD sensitivities, FOSM moments,
   corner designs, worst-case distance and importance-sampling yield.
+* :mod:`~photonix.analysis.polarization` -- Jones/Mueller/Stokes, PDL,
+  polarization extinction, DGD and principal states.
 """
 from __future__ import annotations
 
 from .filters import PassbandMetrics, bandwidth, channel_crosstalk, extinction_ratio_db, passband_metrics, to_db
 from .link_budget import LinkBudget, LinkStage, stage_from_sparameters
+from .polarization import (
+    dgd,
+    jones_from_sdict,
+    jones_to_mueller,
+    pdl_db,
+    polarization_extinction_db,
+    principal_states,
+    stokes,
+)
 from .resonances import (
     CouplingSolution,
     Resonance,
@@ -50,4 +61,6 @@ __all__ = [
     "PulseResponse", "impulse_response", "pulse_response",
     "SensitivityTable", "sensitivity", "MomentEstimate", "fosm", "corners",
     "WorstCase", "worst_case_distance", "ISYield", "importance_sampling_yield",
+    "jones_from_sdict", "pdl_db", "polarization_extinction_db", "stokes", "jones_to_mueller", "dgd",
+    "principal_states",
 ]

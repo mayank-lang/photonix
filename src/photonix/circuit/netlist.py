@@ -354,7 +354,9 @@ class Netlist:
         if data.get("format", "photonix.netlist") != "photonix.netlist":
             raise ValueError(f"not a photonix netlist: format={data.get('format')!r}")
         if int(data.get("version", 1)) != 1:
-            raise ValueError(f"unsupported netlist version {data.get('version')!r}")
+            hint = (" (a hierarchical netlist: load it with photonix.circuit.HierarchicalNetlist.from_dict "
+                    "or photonix.circuit.load_netlist)") if int(data.get("version", 1)) == 2 else ""
+            raise ValueError(f"unsupported netlist version {data.get('version')!r}{hint}")
         try:
             connections = {tuple(a): tuple(b) for a, b in data.get("connections", [])}
         except (TypeError, ValueError) as exc:

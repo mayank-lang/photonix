@@ -70,6 +70,15 @@ and also runs under the NumPy fallback backend.
 
 `attenuator` (o1, o2), `terminator` (o1).
 
+## Polarization and multimode (modal terminals)
+
+Ports named `"o1:TE0"`, `"o1:TM0"`, ... (see `photonix.circuit.modal`):
+`polarization_rotator`, `polarization_splitter_rotator`,
+`polarization_beam_splitter`, `grating_coupler_2d`, `jones_fiber`
+(`pmd_fiber_jones`), `multimode_straight`, `asymmetric_mode_converter`,
+`mode_mux`. Physics, evidence and limits are tabulated in
+[Hierarchy, multimode circuits and netlist interop](HIERARCHY_AND_INTEROP.md).
+
 ## Circuit builders (`photonix.circuit`)
 
 | Builder | What it assembles | Evidence |
