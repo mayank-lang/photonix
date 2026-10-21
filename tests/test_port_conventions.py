@@ -23,8 +23,14 @@ from photonix.core.types import AliasedSDict
 
 @pytest.mark.parametrize("name", sorted(c.MODELS))
 def test_every_model_uses_canonical_port_names(name):
-    """Ports must be exactly o1..oN with no gaps and no alternative scheme."""
-    ports = ports_of(c.MODELS[name](wl=1.55))
+    """Ports must be exactly o1..oN with no gaps and no alternative scheme.
+
+    Multimode / polarization models name modal terminals ``"o1:TE0"``; their
+    physical ports (before the ``":"``) must follow the same convention.
+    """
+    from photonix.circuit.modal import split_modal_port
+
+    ports = sorted({split_modal_port(p)[0] for p in ports_of(c.MODELS[name](wl=1.55))})
     assert ports == [f"o{i + 1}" for i in range(len(ports))], (name, ports)
 
 

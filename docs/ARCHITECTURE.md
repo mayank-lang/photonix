@@ -116,6 +116,15 @@ AWG's channel centre), and `pdk.simulate(cell)` runs extraction plus simulation
 with that registry. The GDS writer gives distinct cells that share a name unique
 structure names (`straight`, `straight$1`, ...) and writes identical cells once.
 
+Hierarchy is kept when wanted: `layout.extract_hierarchical_netlist` turns each
+distinct composite cell into a `circuit.Subcircuit` of a
+`circuit.HierarchicalNetlist` (its `flatten()` equals `extract_netlist`), and
+`circuit.compile_hierarchical` solves each distinct block once per call by
+recursive block elimination. Netlists also travel as SAX/gdsfactory
+dictionaries (`circuit.netlist_io`) and pic-YAML schematics
+(`layout.SchematicSpec`, `layout.build_layout`); see
+[Hierarchy and interop](HIERARCHY_AND_INTEROP.md).
+
 ### Time domain (`timedomain/`)
 
 `photonix.timedomain` reuses the same netlists and models in a fixed-step,
@@ -159,6 +168,11 @@ keys, so `ports_of`, the solver and the passivity checks see one terminal per
 physical port, while `s[("in0", "out0")]` keeps working. Aliases are never
 stored as extra entries — doing so would double-count terminals and corrupt any
 circuit built from the model.
+
+Ports that carry several modes use *modal terminals* `"o1:TE0"`, `"o1:TM0"`
+(`circuit.modal`): ordinary port names to the solver, whose physical part still
+follows the `oN` convention. `circuit.ModalNetlist` connects matching modes of
+physical connections and lifts single-mode models automatically.
 
 ## Backend
 

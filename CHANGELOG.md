@@ -12,6 +12,25 @@ the release is tagged.
 
 ## [Unreleased]
 
+### Added
+
+- Hierarchical netlists, multimode circuits and netlist interop
+  ([docs](docs/HIERARCHY_AND_INTEROP.md)): `circuit.Subcircuit`,
+  `circuit.HierarchicalNetlist` (version-2 JSON, safe `"="` parameter
+  expressions, cycle checks), `circuit.compile_hierarchical` (recursive block
+  elimination or flattening, per-call caching of identical blocks) and
+  `layout.extract_hierarchical_netlist`; modal terminals (`"o1:TE0"`) with
+  `circuit.lift_model`, `circuit.ModalNetlist`, `circuit.eme_to_modal` and
+  `circuit.meep_dataset_to_modal`; polarization and multimode models
+  (`polarization_rotator`, `polarization_splitter_rotator`,
+  `polarization_beam_splitter`, `grating_coupler_2d`, `jones_fiber`,
+  `multimode_straight`, `asymmetric_mode_converter`, `mode_mux`) and
+  `analysis.polarization` (PDL, Mueller/Stokes, DGD, principal states); SAX
+  and gdsfactory netlist dictionaries (`circuit.netlist_io`), deterministic
+  cached PCells (`layout.pcell`) and schematic-driven layout with pic-YAML I/O
+  (`layout.SchematicSpec`, `layout.build_layout`,
+  `layout.schematic_from_layout`); example `examples/polarization_diversity.py`.
+
 ### Fixed
 
 - `photonix.materials` `SiO2` and `Al2O3` are now absolute indices of the vacuum wavelength:

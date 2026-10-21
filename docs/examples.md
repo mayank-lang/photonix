@@ -61,6 +61,16 @@ machine precision.
 :language: python
 ```
 
+## Polarization-diversity receiver
+
+```{image} ../examples/outputs/polarization_diversity.png
+:alt: dropped power for random input polarizations with and without polarization diversity, and fibre DGD
+```
+
+```{literalinclude} ../examples/polarization_diversity.py
+:language: python
+```
+
 ## Bragg gratings and a ring modulator
 
 ```{image} ../examples/outputs/bragg_and_ring_modulator.png

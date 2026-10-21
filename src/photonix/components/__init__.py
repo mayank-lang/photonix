@@ -19,7 +19,12 @@ Families
   :func:`thermo_optic_phase_shifter`, :func:`pn_phase_shifter`,
   :func:`photodetector`;
 * I/O -- :func:`grating_coupler`, :func:`edge_coupler`;
-* lumped -- :func:`attenuator`, :func:`terminator`.
+* lumped -- :func:`attenuator`, :func:`terminator`;
+* polarization and multimode (modal terminals ``"o1:TE0"``) --
+  :func:`polarization_rotator`, :func:`polarization_splitter_rotator`,
+  :func:`polarization_beam_splitter`, :func:`grating_coupler_2d`,
+  :func:`jones_fiber`, :func:`multimode_straight`,
+  :func:`asymmetric_mode_converter`, :func:`mode_mux`.
 """
 from __future__ import annotations
 
@@ -54,7 +59,16 @@ from .couplers import (
 )
 from .fiber import SMF28_MFD_1550, edge_coupler, gaussian_overlap
 from .gratings import attenuator, grating_coupler, phase_shifter, terminator
+from .multimode import asymmetric_mode_converter, coupled_mode_transfer, mode_mux, multimode_straight
 from .mzi import mzi
+from .polarization import (
+    grating_coupler_2d,
+    jones_fiber,
+    pmd_fiber_jones,
+    polarization_beam_splitter,
+    polarization_rotator,
+    polarization_splitter_rotator,
+)
 from .resonators import add_drop_ring, all_pass_ring, ring_coupler, ring_double, ring_single
 from .waveguide import (
     bend,
@@ -115,6 +129,14 @@ MODELS = {
     "mzi": mzi,
     "bragg_grating": bragg_grating,
     "awg": awg,
+    "polarization_rotator": polarization_rotator,
+    "polarization_splitter_rotator": polarization_splitter_rotator,
+    "polarization_beam_splitter": polarization_beam_splitter,
+    "grating_coupler_2d": grating_coupler_2d,
+    "jones_fiber": jones_fiber,
+    "multimode_straight": multimode_straight,
+    "asymmetric_mode_converter": asymmetric_mode_converter,
+    "mode_mux": mode_mux,
 }
 
 __all__ = [
@@ -131,5 +153,8 @@ __all__ = [
     "ring_coupler", "all_pass_ring", "add_drop_ring", "ring_single", "ring_double", "mzi",
     "bragg_grating", "bragg_wavelength", "grating_kappa",
     "awg", "awg_design",
+    "polarization_rotator", "polarization_splitter_rotator", "polarization_beam_splitter",
+    "grating_coupler_2d", "jones_fiber", "pmd_fiber_jones",
+    "multimode_straight", "asymmetric_mode_converter", "mode_mux", "coupled_mode_transfer",
     "MODELS", "WAVEGUIDE_PARAMETERS",
 ]
