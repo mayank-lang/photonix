@@ -39,7 +39,13 @@ calibrated multiphysics.
     layouts whose cells carry their geometry-derived model settings, so the
     simulated circuit matches the drawn lengths, radii and gaps.
 13. Pre-check minimum width, spacing and area with merged-polygon morphology
-    before an external DRC run.
+    before an external DRC run; run LVS-lite (ports on geometry, opens,
+    near-opens, optical shorts, parameters re-extracted from polygons,
+    layout-versus-schematic netlist comparison), an open DRC rule deck
+    (enclosure, separation, extension, angle, grid, max width, holes,
+    density) with waivers, KLayout `.lyrdb` markers and a generated KLayout
+    DRC script, and exact window-density analysis with optics-aware dummy
+    fill ([`VERIFICATION.md`](VERIFICATION.md)).
 14. Describe the process with a `LayerStack` (mode-solver cross-sections and
     Meep layer specs) and `CrossSection`s whose waveguide parameters
     `Pdk.simulate` applies to extracted layouts.
@@ -205,7 +211,11 @@ limits. The ones most likely to matter in a design decision:
   fits and a uniform-lateral-field overlap; forward-bias injection, RC and
   velocity limits are absent.
 - `grating_coupler` is phenomenological (Gaussian spectrum).
-- The DRC pre-check covers width, spacing and area only; it is not a rule deck.
+- The DRC pre-check covers width, spacing and area only. The
+  `photonix.verification` rule deck adds context rules but is photonix's own
+  table, not a foundry deck, and its generated KLayout script has not been
+  run against KLayout in CI. LVS-lite is geometric (declared models,
+  ports, polygons), not device-extraction LVS.
 
 ## Process and multiphysics adapter boundary
 
@@ -253,7 +263,8 @@ The following are deliberately reported as open rather than hidden behind a
   layers of `layout.library.die_frame` are placeholders to map to a foundry
   layer map);
 - foundry-qualified DRC/LVS decks, deck-specific clean-report interpretation,
-  density/fill sign-off, waivers, and tape-out release governance;
+  foundry density/fill sign-off (photonix's density analysis, fill and
+  waivers are pre-checks), and tape-out release governance;
 - versioned mask/process metadata;
 - measurement-calibrated compact models: `photonix.macromodel` fits, certifies
   and time-steps any sampled S-matrix, but the data's calibration (reference

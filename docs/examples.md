@@ -61,6 +61,21 @@ machine precision.
 :language: python
 ```
 
+## Layout verification and dummy fill
+
+LVS-lite finds a 5 nm open and a stub drawn across a waveguide, the rule deck
+writes KLayout markers and a KLayout DRC script, and the silicon layer is
+filled to 25 % per 50 µm window outside the evanescent keep-out (see
+[Layout verification](VERIFICATION.md)).
+
+```{image} ../examples/outputs/layout_verification.png
+:alt: layout with LVS issues, DRC markers and dummy fill, and window densities before and after fill
+```
+
+```{literalinclude} ../examples/layout_verification.py
+:language: python
+```
+
 ## Bragg gratings and a ring modulator
 
 ```{image} ../examples/outputs/bragg_and_ring_modulator.png

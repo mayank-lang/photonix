@@ -27,7 +27,8 @@ each subpackage. Subpackages (:mod:`photonix.core`, :mod:`photonix.circuit`,
 :mod:`photonix.pdk`, :mod:`photonix.viz`, :mod:`photonix.optim`,
 :mod:`photonix.multiphysics`, :mod:`photonix.interop`, :mod:`photonix.analysis`,
 :mod:`photonix.synthesis`, :mod:`photonix.macromodel`, :mod:`photonix.materials`,
-:mod:`photonix.xsection`, :mod:`photonix.timedomain`, :mod:`photonix.diagnostics`,
+:mod:`photonix.xsection`, :mod:`photonix.timedomain`, :mod:`photonix.verification`,
+:mod:`photonix.diagnostics`,
 :mod:`photonix.cli`) can also be imported directly. The ``photonix`` command line
 is documented in :mod:`photonix.cli`.
 """
@@ -108,13 +109,14 @@ from . import (  # noqa: E402
     pdk,
     synthesis,
     timedomain,
+    verification,
     viz,
     xsection,
 )
 
 __all__ += [
     "components", "circuit", "modes", "em", "interop", "layout", "pdk", "viz", "optim", "multiphysics",
-    "analysis", "synthesis", "macromodel", "materials", "timedomain", "xsection", "cli",
+    "analysis", "synthesis", "macromodel", "materials", "timedomain", "xsection", "verification", "cli",
 ]
 
 # Kept for compatibility with 0.1.x callers. Optional *features* now raise their
