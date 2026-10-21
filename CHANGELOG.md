@@ -30,6 +30,17 @@ the release is tagged.
   cached PCells (`layout.pcell`) and schematic-driven layout with pic-YAML I/O
   (`layout.SchematicSpec`, `layout.build_layout`,
   `layout.schematic_from_layout`); example `examples/polarization_diversity.py`.
+- `photonix.verification`: LVS-lite (`run_lvs_lite`; ports on geometry,
+  near-opens, opens, optical shorts, misjoined ports, lengths/gaps/radii
+  re-extracted from polygons, layout-versus-schematic netlist comparison with
+  transparent routes), a DRC `RuleDeck` (enclosure, separation, extension,
+  overlap/inside, minimum angle, off-grid vertices, maximum width, hole area,
+  density; Euclidean/square/projection metrics; waivers; JSON; PDK import;
+  generated KLayout DRC script and `compare_with_klayout`), KLayout `.lyrdb`
+  marker read/write, exact sliding-window `density_map`/`check_density` and
+  `evanescent_keepout`; `photonix.layout.fill` for dummy fill with keep-outs
+  and a target density. See `docs/VERIFICATION.md` and
+  `examples/layout_verification.py`.
 
 ### Fixed
 
